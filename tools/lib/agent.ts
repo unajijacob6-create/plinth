@@ -5,7 +5,7 @@
 import { chat, type Receipt } from "./nearai.ts";
 
 export interface Decision {
-  action: "trade" | "hold";
+  action: "trade" | "hold" | "stake";
   sell?: string;
   buy?: string;
   amount?: string;
@@ -16,7 +16,8 @@ export interface Decision {
 export const AGENT_SYSTEM = `You are the operator of an on-chain investment fund on NEAR.
 You decide at most one action per call. Reply with JSON only, no prose:
 {"action":"trade"|"hold","sell":"<token account>","buy":"<token account>","amount":"<integer base units of the sell token>","recipient":"<account that receives the output>","reason":"<one short sentence>"}
-For "hold", the other fields may be omitted. The recipient is normally the fund itself.`;
+For "hold", the other fields may be omitted. The recipient is normally the fund itself.
+If the fund has a staking route, you may instead reply {"action":"stake","amount":"<integer base units of wNEAR>","reason":"..."}: the fund stakes that wNEAR into the liquid-staking token at par (no swap, no quote).`;
 
 export function describeFund(fund: string, state: any, prices: string): string {
   const m = state.config.mandate;
@@ -25,6 +26,7 @@ export function describeFund(fund: string, state: any, prices: string): string {
     `Holdings: ${state.held.map(([t, v]: [string, string]) => `${v} base units of ${t}`).join("; ")}`,
     `Allowed tokens: ${m.tokens.join(", ")}`,
     `Mandate: a trade may sell at most ${m.max_trade_bps / 100}% of a holding; all-in cost at most ${m.max_cost_bps / 100}%.`,
+    ...(m.staking ? [`Staking route: idle ${m.tokens[m.staking.wrap_index]} can be staked into ${m.tokens[m.staking.lst_index]} at par (minimum ${m.staking.min_stake} base units, same size cap and cooldown as a trade).`] : []),
     `Prices: ${prices}`,
   ].join("\n");
 }
@@ -34,7 +36,7 @@ export function parseDecision(text: string): Decision | null {
   if (!m) return null;
   try {
     const d = JSON.parse(m[0]);
-    if (d.action !== "trade" && d.action !== "hold") return null;
+    if (d.action !== "trade" && d.action !== "hold" && d.action !== "stake") return null;
     return d as Decision;
   } catch {
     return null;
@@ -72,8 +74,14 @@ export function agree(votes: Pick<Vote, "model" | "decision">[], fund: string): 
   if (bad) return hold(`${bad.model} gave no usable answer`);
   const ds = votes.map((v) => v.decision!);
   if (ds.every((d) => d.action === "hold")) return { decision: { action: "hold", reason: "all models chose to hold" }, agreed: true, why: "all models chose to hold" };
+  if (ds.every((d) => d.action === "stake")) {
+    const a = ds.map((d) => units(d.amount));
+    if (a.some((x) => !x || BigInt(x) === 0n)) return hold("a model gave no positive amount");
+    const min = a.map(BigInt).reduce((x, y) => (y < x ? y : x));
+    return { decision: { action: "stake", amount: min.toString(), reason: `agreed by ${votes.length} models; smallest amount taken` }, agreed: true, why: `${votes.length} models agree to stake` };
+  }
   const holder = votes.find((v) => v.decision!.action !== "trade");
-  if (holder) return hold(`${holder.model} chose to hold`);
+  if (holder) return hold(`${holder.model} chose to ${holder.decision!.action}`);
   const norm = (s: string | undefined) => (s ?? "").trim().toLowerCase();
   const recipient = (d: Decision) => norm(d.recipient) || fund.toLowerCase();
   for (const [field, get] of [["sell token", (d: Decision) => norm(d.sell)], ["buy token", (d: Decision) => norm(d.buy)], ["recipient", recipient]] as const) {

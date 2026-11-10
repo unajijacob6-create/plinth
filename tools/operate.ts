@@ -64,6 +64,27 @@ const save = () => {
   fs.mkdirSync("data", { recursive: true });
   fs.appendFileSync(`data/operate-${process.env.NEAR_NETWORK ?? "testnet"}.jsonl`, JSON.stringify(record) + "\n");
 };
+if (d.decision?.action === "stake" && d.decision.amount) {
+  // A stake needs no quote: the contract unwraps, reads the liquid-staking price and stakes at par.
+  const op = opt("--operator", state.config.operator)!;
+  const amount = String(d.decision.amount).replace(/\D/g, "");
+  if (argv.includes("--dry")) {
+    log("dry run", `would call stake_idle(${amount})`);
+    save();
+    process.exit(0);
+  }
+  const r: any = await signer(op).callFunctionRaw({ contractId: fund, methodName: "stake_idle", args: { amount }, gas: TGAS(300), waitUntil: "FINAL" } as any);
+  record.tx = txHash(r);
+  record.accepted = JSON.parse(Buffer.from(r.status.SuccessValue ?? "", "base64").toString() || "false");
+  log(record.accepted ? "stake sent" : "stake refused by the contract", explorer(record.tx));
+  if (record.accepted) {
+    const st: any = await signer(op).callFunctionRaw({ contractId: fund, methodName: "settle", args: {}, gas: TGAS(100), waitUntil: "FINAL" } as any);
+    record.settle_tx = txHash(st);
+    log("settle", explorer(record.settle_tx));
+  }
+  save();
+  process.exit(0);
+}
 if (d.decision?.action !== "trade" || !d.decision.sell || !d.decision.buy || !d.decision.amount) {
   log("hold", d.decision?.reason ?? "(no usable decision)");
   save();

@@ -51,6 +51,14 @@ test("all holding is an agreed hold", () => {
   assert.equal(r.decision.action, "hold");
 });
 
+test("staking: both stake -> the smaller amount; stake vs trade -> hold", () => {
+  const S = (amount: string) => ({ action: "stake" as const, amount });
+  const r = agree([v("a", S("2000")), v("b", S("1500"))], F);
+  assert.equal(r.decision.action, "stake");
+  assert.equal(r.decision.amount, "1500");
+  assert.equal(agree([v("a", S("2000")), v("b", T("5"))], F).decision.action, "hold");
+});
+
 test("Gemini-style fenced JSON parses", () => {
   assert.deepEqual(parseDecision('```json\n{"action":"hold","reason":"x"}\n```'), { action: "hold", reason: "x" });
 });
