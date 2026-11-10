@@ -4,8 +4,9 @@ import { onAccount, restore, signIn, signOut, send, isCancel, currentAccount } f
 
 const NET = "testnet" as const;
 const STORAGE = "1250000000000000000000";
-const DECIMALS: Record<string, number> = { "wrap.testnet": 24 };
-const SYMBOL = (t: string) => (t === "wrap.testnet" ? "wNEAR" : t.startsWith("pusd.") ? "pUSD" : t.split(".")[0]);
+const DECIMALS: Record<string, number> = { "wrap.testnet": 24, "wrap.near": 24, "meta-v2.pool.testnet": 24, "meta-pool.near": 24 };
+const SYMBOLS: Record<string, string> = { "wrap.testnet": "wNEAR", "wrap.near": "wNEAR", "meta-v2.pool.testnet": "stNEAR", "meta-pool.near": "stNEAR" };
+const SYMBOL = (t: string) => SYMBOLS[t] ?? (t.startsWith("pusd.") ? "pUSD" : t.split(".")[0]);
 const dec = (t: string) => DECIMALS[t] ?? 6;
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 export function fmt(t: string, v: string | bigint, digits = 4): string {
@@ -60,9 +61,9 @@ function render(f: FundCard, s: any, keyCount: number, trades: any[], rejections
       <div class="kv"><span>Holdings</span><b>${s.held.map(([t, v]: [string, string]) => esc(fmt(t, v))).join("<br/>")}</b></div>
       <div class="kv"><span>Shares</span><b>${esc(total.toLocaleString("en"))}</b></div>
       <div class="kv"><span>Trades · refusals</span><b>${esc(s.trades)} · ${esc(s.rejections)}</b></div>
-      <div class="kv"><span>Rules</span><b class="small">≤ ${m.max_trade_bps / 100}% per trade · ≤ ${m.max_cost_bps / 100}% cost · ≤ ${m.max_trades_per_day}/day</b></div>
+      <div class="kv"><span>Rules</span><b class="small">≤ ${m.max_trade_bps / 100}% per trade · ≤ ${m.max_cost_bps / 100}% cost · ≤ ${m.max_trades_per_day}/day${m.management_fee_bps ? ` · fee ${m.management_fee_bps / 100}%/yr in shares` : ""}${m.staking ? ` · stakes into ${SYMBOL(m.tokens[m.staking.lst_index])}` : ""}</b></div>
     </div>
-    ${lastTrades.length ? `<div class="mini"><p class="eyebrow">Recent trades</p>${lastTrades.map((t) => `<div class="row"><span class="tag ${t.status === "Settled" ? "yes" : t.status === "Failed" || t.status === "Abandoned" ? "no" : ""}">${esc(t.status)}</span><span>${esc(fmt(tokens[t.sell], t.amount_in.toString()))} → ${t.status === "Settled" ? esc(fmt(tokens[t.buy], t.received_out)) : `≥ ${esc(fmt(tokens[t.buy], t.min_out))}`}</span><span class="muted small">${ago(t.sent_at)}</span></div>`).join("")}</div>` : ""}
+    ${lastTrades.length ? `<div class="mini"><p class="eyebrow">Recent trades</p>${lastTrades.map((t) => `<div class="row">${t.stake ? `<span class="tag">stake</span>` : ""}<span class="tag ${t.status === "Settled" ? "yes" : t.status === "Failed" || t.status === "Abandoned" ? "no" : ""}">${esc(t.status)}</span><span>${esc(fmt(tokens[t.sell], t.amount_in.toString()))} → ${t.status === "Settled" ? esc(fmt(tokens[t.buy], t.received_out)) : `≥ ${esc(fmt(tokens[t.buy], t.min_out))}`}</span><span class="muted small">${ago(t.sent_at)}</span></div>`).join("")}</div>` : ""}
     ${lastRefusals.length ? `<div class="mini"><p class="eyebrow">Refused on chain</p>${lastRefusals.map((r) => `<div class="row"><span class="tag no">refused</span><span class="small">${esc(r.reason)}</span><span class="muted small">${ago(r.at)}</span></div>`).join("")}</div>` : ""}
     <div class="you">
       ${
