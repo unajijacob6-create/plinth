@@ -41,8 +41,8 @@ export function parseDecision(text: string): Decision | null {
   }
 }
 
-export async function decide(fund: string, state: any, prices: string, note: string): Promise<{ decision: Decision | null; raw: string; receipt: Receipt; prompt: string }> {
+export async function decide(fund: string, state: any, prices: string, note: string, model?: string): Promise<{ decision: Decision | null; raw: string; receipt: Receipt; prompt: string }> {
   const prompt = `${describeFund(fund, state, prices)}\n\nMarket note (from an external feed):\n${note}`;
-  const { content, receipt } = await chat(AGENT_SYSTEM, prompt);
+  const { content, receipt } = await chat(AGENT_SYSTEM, prompt, model);
   return { decision: parseDecision(content), raw: content, receipt, prompt };
 }

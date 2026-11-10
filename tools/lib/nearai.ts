@@ -24,7 +24,7 @@ export interface Receipt {
 const sha256hex = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
 export async function chat(system: string, user: string, model = AGENT_MODEL): Promise<{ content: string; receipt: Receipt }> {
-  const request = JSON.stringify({ model, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0, max_tokens: 400 });
+  const request = JSON.stringify({ model, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0, max_tokens: 2000 });
   const res = await fetch(`${NEARAI_API}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: request });
   const response = await res.text();
   if (!res.ok) throw new Error(`NEAR AI HTTP ${res.status}: ${response.slice(0, 200)}`);
