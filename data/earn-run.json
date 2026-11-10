@@ -1,0 +1,225 @@
+{
+ "network": "testnet",
+ "started_at": "2026-11-10T07:20:10.188Z",
+ "tx": {
+  "faucet_to_plinthfund": "22W5JgFnvGE18BuV66iUsUH6cqUNThvERFdEXKYTNfDk",
+  "faucet_to_solver": "E4wcgSQYFqZK6h1xFWTEi22bYpbeVS7siu2GQn9hDqAP",
+  "register_alice_meta-v2": "XC1tnhfAxEkzuhy5Y8caAQTA2bpD1xXKNfYe1ksELkL",
+  "create_fund_keyless": "J8qk8Mq1LwuR343Wcg2DY3rKNDvjRV4jRBnmanAWt8Nj",
+  "alice_subscribe": "CAfY3HbSGVLkgmESria1z1MY664EbWUw2zwYnCrFpizJ",
+  "propose_buy_wnear": "F1V1b8CbcSCZCcbUWHLEwZyeLzwDMMDdVnDd8bdwnJjY",
+  "solver_wrap": "Bvsoj9EDjQ2zETiu8XzF2BVff2YnYqKkS68KQ8upY8n9",
+  "solver_delivers": "DaymX7gP6pB8vnjBT4NnosgMssE73UNpdUffYJyxK9Zw",
+  "settle_buy": "6Y7wmqKaW2ArFbNc5n12ZvnbtMddLyiChi2peG7zPVDs",
+  "stake_idle": "BiYaenKfQ56b6jZFAVZbe6bmp98bmw6itqVBQ3vVShFP",
+  "settle_stake": "F24aZP3ig8yKuqCT1doGF9q7g2FnPaqpYUjYtAH6NEMD",
+  "accrue_fee": "4Ec253xUefojfw6XNNn17N9CaLgJ7fKYTiFXobQkJHS2",
+  "alice_redeem_half": "BXkYsiWzcNE6oVZZD62LWwhsyoSdYUBC92tw81xGpezb"
+ },
+ "accounts": {
+  "parent": "plinthfund.testnet",
+  "token": "pusd.plinthfund.testnet",
+  "wrap": "wrap.testnet",
+  "lst": "meta-v2.pool.testnet",
+  "alice": "alice.plinthfund.testnet",
+  "operator": "operator.plinthfund.testnet",
+  "solver": "solver.plinthfund.testnet"
+ },
+ "fund": "earn-mwad1ypv.plinthfund.testnet",
+ "config": {
+  "mandate": {
+   "tokens": [
+    "pusd.plinthfund.testnet",
+    "wrap.testnet",
+    "meta-v2.pool.testnet"
+   ],
+   "max_trade_bps": 2500,
+   "max_cost_bps": 150,
+   "min_seconds_between_trades": 660,
+   "max_trades_per_day": 6,
+   "max_quote_age_seconds": 300,
+   "min_deadline_margin_seconds": 600,
+   "subscription_closes_at": 1794295306,
+   "min_subscription": "1000000",
+   "max_total_subscriptions": "1000000000",
+   "management_fee_bps": 100,
+   "staking": {
+    "wrap_index": 1,
+    "lst_index": 2,
+    "price_method": "get_st_near_price",
+    "min_stake": "1000000000000000000000000",
+    "max_price_slippage_bps": 50
+   }
+  },
+  "operator": "operator.plinthfund.testnet",
+  "quote_signer": "ed25519:A2tpC3tn7ENSXEiu8L6LvW4ghbpkL7Tm5SWVhMrA9GQM",
+  "storage_deposit": "1250000000000000000000"
+ },
+ "access_keys": 0,
+ "buy_accepted": true,
+ "buy_settle": "Settled",
+ "st_near_price": "3198752259237337050198977",
+ "stake_accepted": true,
+ "stake_pending": {
+  "id": 1,
+  "stake": true,
+  "sell": 1,
+  "buy": 2,
+  "amount_in": "1100000000000000000000000",
+  "quoted_out": "343884086935281337521178",
+  "min_out": "342164666500604930833572",
+  "refund_fee": "0",
+  "cost_bps": 0,
+  "deposit_address": "meta-v2.pool.testnet",
+  "deposit_deadline": 1794382380,
+  "sent_at": 1794295980,
+  "status": "Sent",
+  "received_out": "0",
+  "received_refund": "0",
+  "closed_at": null
+ },
+ "stnear_minted": "343884086935281337521178",
+ "stake_settle": "Settled",
+ "after_stake": {
+  "config": {
+   "mandate": {
+    "tokens": [
+     "pusd.plinthfund.testnet",
+     "wrap.testnet",
+     "meta-v2.pool.testnet"
+    ],
+    "max_trade_bps": 2500,
+    "max_cost_bps": 150,
+    "min_seconds_between_trades": 660,
+    "max_trades_per_day": 6,
+    "max_quote_age_seconds": 300,
+    "min_deadline_margin_seconds": 600,
+    "subscription_closes_at": 1794295306,
+    "min_subscription": "1000000",
+    "max_total_subscriptions": "1000000000",
+    "management_fee_bps": 100,
+    "staking": {
+     "wrap_index": 1,
+     "lst_index": 2,
+     "price_method": "get_st_near_price",
+     "min_stake": "1000000000000000000000000",
+     "max_price_slippage_bps": 50
+    }
+   },
+   "operator": "operator.plinthfund.testnet",
+   "quote_signer": "ed25519:A2tpC3tn7ENSXEiu8L6LvW4ghbpkL7Tm5SWVhMrA9GQM",
+   "storage_deposit": "1250000000000000000000"
+  },
+  "held": [
+   [
+    "pusd.plinthfund.testnet",
+    "45000000"
+   ],
+   [
+    "wrap.testnet",
+    "3400000000000000000000000"
+   ],
+   [
+    "meta-v2.pool.testnet",
+    "343884086935281337521178"
+   ]
+  ],
+  "total_shares": "60000012",
+  "total_subscribed": "60000000",
+  "subscription_open": false,
+  "trading_open": true,
+  "pending": null,
+  "trades": 2,
+  "rejections": 0,
+  "last_trade_at": 1794295980,
+  "near_available_for_registrations": "394559999999999999999999",
+  "in_flight_payouts": [
+   "0",
+   "0",
+   "0"
+  ],
+  "registered": [
+   true,
+   true,
+   true
+  ],
+  "trades_today": 2,
+  "fee_accrued_at": 1794295937,
+  "stranded_near": "0",
+  "operator_shares": "12"
+ },
+ "alice_received": {
+  "pusd": "22499995",
+  "wnear": "1699999631666746472204931",
+  "stnear": "171942006213539322493735"
+ },
+ "after": {
+  "config": {
+   "mandate": {
+    "tokens": [
+     "pusd.plinthfund.testnet",
+     "wrap.testnet",
+     "meta-v2.pool.testnet"
+    ],
+    "max_trade_bps": 2500,
+    "max_cost_bps": 150,
+    "min_seconds_between_trades": 660,
+    "max_trades_per_day": 6,
+    "max_quote_age_seconds": 300,
+    "min_deadline_margin_seconds": 600,
+    "subscription_closes_at": 1794295306,
+    "min_subscription": "1000000",
+    "max_total_subscriptions": "1000000000",
+    "management_fee_bps": 100,
+    "staking": {
+     "wrap_index": 1,
+     "lst_index": 2,
+     "price_method": "get_st_near_price",
+     "min_stake": "1000000000000000000000000",
+     "max_price_slippage_bps": 50
+    }
+   },
+   "operator": "operator.plinthfund.testnet",
+   "quote_signer": "ed25519:A2tpC3tn7ENSXEiu8L6LvW4ghbpkL7Tm5SWVhMrA9GQM",
+   "storage_deposit": "1250000000000000000000"
+  },
+  "held": [
+   [
+    "pusd.plinthfund.testnet",
+    "22500005"
+   ],
+   [
+    "wrap.testnet",
+    "1700000368333253527795069"
+   ],
+   [
+    "meta-v2.pool.testnet",
+    "171942080721742015027443"
+   ]
+  ],
+  "total_shares": "30000013",
+  "total_subscribed": "60000000",
+  "subscription_open": false,
+  "trading_open": true,
+  "pending": null,
+  "trades": 2,
+  "rejections": 0,
+  "last_trade_at": 1794295980,
+  "near_available_for_registrations": "394559999999999999999996",
+  "in_flight_payouts": [
+   "0",
+   "0",
+   "0"
+  ],
+  "registered": [
+   true,
+   true,
+   true
+  ],
+  "trades_today": 2,
+  "fee_accrued_at": 1794295989,
+  "stranded_near": "0",
+  "operator_shares": "13"
+ },
+ "finished_at": "2026-11-10T07:33:23.319Z"
+}

@@ -3,6 +3,7 @@ import run from "../../data/testnet-run.json";
 import { verifyFund, explorer, accountLink, type Net } from "./chain.ts";
 import { mountApp } from "./app.ts";
 import openFund from "../../data/open-fund.json";
+import earnRun from "../../data/earn-run.json";
 import agentRun from "../../data/agent-run.json";
 import { mountAgent, mountQuorum } from "./agent.ts";
 import quorumRun from "../../data/quorum-run.json";
@@ -130,6 +131,7 @@ $("#refusal-cards").innerHTML = R.rejections
 void mountApp([
   { id: (openFund as any).fund, title: "Open fund", blurb: "Anyone can join with test pUSD until 21 November and exit at any time." },
   { id: R.fund, title: "Demo fund", blurb: "The fund from the recorded run; the AI operator trades it." },
+  { id: (earnRun as any).fund, title: "Earning fund", blurb: "Stakes idle wNEAR into Meta Pool stNEAR at par; the operator is paid 1%/yr in new shares, no price feed." },
 ]);
 
 mountAgent(agentRun);

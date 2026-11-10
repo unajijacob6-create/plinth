@@ -223,3 +223,4 @@ h2::after { content: ""; display: block; width: 44px; height: 3px; margin-top: 1
 .sub-h { margin: 2.5rem 0 0.5rem; font-size: 1.15rem; }
 .vote { border-left: 2px solid rgba(140, 160, 180, 0.25); padding: 0.1rem 0 0.1rem 0.7rem; margin: 0.5rem 0; overflow-wrap: anywhere; }
 .danger { color: #ff7a6b; }
+.mini .row .tags { display: inline-flex; gap: 6px; }

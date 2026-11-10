@@ -122,6 +122,36 @@ quorum stopped it. Had it slipped through, the contract would still have refused
 the fund; 100% of a holding against a 25% cap), as the hijacked-operator case above shows. Two runs
 are an observation, not a benchmark. All six receipts verify offline (`npm test`) and in the browser.
 
+## Earning (NEAR testnet, recorded in [data/earn-run.json](data/earn-run.json))
+
+A fund can be launched with a **staking route**. Then the operator has one more move,
+`stake_idle(amount)`: the contract unwraps that wNEAR, reads the liquid-staking price on chain and
+calls `deposit_and_stake` itself, so the fund gets stNEAR at par. The fund then settles against a
+minimum computed from that price. No swap, no quote, no price feed. If staking fails, the NEAR is
+wrapped back. It counts as a trade for the size cap, cooldown and daily limit.
+
+A fund can also pay its operator a **management fee** (at most 2%/yr, fixed at launch). The fee is
+paid in newly minted shares, accrued per second after the window closes, and rounded in depositors'
+favour. It needs no oracle and is never paid out in tokens.
+
+`npm run demo:earn` ran on 2026-11-10 against the real `wrap.testnet` and Meta Pool
+`meta-v2.pool.testnet`. The fund was `earn-mwad1ypv.plinthfund.testnet`, with 0 keys and a
+1%/yr fee:
+
+| step | result | tx |
+|---|---|---|
+| keyless fund created; Alice subscribes 60 pUSD | 0 access keys | [J8qk8Mq1…](https://testnet.nearblocks.io/txns/J8qk8Mq1LwuR343Wcg2DY3rKNDvjRV4jRBnmanAWt8Nj) |
+| operator buys 4.5 wNEAR for 15 pUSD (test quote), anyone settles | Settled | [6Y7wmqKa…](https://testnet.nearblocks.io/txns/6Y7wmqKaW2ArFbNc5n12ZvnbtMddLyiChi2peG7zPVDs) |
+| after the 11-minute cooldown, operator stakes 1.1 wNEAR | contract unwrapped, read 3.198752 NEAR/stNEAR, staked | [BiYaenKf…](https://testnet.nearblocks.io/txns/BiYaenKfQ56b6jZFAVZbe6bmp98bmw6itqVBQ3vVShFP) |
+| anyone settles the stake | 0.343884 stNEAR minted = 1.1 / 3.198752, at par; Settled | [F24aZP3i…](https://testnet.nearblocks.io/txns/F24aZP3ig8yKuqCT1doGF9q7g2FnPaqpYUjYtAH6NEMD) |
+| fee accrues to the operator | 13 shares (of 60,000,013) | [4Ec253xU…](https://testnet.nearblocks.io/txns/4Ec253xUefojfw6XNNn17N9CaLgJ7fKYTiFXobQkJHS2) |
+| Alice exits half in kind | 22.499995 pUSD + 1.699999 wNEAR + 0.171942 stNEAR | [BXkYsiWz…](https://testnet.nearblocks.io/txns/BXkYsiWzcNE6oVZZD62LWwhsyoSdYUBC92tw81xGpezb) |
+
+On mainnet the same route goes `wrap.near` → `meta-pool.near`, the liquid-staking token 1Click
+also lists. Its realized yield over 2026-08-05 → 2026-11-10 was 3.99%/yr. That figure comes from the
+on-chain stNEAR price on those dates; past yield, not a promise. Testnet staking rewards are not
+meaningful, so the run shows the mechanics, not a return.
+
 ## How a trade is checked
 
 The contract (`contracts/plinth/src/lib.rs`, `quote.rs`) accepts a proposal only if:

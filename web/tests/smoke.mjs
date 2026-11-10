@@ -22,7 +22,9 @@ for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   await page.goto(url, { waitUntil: "networkidle" });
   check((await page.title()).includes("Plinth"), `${name}: title`);
   await page.waitForSelector(".fund .fund-h", { timeout: 30000 });
-  check((await page.$$(".fund .fund-h")).length === 2, `${name}: two live fund cards`);
+  await page.waitForFunction(() => document.querySelectorAll(".fund .fund-h").length === 3, null, { timeout: 30000 }).catch(() => {});
+  check((await page.$$(".fund .fund-h")).length === 3, `${name}: three live fund cards`);
+  check((await page.textContent("#funds")).includes("stNEAR"), `${name}: the earning fund shows its stNEAR`);
   check((await page.textContent(".fund")).includes("0 keys"), `${name}: open fund shows 0 keys`);
   await page.click("#verify-form button[type=submit]");
   await page.waitForSelector(".verdict", { timeout: 30000 });
