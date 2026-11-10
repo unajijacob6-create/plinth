@@ -18,7 +18,8 @@
     "web:dev": "vite web",
     "web:build": "vite build web",
     "web:preview": "vite preview web --port 4173 --strictPort",
-    "demo:agent": "NODE_USE_ENV_PROXY=1 tsx tools/demo-agent.ts"
+    "demo:agent": "NODE_USE_ENV_PROXY=1 tsx tools/demo-agent.ts",
+    "smoke:open": "tsx tools/smoke-open.ts"
   },
   "engines": {
     "node": ">=22"
