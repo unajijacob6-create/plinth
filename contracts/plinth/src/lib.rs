@@ -38,9 +38,14 @@ pub const REDEEM_WAIT_SECONDS: u64 = 10 * 60;
 pub const ABANDON_AFTER_SECONDS: u64 = 7 * 24 * 3600;
 /// NEAR the fund keeps for its own storage before paying deposit-address registrations.
 const NEAR_RESERVE: u128 = 50_000_000_000_000_000_000_000; // 0.05 NEAR
+/// Storage a stake record needs (a Trade entry; measured ~0.002 NEAR), on top of the reserve.
+const STAKE_STORAGE: u128 = 5_000_000_000_000_000_000_000; // 0.005 NEAR
+/// Storage of one depositor's share entry (~0.001 NEAR), with room.
+const SUBSCRIBER_STORAGE: u128 = 2_000_000_000_000_000_000_000; // 0.002 NEAR
 const MAX_REJECTIONS_KEPT: u32 = 200;
 const GAS_UNWRAP: Gas = Gas::from_tgas(15);
-const GAS_PRICE_VIEW: Gas = Gas::from_tgas(5);
+// Meta Pool get_st_near_price burns ~4 TGas on mainnet (586 pools) and grows with pools: keep room.
+const GAS_PRICE_VIEW: Gas = Gas::from_tgas(20);
 const GAS_DEPOSIT_AND_STAKE: Gas = Gas::from_tgas(50);
 const GAS_WRAP: Gas = Gas::from_tgas(10);
 const GAS_ON_UNWRAPPED: Gas = Gas::from_tgas(110);
@@ -49,6 +54,9 @@ const GAS_ON_STAKED: Gas = Gas::from_tgas(40);
 pub const MAX_MANAGEMENT_FEE_BPS: u16 = 200;
 /// Seconds per year used for fee accrual (365.25 days).
 pub const YEAR_SECONDS: u128 = 31_557_600;
+const YEAR_NANOS: u128 = YEAR_SECONDS * 1_000_000_000;
+/// A stake still `Sending` this long after it was sent can be recovered by anyone.
+const STUCK_STAKE_SECONDS: u64 = 86_400;
 /// 1 NEAR in yocto: liquid-staking prices are quoted as yocto-NEAR per 1e24 units of the token.
 const ONE_NEAR: u128 = 1_000_000_000_000_000_000_000_000;
 pub const MAX_TOKENS: usize = 4;
@@ -267,10 +275,13 @@ pub struct Plinth {
     /// UTC day of the last trade and the number of trades sent that day.
     trade_day: u64,
     trades_today: u32,
-    /// Management fee accrued up to this time.
+    /// Management fee accrued up to this time (nanoseconds, so frequent accruals lose nothing).
     fee_accrued_at: u64,
     /// Unwrapped NEAR that could not be re-wrapped after a failed stake (`rewrap_stranded`).
     stranded_near: u128,
+    /// NEAR of a stake between `near_withdraw` and `deposit_and_stake` (or its re-wrap). It sits in
+    /// the account balance but is the fund's, so it is never spent on storage.
+    near_in_flight: u128,
     used_deposit_addresses: LookupSet<AccountId>,
     trades: Vector<Trade>,
     pending: Option<u64>,
@@ -322,7 +333,8 @@ impl Plinth {
             let n = m.tokens.len() as u8;
             require!(r.wrap_index < n && r.lst_index < n && r.wrap_index != r.lst_index, "bad staking token indices");
             require!(!r.price_method.is_empty() && r.price_method.len() <= 64, "bad price_method");
-            require!(r.max_price_slippage_bps <= 500, "max_price_slippage_bps must be at most 500");
+            // Meta Pool rounds the minted amount down; 0 bps would make every stake unsettleable.
+            require!(r.max_price_slippage_bps >= 1 && r.max_price_slippage_bps <= 500, "max_price_slippage_bps must be 1..=500");
         }
         let signer_key = quote::decode_public_key(&config.quote_signer).unwrap_or_else(|| env::panic_str("quote_signer is not an ed25519 key"));
         let n = m.tokens.len();
@@ -334,13 +346,19 @@ impl Plinth {
             then_self(p, "on_registered", json!({"token_index": i as u8}), GAS_CALLBACK);
         }
         event("fund_created", json!({"config": &config}));
+        // The operator's fee shares get their storage now, paid at launch, so a later first accrual
+        // (run inside every redeem) never needs NEAR the fund may not have.
+        let mut shares = LookupMap::new(StorageKey::Shares);
+        if m.management_fee_bps > 0 {
+            shares.insert(config.operator.clone(), 0u128);
+        }
         Self {
             config,
             signer_key,
             held: vec![0; n],
             total_shares: 0,
             total_subscribed: 0,
-            shares: LookupMap::new(StorageKey::Shares),
+            shares,
             owed: LookupMap::new(StorageKey::Owed),
             owed_total: vec![0; n],
             in_flight: vec![0; n],
@@ -350,6 +368,7 @@ impl Plinth {
             trades_today: 0,
             fee_accrued_at: 0,
             stranded_near: 0,
+            near_in_flight: 0,
             used_deposit_addresses: LookupSet::new(StorageKey::UsedDepositAddresses),
             trades: Vector::new(StorageKey::Trades),
             pending: None,
@@ -377,6 +396,12 @@ impl Plinth {
         }
         if amount.0 < m.min_subscription.0 || self.total_subscribed + amount.0 > m.max_total_subscriptions.0 {
             env::log_str("subscription outside the fund's limits; returned");
+            return amount;
+        }
+        // A new depositor's share entry is paid from the fund's NEAR; never let it eat the reserve
+        // that failed-payout records (`owed`) and stakes rely on.
+        if self.shares.get(&sender_id).is_none() && self.free_near() < NEAR_RESERVE + SUBSCRIBER_STORAGE {
+            env::log_str("the fund has no NEAR left to store a new depositor; returned");
             return amount;
         }
         // Before trading starts the fund holds only base units it accounts for, 1 share each.
@@ -467,6 +492,8 @@ impl Plinth {
                 Some(format!("stake of {} is over {} bps of the {} held", amount.0, self.config.mandate.max_trade_bps, held))
             } else if !self.registered[w] || !self.registered[l] {
                 Some("the fund is not registered on one of these tokens".into())
+            } else if self.free_near() < NEAR_RESERVE + STAKE_STORAGE {
+                Some("the fund has no NEAR left for the stake's storage".into())
             } else {
                 None
             }
@@ -496,6 +523,7 @@ impl Plinth {
             closed_at: None,
         };
         self.start_trade(&t);
+        self.near_in_flight = amount.0;
         event("stake_sent", json!({"trade": &t}));
         let unwrap = call(&tokens[w], "near_withdraw", json!({"amount": amount}), 1, GAS_UNWRAP);
         let price = call(&tokens[l], &r.price_method, json!({}), 0, GAS_PRICE_VIEW);
@@ -511,6 +539,7 @@ impl Plinth {
         let tokens = self.config.mandate.tokens.clone();
         if env::promise_result_checked(0, 16_384).is_err() {
             // Nothing was unwrapped: restore it.
+            self.near_in_flight = 0;
             self.held[t.sell as usize] += t.amount_in.0;
             t.status = TradeStatus::Failed;
             t.closed_at = Some(now_seconds());
@@ -543,6 +572,7 @@ impl Plinth {
             let mut t = self.trades[trade_id as u32].clone();
             t.status = TradeStatus::Sent; // anyone can now `settle` it against the minted balance
             self.trades.replace(trade_id as u32, t);
+            self.near_in_flight = 0;
         } else {
             self.rewrap(trade_id);
         }
@@ -554,6 +584,7 @@ impl Plinth {
         let wrap = self.config.mandate.tokens[t.sell as usize].clone();
         let p = call(&wrap, "near_deposit", json!({}), t.amount_in.0, GAS_WRAP);
         then_self(p, "on_rewrapped", json!({"trade_id": trade_id, "amount": t.amount_in}), GAS_CALLBACK);
+        self.near_in_flight = 0;
     }
 
     /// trade_id u64::MAX = a `rewrap_stranded` retry.
@@ -572,8 +603,8 @@ impl Plinth {
             self.held[w] += amount.0;
             event("stake_failed", json!({"trade_id": trade_id, "rewrapped": amount}));
         } else {
-            // The NEAR is in the fund's account but not wrapped (e.g. the refund had not arrived
-            // yet); anyone can retry with `rewrap_stranded`.
+            // The NEAR came back to the fund's account but could not be wrapped; it stays reserved
+            // (excluded from free NEAR) and anyone can retry with `rewrap_stranded`.
             self.stranded_near += amount.0;
             event("near_stranded", json!({"amount": amount}));
         }
@@ -583,11 +614,33 @@ impl Plinth {
     pub fn rewrap_stranded(&mut self) {
         require!(self.stranded_near > 0, "nothing stranded");
         let amount = self.stranded_near;
-        require!(self.free_near() >= amount + NEAR_RESERVE, "the stranded NEAR has not arrived yet");
+        // free_near() already excludes the stranded NEAR: what is left must still cover the reserve.
+        require!(self.free_near() >= NEAR_RESERVE, "the stranded NEAR is not in the account");
         self.stranded_near = 0;
         let w = self.config.mandate.staking.as_ref().map(|r| r.wrap_index as usize).unwrap_or(0);
         let p = call(&self.config.mandate.tokens[w], "near_deposit", json!({}), amount, GAS_WRAP);
         then_self(p, "on_rewrapped", json!({"trade_id": u64::MAX, "amount": U128(amount)}), GAS_CALLBACK);
+    }
+
+    /// Anyone, a day after a stake was sent and still `Sending` (a callback ran out of gas or
+    /// balance): close it as failed. If its NEAR is in the account it becomes `stranded_near`, which
+    /// `rewrap_stranded` wraps back; if it reached the staking contract, `absorb` counts what was
+    /// minted. Trading can then continue.
+    pub fn recover_stuck_stake(&mut self) {
+        let id = self.pending.unwrap_or_else(|| env::panic_str("no trade in flight"));
+        let mut t = self.trades[id as u32].clone();
+        require!(t.stake && t.status == TradeStatus::Sending, "no stake is stuck");
+        require!(now_seconds() > t.sent_at + STUCK_STAKE_SECONDS, "too early to recover this stake");
+        let present = self.raw_free_near().saturating_sub(self.stranded_near) >= t.amount_in.0;
+        self.near_in_flight = 0;
+        if present {
+            self.stranded_near += t.amount_in.0;
+        }
+        t.status = TradeStatus::Failed;
+        t.closed_at = Some(now_seconds());
+        self.pending = None;
+        event("stake_recovered", json!({"trade_id": id, "stranded": present}));
+        self.trades.replace(id as u32, t);
     }
 
     // ------------------------------------------------------------------ fee
@@ -599,8 +652,8 @@ impl Plinth {
 
     fn accrue_fee(&mut self) {
         let m = &self.config.mandate;
-        let now = now_seconds();
-        let from = self.fee_accrued_at.max(m.subscription_closes_at);
+        let now = env::block_timestamp();
+        let from = self.fee_accrued_at.max(m.subscription_closes_at.saturating_mul(1_000_000_000));
         if now <= from {
             return;
         }
@@ -609,9 +662,9 @@ impl Plinth {
             return;
         }
         // The operator ends up with bps * dt / year of the fund: mint s with s / (total + s) = f.
-        let dt = ((now - from) as u128).min(YEAR_SECONDS);
+        let dt = ((now - from) as u128).min(YEAR_NANOS);
         let bps = m.management_fee_bps as u128;
-        let minted = mul_div(self.total_shares, bps * dt, 10_000 * YEAR_SECONDS - bps * dt).unwrap_or(0);
+        let minted = mul_div(self.total_shares, bps * dt, 10_000 * YEAR_NANOS - bps * dt).unwrap_or(0);
         if minted == 0 {
             // Too little time for a whole share: keep the clock where it was, so frequent calls
             // cannot round the fee away.
@@ -619,14 +672,14 @@ impl Plinth {
         }
         // Advance the clock only by the time these whole shares pay for (s / (total + s) =
         // bps * t / year), so the fraction left over carries into the next accrual.
-        // Rounded up by one second, so rounding always favours depositors.
-        let used = mul_div(minted, 10_000 * YEAR_SECONDS, bps * (self.total_shares + minted)).map_or(dt, |t| t + 1).min(dt);
+        // Rounded up by one nanosecond, so rounding always favours depositors.
+        let used = mul_div(minted, 10_000 * YEAR_NANOS, bps * (self.total_shares + minted)).map_or(dt, |t| t + 1).min(dt);
         self.fee_accrued_at = from + used as u64;
         let op = self.config.operator.clone();
         let s = self.shares.get(&op).copied().unwrap_or(0);
         self.shares.insert(op.clone(), s + minted);
         self.total_shares += minted;
-        event("fee_accrued", json!({"operator": op, "shares": U128(minted), "seconds": dt as u64}));
+        event("fee_accrued", json!({"operator": op, "shares": U128(minted), "seconds": (used / 1_000_000_000) as u64}));
     }
 
     fn check_trade(&self, raw: &str) -> Result<Trade, (String, Option<String>)> {
@@ -922,8 +975,14 @@ impl Plinth {
         self.held[i] + self.owed_total[i] + self.in_flight[i]
     }
 
-    fn free_near(&self) -> u128 {
+    /// Account balance above its storage cost.
+    fn raw_free_near(&self) -> u128 {
         env::account_balance().as_yoctonear().saturating_sub(env::storage_usage() as u128 * env::storage_byte_cost().as_yoctonear())
+    }
+
+    /// NEAR the fund may spend on storage: excludes a stake's NEAR in transit and stranded NEAR.
+    fn free_near(&self) -> u128 {
+        self.raw_free_near().saturating_sub(self.near_in_flight + self.stranded_near)
     }
 
     // ------------------------------------------------------------------ views
@@ -946,7 +1005,7 @@ impl Plinth {
             in_flight_payouts: self.in_flight.iter().map(|x| U128(*x)).collect(),
             registered: self.registered.clone(),
             trades_today: if now / 86_400 == self.trade_day { self.trades_today } else { 0 },
-            fee_accrued_at: self.fee_accrued_at,
+            fee_accrued_at: self.fee_accrued_at / 1_000_000_000,
             stranded_near: U128(self.stranded_near),
             operator_shares: U128(self.shares.get(&self.config.operator).copied().unwrap_or(0)),
         }

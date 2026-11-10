@@ -730,7 +730,8 @@ fn stake_idle_obeys_size_minimum_cooldown_and_operator() {
     assert!(last_reason(&f).contains("below the minimum"));
     assert!(stake(&mut f, 5 * 10u128.pow(24), CLOSE + 20));
     assert!(!stake(&mut f, 10u128.pow(24), CLOSE + 25));
-    assert!(last_reason(&f).contains("already in flight"));
+    // Refused and logged; not stored, because the stake's NEAR in transit is reserved (audit 2, H).
+    assert!(get_logs().iter().any(|l| l.contains("already in flight")));
     set("alice.test.near", CLOSE + 30);
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.stake_idle(U128(10u128.pow(24))))).is_err());
 }
@@ -796,4 +797,116 @@ fn frequent_accruals_do_not_round_the_fee_away() {
     // Never more than one accrual would give, and within 2% of it (each mint rounds in the
     // depositors' favour; 1 share here is 0.000001 pUSD).
     assert!(frequent <= once + 1 && frequent * 100 >= once * 98, "frequent {frequent} vs once {once}");
+}
+
+// ---------------------------------------------------------------- audit 2 regressions
+
+fn with_balance(predecessor: &str, now: u64, near_milli: u128) {
+    let mut c = ctx(predecessor, now);
+    c.account_balance(NearToken::from_yoctonear(near_milli * 10u128.pow(21)));
+    testing_env!(c.build());
+}
+
+#[test]
+fn audit2_h_refusals_cannot_spend_a_stakes_near_in_transit() {
+    let mut f = staking_fund(0);
+    let five = 5 * 10u128.pow(24);
+    with_balance(OPERATOR, CLOSE + 20, 7_000); // 7 NEAR: ~2 NEAR really free
+    assert!(f.stake_idle(U128(five)));
+    let stored = f.get_fund().rejections;
+    // The unwrapped 5 NEAR has arrived (balance 12 NEAR) but on_unwrapped has not run yet: the
+    // operator spams refused proposals. They are stored only from the ~2 NEAR that is really free,
+    // never from the 5 NEAR in transit.
+    for _ in 0..5 {
+        with_balance(OPERATOR, CLOSE + 21, 12_000);
+        assert!(!f.stake_idle(U128(10u128.pow(24))));
+    }
+    assert_eq!(f.get_fund().rejections, stored + 5);
+    with_balance(OPERATOR, CLOSE + 21, 5_050); // what's left above the 5 NEAR in transit: ~0.05
+    assert!(!f.stake_idle(U128(10u128.pow(24))));
+    assert_eq!(f.get_fund().rejections, stored + 5, "not stored: only reserved NEAR is left");
+    let v = f.get_fund();
+    assert!(v.near_available_for_registrations.0 < 10u128.pow(23));
+}
+
+#[test]
+fn audit2_m_stake_needs_the_reserve() {
+    let mut f = staking_fund(0);
+    with_balance(OPERATOR, CLOSE + 20, 30); // 0.03 NEAR above nothing: below the 0.05 reserve
+    assert!(!f.stake_idle(U128(10u128.pow(24))));
+    assert!(get_logs().iter().any(|l| l.contains("no NEAR left for the stake")));
+    assert!(f.get_fund().pending.is_none());
+}
+
+#[test]
+fn audit2_m_operator_fee_entry_exists_from_launch() {
+    let f = staking_fund(100);
+    set("anyone.test.near", T0 + 40);
+    assert_eq!(f.get_shares(OPERATOR.parse().unwrap()).0, 0);
+    assert!(f.shares.get(&OPERATOR.parse::<AccountId>().unwrap()).is_some());
+}
+
+#[test]
+#[should_panic(expected = "max_price_slippage_bps must be 1..=500")]
+fn audit2_l_zero_slippage_is_refused_at_launch() {
+    set("deployer.test.near", T0);
+    let mut c = staking_config(0);
+    c.mandate.staking.as_mut().unwrap().max_price_slippage_bps = 0;
+    Plinth::new(c);
+}
+
+#[test]
+fn audit2_l_per_second_accruals_lose_almost_nothing() {
+    let mk = || {
+        set("deployer.test.near", T0);
+        let mut c = staking_config(200);
+        c.mandate.max_total_subscriptions = U128(10u128.pow(12));
+        let mut f = Plinth::new(c);
+        subscribe(&mut f, "alice.test.near", 3_000_000_000, T0 + 10);
+        f
+    };
+    let mut a = mk();
+    for t in 1..=3600u64 {
+        set("anyone.test.near", CLOSE + t);
+        a.accrue();
+    }
+    let mut b = mk();
+    set("anyone.test.near", CLOSE + 3600);
+    b.accrue();
+    let (x, y) = (a.get_fund().operator_shares.0, b.get_fund().operator_shares.0);
+    // Before the fix x was 48% of y. Now each call loses at most one share's rounding plus 1 ns.
+    assert!(x <= y && x * 1000 >= y * 999, "every second: {x}; once: {y}");
+}
+
+#[test]
+fn audit2_h_a_stuck_stake_can_be_recovered_after_a_day() {
+    let mut f = staking_fund(0);
+    let five = 5 * 10u128.pow(24);
+    with_balance(OPERATOR, CLOSE + 20, 7_000);
+    assert!(f.stake_idle(U128(five)));
+    // on_unwrapped never completes (e.g. it ran out of balance or gas): the stake is stuck Sending.
+    with_balance("anyone.test.near", CLOSE + 1000, 12_000);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.recover_stuck_stake())).is_err());
+    with_balance("anyone.test.near", CLOSE + 20 + 86_401, 12_000);
+    f.recover_stuck_stake();
+    let v = f.get_fund();
+    assert!(v.pending.is_none());
+    assert_eq!(v.stranded_near.0, five);
+    // ...and anyone wraps it back into fund holdings.
+    with_balance("anyone.test.near", CLOSE + 20 + 86_402, 12_000);
+    f.rewrap_stranded();
+    set_with_results(CLOSE + 20 + 86_403, vec![PromiseResult::Successful(vec![])]);
+    f.on_rewrapped(u64::MAX, U128(five));
+    assert_eq!(f.get_fund().held[1].1 .0, 20 * 10u128.pow(24));
+}
+
+#[test]
+fn audit2_m_new_depositors_cannot_eat_the_reserve() {
+    set("deployer.test.near", T0);
+    let mut f = Plinth::new(staking_config(0));
+    with_balance(USDC, T0 + 10, 40); // 0.04 NEAR: below the reserve
+    assert_eq!(f.ft_on_transfer("carol.test.near".parse().unwrap(), U128(5_000_000), String::new()).0, 5_000_000);
+    assert_eq!(f.get_fund().total_shares.0, 0);
+    with_balance(USDC, T0 + 11, 5_000);
+    assert_eq!(f.ft_on_transfer("carol.test.near".parse().unwrap(), U128(5_000_000), String::new()).0, 0);
 }

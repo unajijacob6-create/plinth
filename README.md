@@ -176,6 +176,26 @@ redeemer could claim a payout that was still in flight, paying it twice), three 
 medium and low ones. All are fixed or bounded and documented above; each has a regression test,
 including the reviewer's own sandbox exploit, which now pays the redeemer exactly once.
 
+A second review on 2026-11-10 covered the staking route and the management fee, using the real
+mainnet `wrap.near` and `meta-pool.near` wasm in the sandbox. It found:
+- one high: refused proposals sent while a stake's unwrapped NEAR sat in the account could spend
+  that NEAR on storage and leave the stake stuck in `Sending`;
+- one medium: stakes ignored the NEAR reserve, so low-NEAR funds could block redemptions;
+- three low: zero slippage could never settle, a thin 5 TGas margin on the price view, and
+  per-second `accrue` calls could round the fee down.
+
+Fixes:
+- NEAR in transit and stranded NEAR are now excluded from spendable NEAR.
+- Stakes and new depositors need the reserve.
+- The operator's fee entry is created at launch.
+- `recover_stuck_stake` is a permissionless backstop after a day.
+- Slippage must be at least 1 bps.
+- The price view gets 20 TGas.
+- The fee clock runs in nanoseconds.
+
+Against the real wasm, the reviewer's spam exploit now leaves the stake settling normally. Each
+finding has a regression test (`audit2_*`).
+
 ## Run the tests
 
 ```bash
