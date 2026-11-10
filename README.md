@@ -20,7 +20,19 @@ see this for any account with one RPC call, `view_access_key_list`. Plinth remov
 and keeps what still needs trust small and visible: 1Click delivers the swap, and the code is what
 it is.
 
-## Try it (no keys needed)
+## Try it
+
+**On the website:** https://unajijacob6-create.github.io/plinth/
+
+- **Verify** any fund from the chain in your browser (keys, code hash, imports, mandate).
+- **Join and exit:** connect a testnet wallet, take 100 test pUSD from the built-in faucet, join the
+  open fund [`open.plinthfund.testnet`](https://testnet.nearblocks.io/address/open.plinthfund.testnet)
+  (joins open until 2026-11-21), then exit with your share of every token. The exit button registers
+  you on each token first if needed. `npm run smoke:open` sends the same calls from the command line;
+  it ran on 2026-11-10: join 10 pUSD → 10,000,000 shares, exit 4,000,000 shares → 4 pUSD back.
+- **Live dashboards** of both testnet funds: holdings, trades, refusals, the trade in flight.
+
+**From the command line (no keys needed):**
 
 ```bash
 npm ci
@@ -34,8 +46,6 @@ npm run verify -- fund-mwa9jwo8.plinthfund.testnet --network testnet --wasm cont
 3. the deployed wasm **imports no host function** that deploys code, adds or deletes keys, stakes
    or deletes the account, so not even the contract itself can do it;
 4. the mandate, operator and quote signer the contract reports.
-
-The website runs the same checks in your browser against public RPC: `npm run web:dev`.
 
 ## What was demonstrated (NEAR testnet, recorded in [data/testnet-run.json](data/testnet-run.json))
 
@@ -119,7 +129,9 @@ including the reviewer's own sandbox exploit, which now pays the redeemer exactl
 ```bash
 bash contracts/test.sh   # builds, proves the wasm imports no code/key-changing host function, unit + sandbox tests
 npm test                 # 1Click client tests (real quote fixtures)
-npm run typecheck
+npm run typecheck        # tools and website
+npm run web:build && npm run web:preview &   # then:
+npm run test:web         # Playwright smoke test of the site at phone and desktop width
 ```
 
 The sandbox test runs the whole story on a local NEAR node with token contracts that enforce
@@ -131,15 +143,21 @@ storage registration.
 contracts/plinth     the fund contract (Rust, near-sdk 5.30)
 contracts/mock-ft    NEP-141 test token for the sandbox and testnet
 contracts/check-wasm.cjs + wasm-reach.cjs   immutability check on the compiled wasm
-tools/               verify, deploy (keyless), operator (quote/propose/settle/status), testnet demo
-web/                 website with the in-browser verifier
-data/                recorded testnet run
+tools/               verify, deploy (keyless), operator (quote/propose/settle/status), operate (one AI-operated
+                     round with a live 1Click quote), demo-testnet, demo-agent, smoke-open
+tools/lib/           1Click client (mirrors the contract's checks), NEAR AI Cloud client with receipt
+                     verification, the AI operator's decision module, testnet quote signer
+web/                 website: in-browser verifier, live fund dashboards, testnet wallet (join, exit, claim,
+                     settle), AI operator cases with receipts verified in the browser
+data/                recorded testnet runs (testnet-run.json, agent-run.json, open-fund.json)
 ```
 
 Reused, disclosed: the 1Click quote verifier is adapted from Standing Order (same author), and the
 wasm call-graph analyzer (`contracts/wasm-reach.cjs`) is the same author's earlier code from this
-hackathon window. Plinth itself was written from 2026-11-10. Dependencies: near-sdk, near-api-js, @noble/curves and @noble/hashes,
-bs58, Vite, Manrope and JetBrains Mono fonts. Written with Claude Code.
+hackathon window. Plinth itself was written from 2026-11-10. Dependencies: near-sdk, near-workspaces, near-api-js,
+@hot-labs/near-connect (wallet), @noble/curves and @noble/hashes, bs58, Vite, Playwright, Manrope and
+JetBrains Mono fonts. Services: NEAR Intents 1Click (quotes), NEAR AI Cloud (the AI operator), public
+NEAR RPC (FastNEAR). Written with Claude Code.
 
 ## License
 
