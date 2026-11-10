@@ -2,7 +2,9 @@
 // get 100 test pUSD, join with 10, exit 4 shares in kind. Uses alice.<parent> from the demo.
 process.env.NEAR_NETWORK = "testnet";
 const { signer, view, TGAS, explorer, txHash } = await import("./lib/near.ts");
-const FUND = "open.plinthfund.testnet", TOK = "pusd.plinthfund.testnet", ME = "alice.plinthfund.testnet";
+import fs from "node:fs";
+const FUND: string = JSON.parse(fs.readFileSync(new URL("../data/open-fund.json", import.meta.url), "utf8")).fund;
+const TOK = "pusd.plinthfund.testnet", ME = "alice.plinthfund.testnet";
 const a = signer(ME);
 const tx = async (label: string, receiverId: string, actions: any[]) => { const r: any = await a.signAndSendTransaction({ receiverId, actions, waitUntil: "FINAL", throwOnFailure: true } as any); console.log(label, explorer(txHash(r))); return r; };
 const { actions } = await import("near-api-js");

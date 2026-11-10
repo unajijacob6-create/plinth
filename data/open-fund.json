@@ -1,7 +1,16 @@
 {
  "network": "testnet",
- "fund": "open.plinthfund.testnet",
- "created_tx": "4ySKv1TEiMiQhGKpPzY5AgYKT8vgCMCMn13swmsVx3ki",
+ "fund": "open2.plinthfund.testnet",
+ "created_tx": "8t2dCYMyVc7S4M9qk2HZGGmuGNHBMcjyBc4ZCEQjrgpV",
  "subscription_closes_at": "2026-11-21T00:00:00Z",
+ "features": [
+  "staking route: wNEAR -> meta-v2.pool.testnet stNEAR at par",
+  "management fee 1%/yr in shares"
+ ],
+ "previous": {
+  "fund": "open.plinthfund.testnet",
+  "created_tx": "4ySKv1TEiMiQhGKpPzY5AgYKT8vgCMCMn13swmsVx3ki",
+  "note": "earlier contract version; still live, depositors can exit"
+ },
  "note": "Open for anyone to join and exit with test pUSD. pusd.plinthfund.testnet is a test token anyone can mint; it is not money."
 }

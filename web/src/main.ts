@@ -129,7 +129,7 @@ $("#refusal-cards").innerHTML = R.rejections
 
 // ------------------------------------------------------------ live funds + wallet
 void mountApp([
-  { id: (openFund as any).fund, title: "Open fund", blurb: "Anyone can join with test pUSD until 21 November and exit at any time." },
+  { id: (openFund as any).fund, title: "Open fund", blurb: "Anyone can join with test pUSD until 21 November and exit at any time. Can stake idle wNEAR into stNEAR; 1%/yr fee in shares." },
   { id: R.fund, title: "Demo fund", blurb: "The fund from the recorded run; the AI operator trades it." },
   { id: (earnRun as any).fund, title: "Earning fund", blurb: "Stakes idle wNEAR into Meta Pool stNEAR at par; the operator is paid 1%/yr in new shares, no price feed." },
 ]);

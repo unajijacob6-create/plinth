@@ -26,11 +26,15 @@ it is.
 
 - **Verify** any fund from the chain in your browser (keys, code hash, imports, mandate).
 - **Join and exit:** connect a testnet wallet, take 100 test pUSD from the built-in faucet, join the
-  open fund [`open.plinthfund.testnet`](https://testnet.nearblocks.io/address/open.plinthfund.testnet)
-  (joins open until 2026-11-21), then exit with your share of every token. The exit button registers
-  you on each token first if needed. `npm run smoke:open` sends the same calls from the command line;
-  it ran on 2026-11-10: join 10 pUSD → 10,000,000 shares, exit 4,000,000 shares → 4 pUSD back.
-- **Live dashboards** of both testnet funds: holdings, trades, refusals, the trade in flight.
+  open fund [`open2.plinthfund.testnet`](https://testnet.nearblocks.io/address/open2.plinthfund.testnet)
+  (current contract with the staking route and a 1%/yr fee; joins open until 2026-11-21), then exit
+  with your share of every token. The exit button registers you on each token first if needed.
+  `npm run smoke:open` sends the same calls from the command line; it ran on 2026-11-10 against
+  `open2`: join 10 pUSD → 10,000,000 shares, exit 4,000,000 shares → 4 pUSD back. Being keyless,
+  a fund cannot be upgraded: the first open fund, `open.plinthfund.testnet` (earlier contract), stays
+  live and its depositors can still exit; `npm run deploy:open` launched the new one.
+- **Live dashboards** of three testnet funds (open, demo, earning): holdings, trades, refusals, the
+  trade in flight.
 
 **From the command line (no keys needed):**
 

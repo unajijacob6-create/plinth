@@ -23,6 +23,7 @@
     "operate": "NODE_USE_ENV_PROXY=1 tsx tools/operate.ts",
     "test:web": "node web/tests/smoke.mjs",
     "demo:earn": "tsx tools/demo-earn.ts",
+    "deploy:open": "tsx tools/deploy-open.ts",
     "demo:quorum": "NODE_USE_ENV_PROXY=1 tsx tools/demo-quorum.ts"
   },
   "engines": {
