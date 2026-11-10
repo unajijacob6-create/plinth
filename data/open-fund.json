@@ -1,0 +1,7 @@
+{
+ "network": "testnet",
+ "fund": "open.plinthfund.testnet",
+ "created_tx": "4ySKv1TEiMiQhGKpPzY5AgYKT8vgCMCMn13swmsVx3ki",
+ "subscription_closes_at": "2026-11-21T00:00:00Z",
+ "note": "Open for anyone to join and exit with test pUSD. pusd.plinthfund.testnet is a test token anyone can mint; it is not money."
+}

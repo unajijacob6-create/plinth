@@ -1,6 +1,8 @@
 import "./style.css";
 import run from "../../data/testnet-run.json";
 import { verifyFund, explorer, accountLink, type Net } from "./chain.ts";
+import { mountApp } from "./app.ts";
+import openFund from "../../data/open-fund.json";
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -120,3 +122,9 @@ $("#timeline").innerHTML = T.map(([k, h, p, c]) => `<li class="${c ?? ""}"><div 
 $("#refusal-cards").innerHTML = R.rejections
   .map((r: any, i: number) => `<div class="card"><span class="tag no">refused</span><h3>${esc(r.reason)}</h3><p>Recorded in the contract's own refusal log. ${tx(i === 0 ? "refused_wrong_recipient" : "refused_too_large")}</p></div>`)
   .join("");
+
+// ------------------------------------------------------------ live funds + wallet
+void mountApp([
+  { id: (openFund as any).fund, title: "Open fund", blurb: "Anyone can join with test pUSD until 21 November and exit at any time." },
+  { id: R.fund, title: "Demo fund", blurb: "The fund from the recorded run; the AI operator trades it." },
+]);
