@@ -1,7 +1,7 @@
 "use strict";
 // Plinth's immutability check: no exported method may reach any host call that changes code,
-// keys, staking or deletes the account. near-sdk links these imports in; the call graph shows no
-// path to them. Over-approximates indirect calls and fails closed on unknown opcodes.
+// keys, staking or deletes the account. Today the wasm imports none of them at all; the call graph
+// check also covers a future build that links one in but never calls it. Over-approximates indirect calls and fails closed on unknown opcodes.
 const fs = require("fs");
 const { analyze } = require("./wasm-reach.cjs");
 const FORBIDDEN = /deploy|use_global_contract|add_key|delete_key|delete_account|stake|state_init/;

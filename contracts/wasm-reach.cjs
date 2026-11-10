@@ -1,11 +1,10 @@
 "use strict";
 // Call-graph reachability for NEAR contract wasm: which exported functions can reach a given
-// imported host function. contracts/test.sh uses it to prove that, in every guarded-vault build,
-// `upgrade` is the only export that can reach a code-changing host call.
+// imported host function. contracts/test.sh uses it (through check-wasm.cjs) to prove that no
+// export of the Plinth wasm can reach a host call that changes code or keys.
 //
 // Plain node (no npm dependencies), because the contracts CI job runs without `npm ci`.
-// packages/core/src/wasm.ts has the fuller analyzer the app uses; this one only has to answer one
-// question soundly, so it over-approximates wherever the code could go somewhere it cannot see:
+// It only has to answer one question soundly, so it over-approximates wherever the code could go somewhere it cannot see:
 //   - `call_indirect` may land on any function placed in a table (element segments) or taken with
 //     `ref.func`, whose signature matches the call's type;
 //   - a `start` function runs on every instantiation, so it is reported as the pseudo-export

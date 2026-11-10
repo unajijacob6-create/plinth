@@ -179,6 +179,8 @@ h2::after { content: ""; display: block; width: 44px; height: 3px; margin-top: 1
 .limits { list-style: none; padding: 0; margin: 28px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
 .limits li { border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; color: var(--ink-2); background: var(--panel); }
 .limits b { color: var(--ink); display: block; margin-bottom: 4px; }
+.limits li.known { grid-column: 1 / -1; border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.limits li.known b { color: var(--warn); }
 
 .foot { max-width: 1160px; margin: 100px auto 0; padding: 28px clamp(16px, 4vw, 48px) 48px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 14px; }
 

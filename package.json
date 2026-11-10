@@ -11,7 +11,6 @@
     "typecheck": "tsc --noEmit -p . && tsc --noEmit -p web",
     "contracts": "bash contracts/test.sh",
     "verify": "tsx tools/verify.ts",
-    "quote": "tsx tools/quote.ts",
     "operator": "tsx tools/operator.ts",
     "deploy": "tsx tools/deploy.ts",
     "demo:testnet": "tsx tools/demo-testnet.ts",

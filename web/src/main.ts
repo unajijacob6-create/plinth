@@ -98,7 +98,7 @@ async function runVerify() {
     const kv = s
       ? `<div class="kv">Holds ${s.held.map(([t, a]: [string, string]) => esc(fmt(t, a))).join(" · ")}<br/>${esc(BigInt(s.total_shares).toLocaleString("en"))} shares · ${esc(s.trades)} trades · ${esc(s.rejections)} refused${s.pending ? " · a trade is in flight" : ""}</div>`
       : "";
-    out.innerHTML = lines + kv + `<div class="verdict ${v.ok ? "ok" : "bad"}">${v.ok ? "Verified: nobody can change this fund or block its exit." : "Not verified: see the failed checks above."}</div>`;
+    out.innerHTML = lines + kv + `<div class="verdict ${v.ok ? "ok" : "bad"}">${v.ok ? "Verified: no keys, and code that matches a Plinth release and cannot change itself." : "Not verified: see the failed checks above."}</div>`;
   } catch (e) {
     out.innerHTML = `<div class="verdict bad">Could not read ${esc(id)}: ${esc((e as Error).message)}</div>`;
   }

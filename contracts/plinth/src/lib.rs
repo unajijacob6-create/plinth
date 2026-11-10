@@ -119,7 +119,7 @@ enum StorageKey {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mandate {
     /// NEP-141 tokens the fund may hold, deposit and trade. `tokens[0]` is the base token
-    /// (subscriptions are in it). At most 8.
+    /// (subscriptions are in it). At most 4 (MAX_TOKENS).
     pub tokens: Vec<AccountId>,
     /// Largest single trade, in basis points of the fund's holding of the token sold.
     pub max_trade_bps: u16,

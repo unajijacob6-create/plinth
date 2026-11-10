@@ -111,8 +111,9 @@
       <section class="block" id="limits">
         <p class="eyebrow">Limits</p>
         <h2>Read these before you trust it</h2>
-        <p class="sub">An independent adversarial review found one critical and three high-severity issues on 2026-11-10. All are fixed or bounded below, each with a regression test.</p>
+        <p class="sub">Two reviews on 2026-11-10 found and fixed one critical and several high-severity issues. A third review the same day found one more critical bug that the first two missed. It is described first, because it affects every fund on this page.</p>
         <ul class="limits">
+          <li class="known"><b>Known issue in the funds shown here.</b> The funds on this page run releases 0.1 and 0.2. Both count a token transfer that is about to bounce back as if the fund owned it. Anyone can use that to take more than their share, or to mark a trade settled before anything is delivered. A test in the repository proves both. These funds hold test tokens only and cannot be fixed, so treat them as history. The fix is in the next release.</li>
           <li><b>No fixes, ever.</b> A keyless contract cannot be upgraded. A bug is permanent, so funds should start small.</li>
           <li><b>1Click is trusted to deliver.</b> The contract checks the signed quote; it cannot force delivery. If 1Click refunds, the refund goes back to the fund.</li>
           <li><b>Prices are 1Click's.</b> The cost cap uses the USD marks in the signed quote, so it bounds cost against the venue's own valuation, not against the whole market.</li>

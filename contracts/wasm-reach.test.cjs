@@ -1,5 +1,5 @@
 "use strict";
-// Tests for contracts/wasm-reach.cjs, the call-graph check test.sh runs on the guarded-vault wasm.
+// Tests for contracts/wasm-reach.cjs, the call-graph check test.sh runs on the Plinth wasm.
 // Run: node --test contracts/wasm-reach.test.cjs (test.sh does). Each case hand-assembles a tiny
 // wasm module, so the shapes that once made the check miss a path (a cycle evaluated in an unlucky
 // order, a call_indirect through the table) are pinned down without a Rust build.

@@ -12,6 +12,17 @@ share of every token the fund holds, in kind, at any time, without the manager.
 Built at the NEAR HACKATHON (November 2026) by Unaji Jacob. My other project in this hackathon is
 [Standing Order](https://github.com/unajijacob6-create/standing-order) (recurring DAO payroll).
 
+> **Known issue in releases 0.1 and 0.2 (found 2026-11-10).** Every fund deployed so far
+> (`fund-mwa9jwo8`, `open`, `open2`, `earn-mwad1ypv` on testnet) has an accounting bug:
+> `settle()` and `absorb()` trust the token balance they read, and a token transfer that is about to
+> bounce back sits in that balance for about two blocks. Anyone can time a bounce to make the fund
+> count tokens it does not own. `contracts/plinth/tests/poc.rs` proves two results on those releases:
+> a 10% holder leaves with 100% of a token and the 90% holder is left unpaid, and a trade in flight
+> is marked settled with nothing delivered. Those funds hold test tokens only, they are keyless, and
+> they **cannot be fixed**; treat them as history, not as safe. Their keys, code and mandate still
+> verify, but "an exit nobody can block" is **not** true for them. The fix is release 0.3 (see
+> "Security review").
+
 ## The problem
 
 People who put money in a managed fund trust whoever can change it: the key that can redeploy the
@@ -46,7 +57,9 @@ npm run verify -- fund-mwa9jwo8.plinthfund.testnet --network testnet --wasm cont
 `verify` reads only the chain and checks:
 
 1. the fund account has **0 access keys** (nobody can sign for it: no redeploy, no withdrawal);
-2. the deployed bytes hash to the account's `code_hash`, and to your local build (with `--wasm`);
+2. the deployed bytes hash to the account's `code_hash` and to a release listed in
+   `data/releases.json` (releases 0.1 and 0.2 were not built reproducibly, so your own build of
+   them will generally not match byte for byte; `--wasm` compares against a file you supply);
 3. the deployed wasm **imports no host function** that deploys code, adds or deletes keys, stakes
    or deletes the account, so not even the contract itself can do it;
 4. the mandate, operator and quote signer the contract reports.
@@ -95,7 +108,10 @@ injection on purpose: the contract decides.
 Honest reading: in these runs both models resisted the injection and held, so the contract was not
 needed against them; the hijacked-operator case shows what the contract does when the operator
 itself is turned. `npm run operate` runs one AI-operated round on a live fund with a real 1Click
-quote. It has only been run on testnet, against the test signer (see Limits).
+quote from the live 1Click API, so it can only complete a swap on mainnet. Its one recorded
+testnet run (`data/operate-testnet.jsonl`) was a dry run that ended at the stake pre-check. The
+recorded AI trades in the tables here came from `demo:agent` and `demo:quorum`, which use test
+quotes.
 
 ### Two models must agree (`--quorum`)
 
@@ -152,9 +168,8 @@ favour. It needs no oracle and is never paid out in tokens.
 | Alice exits half in kind | 22.499995 pUSD + 1.699999 wNEAR + 0.171942 stNEAR | [BXkYsiWz…](https://testnet.nearblocks.io/txns/BXkYsiWzcNE6oVZZD62LWwhsyoSdYUBC92tw81xGpezb) |
 
 On mainnet the same route goes `wrap.near` → `meta-pool.near`, the liquid-staking token 1Click
-also lists. Its realized yield over 2026-08-05 → 2026-11-10 was 3.99%/yr. That figure comes from the
-on-chain stNEAR price on those dates; past yield, not a promise. Testnet staking rewards are not
-meaningful, so the run shows the mechanics, not a return.
+also lists. Testnet staking rewards are not meaningful, so the run shows the mechanics, not a
+return.
 
 ## How a trade is checked
 
@@ -172,7 +187,8 @@ The contract (`contracts/plinth/src/lib.rs`, `quote.rs`) accepts a proposal only
   wait) and the day's trade count is not used up;
 - the fund's own registration on both tokens succeeded at creation.
 
-A refused proposal does not panic: the reason is stored on chain (`get_rejections`). An accepted one
+A refused proposal does not panic: the reason is logged as an event and stored on chain
+(`get_rejections`) while fewer than 200 are stored and the fund has spare NEAR for the storage. An accepted one
 registers the 1Click deposit address on the token (deposit addresses start unregistered) and
 transfers to it **in the same receipt**, so both succeed or neither does.
 
@@ -188,8 +204,8 @@ price, oracle, operator or enclave is involved. While one trade is in flight, re
 - **Testnet only.** Every fund, trade and receipt in this README is on NEAR testnet, where 1Click
   quotes are signed by a test key and delivered by a solver account. No Plinth fund has been
   deployed on mainnet, and the contract has not been used with a real 1Click quote on chain. The
-  mainnet route is tested only against a recorded real quote and mainnet `wrap.near` /
-  `meta-pool.near` code in the sandbox.
+  only mainnet evidence in this repository is a recorded real 1Click quote that the signature
+  check is tested against; no test here runs mainnet `wrap.near` or `meta-pool.near` code.
 - **No fixes.** A keyless contract cannot be upgraded; a bug is permanent. Start small.
 - **1Click delivers.** The contract checks the signed quote; it cannot force delivery. Refunds go to
   the fund. A trade with neither output nor refund can be written off 7 days after its deposit
@@ -201,22 +217,24 @@ price, oracle, operator or enclave is involved. While one trade is in flight, re
   it a fee. The fee is inside the signed output amount, so the cost cap still bounds it: at most
   `max_cost_bps` of each trade, each trade at most `max_trade_bps` of a holding, at most
   `max_trades_per_day` trades. Choose those three as the most you accept losing to the operator per day.
-- **At most 4 tokens,** so one redemption can pay every token in a single transaction (a 4-token
-  redemption burnt 18 TGas in the sandbox test).
+- **At most 4 tokens,** so one redemption can pay every token in a single transaction (the sandbox test
+  `audit_h1_four_token_redeem_fits_in_one_transaction` prints the gas a 4-token redemption burns).
 - **Closed-end.** Subscriptions happen before trading starts (one share per base unit, no oracle).
-- **Small trades cost more.** A real 2 USDC → wNEAR dry quote fetched on 2026-11-10 had a worst-case
-  all-in cost of 113 bps at 1% slippage.
+- **Small trades cost more.** 1Click's fixed fees weigh more on small amounts; check the cost of a
+  dry quote for your size before choosing `max_cost_bps`.
 
 ## Security review
 
 An independent adversarial review of the contract on 2026-11-10 found one critical issue (a
 redeemer could claim a payout that was still in flight, paying it twice), three high (gas for
 8-token redemptions, u128 overflow with 24-decimal tokens, unsigned 1Click app fees) and several
-medium and low ones. All are fixed or bounded and documented above; each has a regression test,
-including the reviewer's own sandbox exploit, which now pays the redeemer exactly once.
+medium and low ones. Those findings were fixed or bounded, each with a regression test, including
+the reviewer's own sandbox exploit, which now pays the redeemer exactly once. **Neither this review
+nor the second one found the phantom-balance bug described at the top of this README.**
 
-A second review on 2026-11-10 covered the staking route and the management fee, using the real
-mainnet `wrap.near` and `meta-pool.near` wasm in the sandbox. It found:
+A second review on 2026-11-10 covered the staking route and the management fee. (The reviewer
+reported testing against mainnet `wrap.near` and `meta-pool.near` wasm; that test is not in this
+repository, so it is not claimed here.) It found:
 - one high: refused proposals sent while a stake's unwrapped NEAR sat in the account could spend
   that NEAR on storage and leave the stake stuck in `Sending`;
 - one medium: stakes ignored the NEAR reserve, so low-NEAR funds could block redemptions;
@@ -232,8 +250,7 @@ Fixes:
 - The price view gets 20 TGas.
 - The fee clock runs in nanoseconds.
 
-Against the real wasm, the reviewer's spam exploit now leaves the stake settling normally. Each
-finding has a regression test (`audit2_*`).
+Each finding has a regression unit test (`audit2_*`).
 
 ## Run the tests
 

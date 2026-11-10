@@ -1,4 +1,4 @@
-// Testnet wallet connection (HOT near-connect: works with MyNearWallet, Meteor, HOT, Intear and others).
+// Testnet wallet connection (HOT near-connect; the selector lists the wallets it supports).
 import { NearConnector } from "@hot-labs/near-connect";
 
 export const NETWORK = "testnet" as const;
