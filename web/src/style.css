@@ -213,3 +213,9 @@ h2::after { content: ""; display: block; width: 44px; height: 3px; margin-top: 1
 .muted { color: var(--ink-3); }
 .bad { color: var(--bad); }
 .status { color: var(--cyan); }
+
+.agent-case .tag { margin-bottom: 8px; display: inline-block; }
+.agent-case p { margin: 8px 0 0; }
+.agent-case a { color: var(--cyan); font: 12px var(--mono); }
+.said { margin: 6px 0 0; padding: 10px 12px; border-radius: 10px; background: #070c16; border: 1px solid var(--line); font: 12px/1.5 var(--mono); color: #cbd5e1; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
+.okc { color: var(--ok); }
