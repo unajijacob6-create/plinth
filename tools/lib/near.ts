@@ -11,6 +11,14 @@ export const NETWORK = (process.env.NEAR_NETWORK ?? "testnet") as Network;
 export const RPC_URL = process.env.NEAR_RPC_URL ?? (NETWORK === "mainnet" ? "https://rpc.mainnet.fastnear.com" : "https://rpc.testnet.fastnear.com");
 export const provider = new JsonRpcProvider({ url: RPC_URL });
 
+// A custom RPC URL could point at a different chain than NEAR_NETWORK says; the mainnet guard below
+// would then be bypassed. Check the chain the RPC actually serves before anything can sign.
+if (process.env.NEAR_RPC_URL) {
+  const st: any = await fetch(RPC_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "status", params: [] }) }).then((r) => r.json());
+  const chain = st?.result?.chain_id;
+  if (chain !== NETWORK) throw new Error(`NEAR_RPC_URL serves chain ${chain}, but NEAR_NETWORK is ${NETWORK}`);
+}
+
 export function loadKey(accountId: string): KeyPairString {
   const file = path.join(os.homedir(), ".near-credentials", NETWORK, `${accountId}.json`);
   if (!fs.existsSync(file)) throw new Error(`No ${NETWORK} credentials for ${accountId} at ${file}`);

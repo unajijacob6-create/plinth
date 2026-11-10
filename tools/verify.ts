@@ -40,6 +40,9 @@ const code = await rpc<any>("query", { request_type: "view_code", finality: "fin
 const bytes = Buffer.from(code.code_base64, "base64");
 const hash = bs58.encode(createHash("sha256").update(bytes).digest());
 check(hash === acct.code_hash, `code_hash ${acct.code_hash} = sha256 of the deployed bytes (${bytes.length} bytes)`);
+const releases = JSON.parse(fs.readFileSync(new URL("../data/releases.json", import.meta.url), "utf8")).releases;
+const rel = releases[acct.code_hash];
+check(!!rel, rel ? `code is Plinth release ${rel.version} (commit ${rel.commit})` : `code ${acct.code_hash} is not a known Plinth release (data/releases.json)`);
 const wasm = opt("--wasm");
 if (wasm) {
   const local = bs58.encode(createHash("sha256").update(fs.readFileSync(wasm)).digest());

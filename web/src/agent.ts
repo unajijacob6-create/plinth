@@ -42,8 +42,9 @@ const MODEL_NAMES: Record<string, string> = {
 const modelName = (m: string) => MODEL_NAMES[m] ?? String(m).split("/").pop()!.replace(/-/g, " ");
 const txLink = (hash: string, label = "View transaction") => `<a href="${explorer("testnet", hash)}" target="_blank" rel="noopener">${label} ↗</a>`;
 const amount = (token: string | undefined, units: unknown) => {
-  const digits = String(units ?? "").replace(/\D/g, "");
-  if (!token || !digits) return "an unclear amount";
+  // Only plain base units are shown as an amount; "34.5" or "1e21" is not silently rewritten.
+  const digits = typeof units === "number" && Number.isSafeInteger(units) && units >= 0 ? String(units) : typeof units === "string" && /^\s*\d+\s*$/.test(units) ? units.trim() : "";
+  if (!token || !digits) return `an unclear amount (${String(units ?? "none")})`;
   return fmt(token, digits, 4);
 };
 

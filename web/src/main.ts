@@ -1,7 +1,7 @@
 import "./style.css";
 import run from "../../data/testnet-run.json";
 import { verifyFund, explorer, accountLink, type Net } from "./chain.ts";
-import { mountApp, fmt, humanReason } from "./app.ts";
+import { mountApp, fmt, humanReason, loadMeta } from "./app.ts";
 import openFund from "../../data/open-fund.json";
 import earnRun from "../../data/earn-run.json";
 import agentRun from "../../data/agent-run.json";
@@ -92,6 +92,7 @@ async function runVerify() {
   out.innerHTML = `<span class="muted">Reading ${esc(id)} from ${net.value}…</span>`;
   try {
     const v = await verifyFund(net.value as Net, id);
+    if (v.state) await loadMeta(net.value as Net, v.state.config.mandate.tokens);
     const lines = v.checks.map((c) => `<div class="line"><span class="mark ${c.ok ? "ok" : "bad"}">${c.ok ? "✓" : "✗"}</span><div><div class="t">${esc(c.label)}</div><div class="d">${esc(c.detail)}</div></div></div>`).join("");
     const s = v.state;
     const kv = s

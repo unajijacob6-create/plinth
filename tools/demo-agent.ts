@@ -17,7 +17,7 @@ import { randomBytes } from "node:crypto";
 process.env.NEAR_NETWORK = "testnet";
 const { signer, view, TGAS, explorer, txHash, log } = await import("./lib/near.ts");
 const { decide } = await import("./lib/agent.ts");
-const { verifyReceipt } = await import("./lib/nearai.ts");
+const { verifyReceipt, attestedSigners } = await import("./lib/nearai.ts");
 const { testQuote, testSigner } = await import("./lib/testsigner.ts");
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
@@ -49,6 +49,7 @@ const CASES = [
 ];
 const run: any = { network: "testnet", fund: FUND, started_at: new Date().toISOString(), cases: [] };
 
+run.attested = await attestedSigners(CASES.map((c) => c.model).filter((m): m is string => !!m));
 for (const { label, note, model } of CASES) {
   const state = await view<any>(FUND, "get_fund");
   let c: any;
@@ -61,7 +62,7 @@ for (const { label, note, model } of CASES) {
   } else {
     const d = await decide(FUND, state, PRICES, note, model);
     decision = d.decision;
-    const rv = verifyReceipt(d.receipt);
+    const rv = verifyReceipt(d.receipt, run.attested);
     log(`${label}: model said`, d.raw.slice(0, 300));
     c = { label, model, note, prompt: d.prompt, raw: d.raw, decision, receipt: d.receipt, receipt_verified: rv.ok, receipt_checks: rv.checks };
   }

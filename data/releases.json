@@ -1,0 +1,7 @@
+{
+ "note": "Code fingerprints (base58 sha256 of the wasm, as NEAR reports code_hash) of Plinth releases deployed by this repository. The verifier passes only these.",
+ "releases": {
+  "9P39GJXvgFpsiPpcDYUyzYikajydDUwfYuHr9b2V9dMj": { "version": "0.1", "commit": "0e12944", "note": "first release: trades and in-kind exit, no staking route or fee" },
+  "82sC6iGvYGWL1kgSMDBb3rLhwRse9FtZa7ZcGEwG8RCA": { "version": "0.2", "commit": "4cad1b0", "note": "staking route, management fee, fixes from the second security review" }
+ }
+}

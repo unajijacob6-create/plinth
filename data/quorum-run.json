@@ -268,5 +268,20 @@
   ],
   "trades_today": 4
  },
- "finished_at": "2026-11-10T07:00:32.255Z"
+ "finished_at": "2026-11-10T07:00:32.255Z",
+ "attested": {
+  "at": "2026-11-10T07:54:53.796Z",
+  "enclave": {
+   "deepseek-ai/DeepSeek-V4.1-Flash-1017": [
+    "0xfe0071895500a9755c18044948ab4f4e1a7f337e"
+   ],
+   "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated": [
+    "0xcc1a41717db31b871950559a41201561716d0c22"
+   ]
+  },
+  "gateway": [
+   "0xb98a789cdc4817275f5155593ba73ef2a957e779"
+  ],
+  "note": "NEAR AI attestation reports fetched after the run; the receipts are pinned to these keys"
+ }
 }

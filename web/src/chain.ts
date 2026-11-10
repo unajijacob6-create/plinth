@@ -1,3 +1,4 @@
+import releases from "../../data/releases.json";
 // Read-only NEAR RPC from the browser, and the same checks as tools/verify.ts.
 import bs58 from "bs58";
 
@@ -68,6 +69,10 @@ export function importNames(bytes: Uint8Array): string[] {
           u32();
           if (f & 1) u32();
         } else if (kind === 3) p += 2;
+        else if (kind === 4) {
+          p++; // tag attribute
+          u32(); // type index
+        } else throw new Error(`unknown wasm import kind ${kind}: cannot vouch for this code`);
       }
     }
     p = end;
@@ -102,14 +107,23 @@ export async function verifyFund(net: Net, fund: string): Promise<Verification> 
   const bytes = Uint8Array.from(atob(code.code_base64), (c) => c.charCodeAt(0));
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const hash = bs58.encode(digest);
-  checks.push({ ok: hash === acct.code_hash, label: "Code matches its fingerprint", detail: `The ${Math.round(bytes.length / 1000).toLocaleString("en")} KB of code on chain matches the fingerprint NEAR records for this account.` });
+  // The fingerprint must be one of Plinth's own releases: any other keyless contract could answer
+  // like a fund and still have no exit.
+  const rel = (releases.releases as Record<string, { version: string; commit: string }>)[acct.code_hash];
+  checks.push({
+    ok: hash === acct.code_hash && !!rel,
+    label: rel ? `Code is Plinth release ${rel.version}` : "Code is not a known Plinth release",
+    detail: rel ? `The ${Math.round(bytes.length / 1000).toLocaleString("en")} KB of code on chain has the fingerprint of the release built from commit ${rel.commit} of this repository.` : "Its fingerprint matches no release published in this repository, so nothing here can vouch for what it does.",
+  });
   const bad = importNames(bytes).filter((n) => FORBIDDEN.test(n));
   checks.push({ ok: bad.length === 0, label: "Code cannot change itself", detail: bad.length === 0 ? "The code has no instruction that can deploy new code, add or remove keys, stake, or delete the account." : `It can call functions that change code or keys (${bad.length}).` });
   let state: any = null;
   try {
     state = await view(net, fund, "get_fund");
     const real = state.config.quote_signer === ONECLICK_KEY;
-    checks.push({ ok: true, label: "Rules reported by the contract", detail: `Operator ${state.config.operator} can only propose trades. Quotes must be signed by ${real ? "NEAR Intents 1Click" : "a test signer, not 1Click"}.` });
+    const m = state?.config?.mandate;
+    const sane = !!m && Array.isArray(m.tokens) && m.tokens.length >= 1 && m.tokens.length <= 4 && m.max_trade_bps > 0 && m.max_trade_bps <= 10_000;
+    checks.push({ ok: sane, label: "Rules reported by the contract", detail: `Operator ${state.config.operator} can only propose trades. Quotes must be signed by ${real ? "NEAR Intents 1Click" : "a test signer, not 1Click"}.` });
   } catch {
     checks.push({ ok: false, label: "Not a Plinth fund", detail: "This account does not answer like a Plinth fund." });
   }

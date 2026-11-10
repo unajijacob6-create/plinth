@@ -29,10 +29,12 @@ export async function chat(system: string, user: string, model = AGENT_MODEL): P
   const response = await res.text();
   if (!res.ok) throw new Error(`NEAR AI HTTP ${res.status}: ${response.slice(0, 200)}`);
   const body = JSON.parse(response);
-  const sig = await fetch(`${NEARAI_API}/signature/${encodeURIComponent(body.id)}?model=${encodeURIComponent(model)}&signing_algo=ecdsa`, { headers: { authorization: `Bearer ${KEY}` } }).then((r) => r.json() as Promise<any>);
+  const sigRes = await fetch(`${NEARAI_API}/signature/${encodeURIComponent(body.id)}?model=${encodeURIComponent(model)}&signing_algo=ecdsa`, { headers: { authorization: `Bearer ${KEY}` } });
+  // No signature is a receipt that does not verify, not a crash: the answer is still recorded.
+  const sig: any = sigRes.ok ? await sigRes.json().catch(() => ({})) : {};
   return {
     content: body.choices?.[0]?.message?.content ?? "",
-    receipt: { model, chat_id: body.id, request, response, signed_text: sig.text, signature: sig.signature, signing_address: sig.signing_address },
+    receipt: { model, chat_id: body.id, request, response, signed_text: String(sig.text ?? ""), signature: String(sig.signature ?? ""), signing_address: String(sig.signing_address ?? "") },
   };
 }
 
@@ -46,15 +48,44 @@ export async function chat(system: string, user: string, model = AGENT_MODEL): P
  *    our Trusted Execution Environment." So the receipt shows which bytes NEAR AI relayed, nothing more. */
 export type ReceiptKind = "enclave" | "gateway";
 
-export function receiptKind(r: Pick<Receipt, "model" | "signed_text">): ReceiptKind {
-  return r.signed_text?.startsWith(`${r.model}:`) ? "enclave" : "gateway";
+/** External providers NEAR AI Cloud proxies (their answers get gateway receipts, never enclave ones). */
+const EXTERNAL = /^(google|openai|anthropic|x-ai|mistralai|meta-llama-api)\//;
+export function receiptKind(r: Pick<Receipt, "model">): ReceiptKind {
+  return EXTERNAL.test(r.model) ? "gateway" : "enclave";
+}
+
+/** The signing addresses NEAR AI attests: the model's enclave key(s) and the gateway key, read from
+ *  its attestation report (`model_attestations[].signing_address`, `gateway_attestation.signing_address`).
+ *  The report also carries the TDX quotes those keys are bound to; checking the quotes themselves is
+ *  NEAR AI's verifier's job and is not repeated here. External models have no report of their own,
+ *  so their gateway key is read from the report of `reportModel`. */
+export interface Attested {
+  at: string;
+  enclave: Record<string, string[]>;
+  gateway: string[];
+}
+export async function attestedSigners(models: string[], reportModel = AGENT_MODEL): Promise<Attested> {
+  const out: Attested = { at: new Date().toISOString(), enclave: {}, gateway: [] };
+  for (const m of new Set([...models, reportModel])) {
+    if (EXTERNAL.test(m)) continue;
+    const r = await fetch(`${NEARAI_API}/attestation/report?model=${encodeURIComponent(m)}&signing_algo=ecdsa`, { headers: { authorization: `Bearer ${KEY}` } });
+    if (!r.ok) continue;
+    const d: any = await r.json().catch(() => ({}));
+    out.enclave[m] = (d.model_attestations ?? []).map((a: any) => String(a.signing_address).toLowerCase()).filter(Boolean);
+    const g = d.gateway_attestation?.signing_address;
+    if (g && !out.gateway.includes(g.toLowerCase())) out.gateway.push(String(g).toLowerCase());
+  }
+  return out;
 }
 
 /** Offline check: the signed text covers the hashes of these exact bytes (and, for enclave receipts,
- *  names the model), and the signature recovers to the stated signing address. */
-export function verifyReceipt(r: Receipt): { ok: boolean; kind: ReceiptKind; checks: string[] } {
+ *  names the model), and the signature recovers to the stated signing address. With `attested`, the
+ *  signer must also be one NEAR AI attests for this model (enclave) or its gateway: without that, a
+ *  receipt only proves it is self-consistent, since anyone can sign with a key of their own. */
+export function verifyReceipt(r: Receipt, attested?: Attested): { ok: boolean; kind: ReceiptKind; pinned: boolean; checks: string[] } {
   const checks: string[] = [];
   const kind = receiptKind(r);
+  if (!r.signed_text || !r.signature || !r.signing_address) return { ok: false, kind, pinned: false, checks: ["no signature was returned for this answer"] };
   const hashes = `${sha256hex(r.request)}:${sha256hex(r.response)}`;
   const expect = kind === "enclave" ? `${r.model}:${hashes}` : hashes;
   const textOk = r.signed_text === expect;
@@ -80,7 +111,13 @@ export function verifyReceipt(r: Receipt): { ok: boolean; kind: ReceiptKind; che
   } catch (e) {
     checks.push(`signature does not parse: ${(e as Error).message}`);
   }
-  const sigOk = recovered.toLowerCase() === r.signing_address.toLowerCase();
+  const sigOk = recovered !== "" && recovered.toLowerCase() === r.signing_address.toLowerCase();
   checks.push(sigOk ? `signature recovers to ${r.signing_address}` : `signature recovers to ${recovered || "nothing"}, not ${r.signing_address}`);
-  return { ok: textOk && sigOk, kind, checks };
+  let pinned = false;
+  if (attested) {
+    const allowed = kind === "enclave" ? attested.enclave[r.model] ?? [] : attested.gateway;
+    pinned = allowed.includes(recovered.toLowerCase());
+    checks.push(pinned ? `signer is the ${kind === "enclave" ? "model enclave key" : "gateway key"} NEAR AI attested on ${attested.at.slice(0, 10)}` : `signer ${recovered || "?"} is not a key NEAR AI attests for ${kind === "enclave" ? r.model : "its gateway"}`);
+  }
+  return { ok: textOk && sigOk && (!attested || pinned), kind, pinned, checks };
 }

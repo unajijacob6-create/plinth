@@ -33,6 +33,10 @@ for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   check(receipts.length > 0 && receipts.every(Boolean), `${name}: ${receipts.length} NEAR AI receipts verify in the browser`);
   check((await page.$$(".quorum-case")).length === 3, `${name}: three quorum cases render`);
   check((await page.textContent("#quorum-cases")).includes("quorum: hold"), `${name}: the quorum held on the injected note`);
+  await page.fill("#fund-id", "wrap.testnet");
+  await page.click("#verify-form button[type=submit]");
+  await page.waitForFunction(() => document.querySelector(".verdict") && !document.querySelector(".verdict").textContent.startsWith("Verified"), null, { timeout: 30000 }).catch(() => {});
+  check(!(await page.textContent(".verdict")).startsWith("Verified"), `${name}: verifier refuses a contract that is not Plinth`);
   const codey = await page.evaluate(() =>
     [...document.querySelectorAll("body *")]
       .filter((e) => e.children.length === 0 && !["SCRIPT", "STYLE"].includes(e.tagName) && /[{}]|"action"|\d{8,}|0x[0-9a-f]{10}|\bbps\b|[a-z]_[a-z]+\(/.test(e.textContent || ""))

@@ -31,16 +31,51 @@ export function describeFund(fund: string, state: any, prices: string): string {
   ].join("\n");
 }
 
-export function parseDecision(text: string): Decision | null {
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try {
-    const d = JSON.parse(m[0]);
-    if (d.action !== "trade" && d.action !== "hold" && d.action !== "stake") return null;
-    return d as Decision;
-  } catch {
-    return null;
+/** Every balanced {...} in the text (string-aware), in order. */
+function jsonObjects(text: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "{") continue;
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < text.length; j++) {
+      const c = text[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') inStr = true;
+      else if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) {
+        out.push(text.slice(i, j + 1));
+        i = j;
+        break;
+      }
+    }
   }
+  return out;
+}
+
+/** The model's decision: the LAST JSON object in its answer with a valid action (models sometimes
+ *  think aloud or echo the schema first). */
+export function parseDecision(text: string): Decision | null {
+  for (const o of jsonObjects(text).reverse()) {
+    try {
+      const d = JSON.parse(o);
+      if (d && (d.action === "trade" || d.action === "hold" || d.action === "stake")) return d as Decision;
+    } catch {
+      // not JSON; try the previous one
+    }
+  }
+  return null;
+}
+
+/** An amount in base units: a non-negative integer, as a digit string or a safe JS integer. Anything
+ *  else ("10.5", "1e21", "-5", "10 pUSD") is unusable: never guess, hold instead. */
+export function baseUnits(a: unknown): string | null {
+  if (typeof a === "number") return Number.isSafeInteger(a) && a >= 0 ? String(a) : null;
+  if (typeof a !== "string") return null;
+  const t = a.trim();
+  return /^\d+$/.test(t) ? t.replace(/^0+(?=\d)/, "") : null;
 }
 
 export async function decide(fund: string, state: any, prices: string, note: string, model?: string): Promise<{ decision: Decision | null; raw: string; receipt: Receipt; prompt: string }> {
@@ -65,9 +100,31 @@ export interface Vote {
   error?: string;
 }
 
-const units = (a: unknown) => (typeof a === "number" && Number.isSafeInteger(a) ? String(a) : typeof a === "string" ? a.replace(/\D/g, "") : "");
+const units = (a: unknown) => baseUnits(a) ?? "";
 
-export function agree(votes: Pick<Vote, "model" | "decision">[], fund: string): { decision: Decision; agreed: boolean; why: string } {
+/** Map a model's token name to the exact entry in the fund's token list (case and spaces ignored). */
+export function canonicalToken(name: unknown, tokens: string[]): string | null {
+  if (typeof name !== "string") return null;
+  const n = name.trim().toLowerCase();
+  return tokens.find((t) => t.toLowerCase() === n) ?? null;
+}
+
+/** A single model's decision, cleaned the same way the quorum cleans votes: exact token names from the
+ *  fund's list, a strict base-unit amount, recipient normalised. Returns a hold with the reason if any
+ *  of it is unusable. */
+export function cleanDecision(d: Decision | null, fund: string, tokens: string[]): Decision {
+  if (!d) return { action: "hold", reason: "no usable answer" };
+  if (d.action === "hold") return d;
+  const amount = baseUnits(d.amount);
+  if (!amount || BigInt(amount) === 0n) return { action: "hold", reason: `unusable amount ${JSON.stringify(d.amount)}` };
+  if (d.action === "stake") return { action: "stake", amount, reason: d.reason };
+  const sell = canonicalToken(d.sell, tokens), buy = canonicalToken(d.buy, tokens);
+  if (!sell || !buy) return { action: "hold", reason: "a token is not one the fund may hold" };
+  const r = typeof d.recipient === "string" ? d.recipient.trim().toLowerCase() : "";
+  return { action: "trade", sell, buy, amount, recipient: r || fund, reason: d.reason };
+}
+
+export function agree(votes: Pick<Vote, "model" | "decision">[], fund: string, tokens?: string[]): { decision: Decision; agreed: boolean; why: string } {
   const hold = (why: string) => ({ decision: { action: "hold" as const, reason: why }, agreed: false, why });
   if (votes.length < 2) return hold("a quorum needs at least two models");
   const bad = votes.find((v) => !v.decision);
@@ -92,7 +149,11 @@ export function agree(votes: Pick<Vote, "model" | "decision">[], fund: string): 
   if (amounts.some((a) => !a || BigInt(a) === 0n)) return hold("a model gave no positive amount");
   const min = amounts.map(BigInt).reduce((a, b) => (b < a ? b : a));
   const d0 = ds[0];
-  return { decision: { action: "trade", sell: d0.sell, buy: d0.buy, recipient: d0.recipient || fund, amount: min.toString(), reason: `agreed by ${votes.length} models; smallest amount taken` }, agreed: true, why: `${votes.length} models agree` };
+  // Return the exact token names from the fund's list (not a model's spelling) and the normalised recipient.
+  const sell = tokens ? canonicalToken(d0.sell, tokens) : norm(d0.sell);
+  const buy = tokens ? canonicalToken(d0.buy, tokens) : norm(d0.buy);
+  if (!sell || !buy) return hold("a token is not one the fund may hold");
+  return { decision: { action: "trade", sell, buy, recipient: recipient(d0), amount: min.toString(), reason: `agreed by ${votes.length} models; smallest amount taken` }, agreed: true, why: `${votes.length} models agree` };
 }
 
 export async function decideQuorum(fund: string, state: any, prices: string, note: string, models = QUORUM_MODELS) {
@@ -107,5 +168,5 @@ export async function decideQuorum(fund: string, state: any, prices: string, not
       }
     }),
   );
-  return { prompt, votes, ...agree(votes, fund) };
+  return { prompt, votes, ...agree(votes, fund, state.config.mandate.tokens) };
 }

@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 process.env.NEAR_NETWORK = "testnet";
 const { signer, view, TGAS, explorer, txHash, log } = await import("./lib/near.ts");
 const { decideQuorum, QUORUM_MODELS } = await import("./lib/agent.ts");
-const { verifyReceipt } = await import("./lib/nearai.ts");
+const { verifyReceipt, attestedSigners } = await import("./lib/nearai.ts");
 const { testQuote, testSigner } = await import("./lib/testsigner.ts");
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
@@ -38,6 +38,7 @@ const CASES = [
 ];
 const run: any = { network: "testnet", fund: FUND, started_at: new Date().toISOString(), models: QUORUM_MODELS, cases: [] };
 
+run.attested = await attestedSigners([...new Set(CASES.flatMap((c) => c.models))]);
 for (const { label, note, models } of CASES) {
   const state = await view<any>(FUND, "get_fund");
   const q = await decideQuorum(FUND, state, PRICES, note, models);
@@ -46,7 +47,7 @@ for (const { label, note, models } of CASES) {
     note,
     prompt: q.prompt,
     votes: q.votes.map((v) => {
-      const rv = v.receipt ? verifyReceipt(v.receipt) : null;
+      const rv = v.receipt ? verifyReceipt(v.receipt, run.attested) : null;
       return { ...v, receipt_verified: rv?.ok ?? false, receipt_kind: rv?.kind, receipt_checks: rv?.checks };
     }),
     quorum: { agreed: q.agreed, why: q.why, decision: q.decision },

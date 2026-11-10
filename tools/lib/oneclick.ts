@@ -98,7 +98,9 @@ const usdMicros = (s: string): bigint => {
 export function costBps(quote: Record<string, any>): bigint {
   const inUsd = usdMicros(String(quote.amountInUsd));
   const outUsd = usdMicros(String(quote.amountOutUsd));
-  const worst = (outUsd * BigInt(quote.minAmountOut)) / BigInt(quote.amountOut);
+  const out = BigInt(quote.amountOut ?? 0);
+  if (out === 0n) return 10_000n; // nothing out: the whole input is cost (and the contract refuses it)
+  const worst = (outUsd * BigInt(quote.minAmountOut ?? 0)) / out;
   return inUsd === 0n ? 10_000n : ((inUsd > worst ? inUsd - worst : 0n) * 10_000n) / inUsd;
 }
 
@@ -115,16 +117,41 @@ export interface FundState {
       max_quote_age_seconds: number;
       min_deadline_margin_seconds: number;
       subscription_closes_at: number;
+      staking?: { wrap_index: number; lst_index: number; min_stake: string } | null;
     };
+    storage_deposit?: string;
   };
   held: [string, string][];
   pending: unknown | null;
   last_trade_at: number;
   registered?: boolean[];
   trades_today?: number;
+  near_available_for_registrations?: string;
 }
 
 /** The contract's checks, off-chain. Returns the reasons it would refuse (empty = it would accept). */
+/** The contract's stake_idle checks, off-chain, so a stake the contract would refuse is never sent
+ *  (a refusal is stored on chain and spends the fund's storage NEAR). */
+export function preflightStake(amount: string, s: FundState & { config: any }, nowS = Math.floor(Date.now() / 1000)): string[] {
+  const why: string[] = [];
+  const m: any = s.config.mandate;
+  const r = m.staking;
+  if (!r) return ["this fund has no staking route"];
+  if (!/^\d+$/.test(amount)) return [`amount ${amount} is not in base units`];
+  const a = BigInt(amount);
+  if (nowS < m.subscription_closes_at) why.push("subscription window still open");
+  if (s.pending) why.push("a trade is in flight");
+  if (s.last_trade_at > 0 && nowS < s.last_trade_at + m.min_seconds_between_trades) why.push("cooldown");
+  const sameDay = s.last_trade_at > 0 && Math.floor(s.last_trade_at / 86_400) === Math.floor(nowS / 86_400);
+  if (sameDay && (s.trades_today ?? 0) >= m.max_trades_per_day) why.push("trades for today used up");
+  if (a < BigInt(r.min_stake)) why.push(`below the minimum stake ${r.min_stake}`);
+  if (a * 10_000n > BigInt(s.held[r.wrap_index][1]) * BigInt(m.max_trade_bps)) why.push(`over ${m.max_trade_bps} bps of the wNEAR held`);
+  if (s.registered && (!s.registered[r.wrap_index] || !s.registered[r.lst_index])) why.push("fund not registered on a token");
+  // stake_idle needs free NEAR >= reserve + 0.005 NEAR; the view reports free NEAR minus the reserve.
+  if (s.near_available_for_registrations !== undefined && BigInt(s.near_available_for_registrations) < 5_000_000_000_000_000_000_000n) why.push("the fund has no NEAR left for the stake's storage");
+  return why;
+}
+
 export function preflight(r: QuoteResponse, fund: string, s: FundState, nowS = Math.floor(Date.now() / 1000)): string[] {
   const why: string[] = [];
   const m = s.config.mandate;
@@ -137,7 +164,9 @@ export function preflight(r: QuoteResponse, fund: string, s: FundState, nowS = M
   if (truthy(req.customRecipientMsg)) why.push("customRecipientMsg not allowed");
   for (const k of ["virtualChainRecipient", "virtualChainRefundRecipient"]) if (truthy(req[k])) why.push(`${k} not supported`);
   if (truthy(q.depositMemo)) why.push("depositMemo not supported");
-  if ((s.trades_today ?? 0) >= m.max_trades_per_day) why.push("trades for today used up");
+  // trades_today counts the UTC day of the last trade; a new day starts at zero (as in the contract).
+  const sameDay = s.last_trade_at > 0 && Math.floor(s.last_trade_at / 86_400) === Math.floor(nowS / 86_400);
+  if (sameDay && (s.trades_today ?? 0) >= m.max_trades_per_day) why.push("trades for today used up");
   const idx = (a: string) => m.tokens.indexOf(String(a).replace(/^nep141:/, ""));
   const sell = idx(req.originAsset), buy = idx(req.destinationAsset);
   if (sell < 0 || buy < 0) why.push("token not in the mandate");
@@ -146,11 +175,16 @@ export function preflight(r: QuoteResponse, fund: string, s: FundState, nowS = M
   if (nowS < m.subscription_closes_at) why.push("subscription window still open");
   if (s.pending) why.push("a trade is in flight");
   if (s.last_trade_at > 0 && nowS < s.last_trade_at + m.min_seconds_between_trades) why.push("cooldown");
-  if (sell >= 0 && BigInt(q.amountIn) * 10_000n > BigInt(s.held[sell][1]) * BigInt(m.max_trade_bps)) why.push(`over ${m.max_trade_bps} bps of holding`);
+  const amountIn = BigInt(q.amountIn ?? 0), amountOut = BigInt(q.amountOut ?? 0), minOut = BigInt(q.minAmountOut ?? 0);
+  if (amountIn === 0n || minOut === 0n || minOut > amountOut) why.push("quote amounts are not usable");
+  if (req.amount !== undefined && String(req.amount) !== String(q.amountIn)) why.push("the quote's amount differs from the amount asked for");
+  if (sell >= 0 && amountIn * 10_000n > BigInt(s.held[sell][1]) * BigInt(m.max_trade_bps)) why.push(`over ${m.max_trade_bps} bps of holding`);
   const c = costBps(q);
   if (c > BigInt(m.max_cost_bps)) why.push(`cost ${c} bps > ${m.max_cost_bps}`);
   const issued = Math.floor(Date.parse(r.timestamp) / 1000);
   if (nowS - issued > m.max_quote_age_seconds) why.push("quote too old");
+  if (issued > nowS + 60) why.push("quote is dated in the future");
+  if (s.near_available_for_registrations !== undefined && BigInt(s.near_available_for_registrations) < BigInt(s.config.storage_deposit ?? 0)) why.push("the fund has no NEAR left to register the deposit address");
   if (Math.floor(Date.parse(q.deadline) / 1000) < nowS + m.min_deadline_margin_seconds) why.push("deposit address closes too soon");
   return why;
 }
