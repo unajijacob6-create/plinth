@@ -16,6 +16,27 @@ export function fmt(t: string, v: string | bigint, digits = 4): string {
   const frac = (n % 10n ** BigInt(d)).toString().padStart(d, "0").slice(0, digits).replace(/0+$/, "");
   return `${whole.toLocaleString("en")}${frac ? "." + frac : ""} ${SYMBOL(t)}`;
 }
+/** The contract's refusal reasons, in plain words for the page (the chain keeps the exact text). */
+export function humanReason(r: string): string {
+  const pct = (a: string, b: string) => `${((Number(a) / Number(b)) * 100).toFixed(0)}%`;
+  const rules: [RegExp, (...m: string[]) => string][] = [
+    [/^trade of (\d+) is over (\d+) bps of the (\d+) held$/, (_, a, bps, held) => `Trade is ${pct(a, held)} of the holding; the limit is ${Number(bps) / 100}%`],
+    [/^stake of (\d+) is over (\d+) bps of the (\d+) held$/, (_, a, bps, held) => `Stake is ${pct(a, held)} of the wNEAR held; the limit is ${Number(bps) / 100}%`],
+    [/^stake of \d+ is below the minimum \d+$/, () => "Stake is below the fund's minimum"],
+    [/^all-in cost (\d+) bps is over the mandate's (\d+) bps$/, (_, c, m) => `Trade would cost ${Number(c) / 100}%; the limit is ${Number(m) / 100}%`],
+    [/^quote is (\d+) s old; the mandate allows (\d+) s$/, (_, a, m) => `Quote is ${a} seconds old; the limit is ${m}`],
+    [/^quote must deliver to and refund to this fund on NEAR$/, () => "The trade would pay someone other than the fund"],
+    [/^(.+) -> (.+) is not allowed by the mandate$/, () => "That pair of tokens is not allowed by the fund's rules"],
+    [/^the quote's deposit address closes too soon$/, () => "The quote expires too soon"],
+    [/^this deposit address was already used$/, () => "The quote was already used once"],
+    [/^customRecipientMsg is not allowed$|^(.+) is not supported$/, () => "The quote asks for an option the fund does not allow"],
+  ];
+  for (const [re, f] of rules) {
+    const m = r.match(re);
+    if (m) return f(...m);
+  }
+  return r.charAt(0).toUpperCase() + r.slice(1);
+}
 const ago = (s: number) => {
   const d = Math.max(0, Math.floor(Date.now() / 1000) - s);
   return d < 90 ? `${d}s ago` : d < 5400 ? `${Math.round(d / 60)} min ago` : d < 172800 ? `${Math.round(d / 3600)} h ago` : `${Math.round(d / 86400)} d ago`;
@@ -64,7 +85,7 @@ function render(f: FundCard, s: any, keyCount: number, trades: any[], rejections
       <div class="kv"><span>Rules</span><b class="small">≤ ${m.max_trade_bps / 100}% per trade · ≤ ${m.max_cost_bps / 100}% cost · ≤ ${m.max_trades_per_day}/day${m.management_fee_bps ? ` · fee ${m.management_fee_bps / 100}%/yr in shares` : ""}${m.staking ? ` · stakes into ${SYMBOL(m.tokens[m.staking.lst_index])}` : ""}</b></div>
     </div>
     ${lastTrades.length ? `<div class="mini"><p class="eyebrow">Recent trades</p>${lastTrades.map((t) => `<div class="row"><span class="tags">${t.stake ? `<span class="tag">stake</span> ` : ""}<span class="tag ${t.status === "Settled" ? "yes" : t.status === "Failed" || t.status === "Abandoned" ? "no" : ""}">${esc(t.status)}</span></span><span>${esc(fmt(tokens[t.sell], t.amount_in.toString()))} → ${t.status === "Settled" ? esc(fmt(tokens[t.buy], t.received_out)) : `≥ ${esc(fmt(tokens[t.buy], t.min_out))}`}</span><span class="muted small">${ago(t.sent_at)}</span></div>`).join("")}</div>` : ""}
-    ${lastRefusals.length ? `<div class="mini"><p class="eyebrow">Refused on chain</p>${lastRefusals.map((r) => `<div class="row"><span class="tag no">refused</span><span class="small">${esc(r.reason)}</span><span class="muted small">${ago(r.at)}</span></div>`).join("")}</div>` : ""}
+    ${lastRefusals.length ? `<div class="mini"><p class="eyebrow">Refused on chain</p>${lastRefusals.map((r) => `<div class="row"><span class="tag no">refused</span><span class="small">${esc(humanReason(r.reason))}</span><span class="muted small">${ago(r.at)}</span></div>`).join("")}</div>` : ""}
     <div class="you">
       ${
         currentAccount()

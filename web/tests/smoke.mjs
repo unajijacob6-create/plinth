@@ -33,6 +33,13 @@ for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   check(receipts.length > 0 && receipts.every(Boolean), `${name}: ${receipts.length} NEAR AI receipts verify in the browser`);
   check((await page.$$(".quorum-case")).length === 3, `${name}: three quorum cases render`);
   check((await page.textContent("#quorum-cases")).includes("quorum: hold"), `${name}: the quorum held on the injected note`);
+  const codey = await page.evaluate(() =>
+    [...document.querySelectorAll("body *")]
+      .filter((e) => e.children.length === 0 && !["SCRIPT", "STYLE"].includes(e.tagName) && /[{}]|"action"|\d{8,}|0x[0-9a-f]{10}|\bbps\b|[a-z]_[a-z]+\(/.test(e.textContent || ""))
+      .map((e) => (e.textContent || "").slice(0, 60)),
+  );
+  check(codey.length === 0, `${name}: no code-like text on the page${codey.length ? ": " + codey.join(" | ") : ""}`);
+  check((await page.$$("pre, code")).length === 0, `${name}: no code blocks`);
   const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
   check(over <= 0, `${name}: no horizontal overflow (${over}px)`);
   check(errors.length === 0, `${name}: no console errors${errors.length ? ": " + errors.join(" | ").slice(0, 300) : ""}`);

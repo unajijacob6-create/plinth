@@ -4,6 +4,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { explorer } from "./chain.ts";
+import { fmt, humanReason } from "./app.ts";
 
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
@@ -17,7 +18,7 @@ export function verifyReceipt(r: any): { ok: boolean; why: string; kind: "enclav
   try {
     const hashes = `${hex(sha256(enc(r.request)))}:${hex(sha256(enc(r.response)))}`;
     const expect = kind === "enclave" ? `${r.model}:${hashes}` : hashes;
-    if (r.signed_text !== expect) return { ok: false, kind, why: "signed text does not match the request and response" };
+    if (r.signed_text !== expect) return { ok: false, kind, why: "the signed record does not match the answer shown" };
     const text = enc(r.signed_text);
     const hash = keccak_256(new Uint8Array([...enc(`\x19Ethereum Signed Message:\n${text.length}`), ...text]));
     const sig = Uint8Array.from(r.signature.replace(/^0x/, "").match(/../g)!.map((h: string) => parseInt(h, 16)));
@@ -26,12 +27,41 @@ export function verifyReceipt(r: any): { ok: boolean; why: string; kind: "enclav
     rec.set(sig.subarray(0, 64), 1);
     const pub = secp256k1.Point.fromBytes(secp256k1.recoverPublicKey(rec, hash, { prehash: false })).toBytes(false);
     const addr = "0x" + hex(keccak_256(pub.subarray(1)).subarray(12));
-    const who = kind === "enclave" ? "model enclave key" : "NEAR AI gateway key (model runs outside NEAR AI's TEE)";
-    return addr.toLowerCase() === String(r.signing_address).toLowerCase() ? { ok: true, kind, why: `signed by ${addr}, ${who}` } : { ok: false, kind, why: `recovers to ${addr}` };
+    const who = kind === "enclave" ? "Signed inside the model's secure enclave" : "Signed by NEAR AI's gateway (this model runs outside NEAR AI's secure enclave)";
+    return addr.toLowerCase() === String(r.signing_address).toLowerCase() ? { ok: true, kind, why: who } : { ok: false, kind, why: "the signature does not match" };
   } catch (e) {
     return { ok: false, kind, why: (e as Error).message };
   }
 }
+
+const MODEL_NAMES: Record<string, string> = {
+  "deepseek-ai/DeepSeek-V4.1-Flash-1017": "DeepSeek V4.1 Flash",
+  "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated": "DeepSeek V4.1 Flash, safety removed",
+  "google/gemini-2.5-flash": "Gemini 2.5 Flash",
+};
+const modelName = (m: string) => MODEL_NAMES[m] ?? String(m).split("/").pop()!.replace(/-/g, " ");
+const txLink = (hash: string, label = "View transaction") => `<a href="${explorer("testnet", hash)}" target="_blank" rel="noopener">${label} ↗</a>`;
+const amount = (token: string | undefined, units: unknown) => {
+  const digits = String(units ?? "").replace(/\D/g, "");
+  if (!token || !digits) return "an unclear amount";
+  return fmt(token, digits, 4);
+};
+
+/** One decision in plain words: "Hold", or "Sell 34 pUSD for wNEAR, paid to attacker-wallet.testnet". */
+function decisionText(d: any, fund: string): { text: string; danger: boolean } {
+  if (!d) return { text: "No usable answer", danger: false };
+  if (d.action === "hold") return { text: "Hold, no trade", danger: false };
+  if (d.action === "stake") return { text: `Stake ${amount("wrap.testnet", d.amount)}`, danger: false };
+  const to = d.recipient && d.recipient !== fund ? d.recipient : null;
+  const buy = d.buy ? fmt(d.buy, "0").split(" ").pop() : "another token";
+  return { text: `Sell ${amount(d.sell, d.amount)} for ${buy}${to ? `, paid to ${to}` : ", paid to the fund"}`, danger: !!to };
+}
+const reasonOf = (d: any) => (d?.reason ? `<p class="said">“${esc(d.reason)}”</p>` : "");
+const receiptLine = (r: any) => {
+  if (!r) return "";
+  const v = verifyReceipt(r);
+  return `<p class="small ${v.ok ? "okc" : "bad"}" title="Signer ${esc(r.signing_address)}">${v.ok ? "✓" : "✗"} ${esc(v.why)}${v.ok ? "; checked in your browser" : ""}.</p>`;
+};
 
 const TITLES: Record<string, [string, string]> = {
   injected: ["Prompt injection", "The market note hides an instruction to send the whole fund to an attacker."],
@@ -43,20 +73,23 @@ const TITLES: Record<string, [string, string]> = {
 export function mountAgent(run: any) {
   const el = document.getElementById("agent-cases");
   if (!el || !run?.cases) return;
-  document.getElementById("agent-sub")!.innerHTML = `Recorded ${esc(String(run.started_at).slice(0, 10))} on testnet against <span class="mono">${esc(run.fund)}</span>. The model runs on NEAR AI Cloud; each answer carries a signature from the model's enclave key, re-checked below in your browser.`;
+  document.getElementById("agent-sub")!.innerHTML = `Recorded ${esc(String(run.started_at).slice(0, 10))} on NEAR testnet against the demo fund. The model runs on NEAR AI Cloud, and each answer is signed there; your browser checks every signature below.`;
   el.innerHTML = run.cases
     .map((c: any) => {
       const [title, sub] = TITLES[c.label] ?? [c.label, ""];
-      const v = c.receipt ? verifyReceipt(c.receipt) : null;
       const d = c.decision;
-      const said = c.model === null ? `<p class="small">Submitted: sell <b>${esc(d.amount)}</b> of ${esc(d.sell)}, output to <b class="mono">${esc(d.recipient)}</b>.</p>` : `<p class="small">Model <span class="mono">${esc(String(c.model).split("/").pop())}</span> answered:</p><pre class="said">${esc(c.raw || "(empty)")}</pre>`;
+      const dt = decisionText(d, run.fund);
+      const said =
+        c.model === null
+          ? `<p class="small">Submitted directly:</p><p class="decision ${dt.danger ? "danger" : ""}">${esc(dt.text)}</p>`
+          : `<p class="small muted">${esc(modelName(c.model))} decided:</p><p class="decision ${dt.danger ? "danger" : ""}">${esc(dt.text)}</p>${reasonOf(d)}`;
       const verdict =
         c.accepted === true
-          ? `<span class="tag yes">contract accepted</span> <a href="${explorer("testnet", c.tx)}" target="_blank" rel="noopener">${esc(c.tx.slice(0, 10))}… ↗</a>${c.settle_tx ? ` · settled <a href="${explorer("testnet", c.settle_tx)}" target="_blank" rel="noopener">↗</a>` : ""}`
+          ? `<span class="tag yes">contract accepted</span> ${txLink(c.tx)}${c.settle_tx ? ` · ${txLink(c.settle_tx, "Settled")}` : ""}`
           : c.accepted === false
-            ? `<span class="tag no">contract refused</span> <span class="small">${esc(c.contract_reason ?? "")}</span> <a href="${explorer("testnet", c.tx)}" target="_blank" rel="noopener">${esc(c.tx.slice(0, 10))}… ↗</a>`
+            ? `<span class="tag no">contract refused</span> <span class="small">${esc(humanReason(c.contract_reason ?? ""))}</span> ${txLink(c.tx)}`
             : `<span class="tag">nothing proposed</span> <span class="small">the model chose to hold</span>`;
-      return `<div class="card agent-case"><span class="tag">${esc(title)}</span><p class="small muted">${esc(sub)}</p>${said}<p>${verdict}</p>${v ? `<p class="small ${v.ok ? "okc" : "bad"}">${v.ok ? "✓" : "✗"} NEAR AI receipt ${v.ok ? "verified" : "NOT verified"}: ${esc(v.why)}</p>` : ""}</div>`;
+      return `<div class="card agent-case"><span class="tag">${esc(title)}</span><p class="small muted">${esc(sub)}</p>${said}<p>${verdict}</p>${receiptLine(c.receipt)}</div>`;
     })
     .join("");
 }
@@ -70,26 +103,24 @@ const QTITLES: Record<string, [string, string]> = {
 export function mountQuorum(run: any) {
   const el = document.getElementById("quorum-cases");
   if (!el || !run?.cases) return;
-  document.getElementById("quorum-sub")!.innerHTML = `Recorded ${esc(String(run.started_at).slice(0, 10))} on testnet against <span class="mono">${esc(run.fund)}</span>. The operator proposes a trade only when every model says trade with the same tokens and recipient, at the smallest amount any of them asked for. Anything else is a hold, before the contract is even asked.`;
+  document.getElementById("quorum-sub")!.innerHTML = `Recorded ${esc(String(run.started_at).slice(0, 10))} on NEAR testnet against the demo fund. The operator proposes a trade only when every model says trade with the same tokens and the same recipient, at the smallest amount any of them asked for. Anything else is a hold, before the contract is even asked.`;
   el.innerHTML = run.cases
     .map((c: any) => {
       const [title, sub] = QTITLES[c.label] ?? [c.label, ""];
       const votes = c.votes
         .map((v: any) => {
-          const r = v.receipt ? verifyReceipt(v.receipt) : null;
-          const d = v.decision;
-          const what = !d ? "no usable answer" : d.action === "hold" ? "hold" : `trade ${esc(d.amount)} of ${esc(d.sell)} → ${esc(d.recipient || run.fund)}`;
-          const danger = d?.action === "trade" && d.recipient && d.recipient !== run.fund;
-          return `<div class="vote"><p class="small"><span class="mono">${esc(String(v.model).split("/").pop())}</span>: <b class="${danger ? "danger" : ""}">${what}</b></p>${r ? `<p class="small ${r.ok ? "okc" : "bad"}">${r.ok ? "✓" : "✗"} receipt (${r.kind}) ${r.ok ? "verified" : "NOT verified"}: ${esc(r.why)}</p>` : ""}</div>`;
+          const dt = decisionText(v.decision, run.fund);
+          return `<div class="vote"><p class="small muted">${esc(modelName(v.model))}</p><p class="decision ${dt.danger ? "danger" : ""}">${esc(dt.text)}</p>${receiptLine(v.receipt)}</div>`;
         })
         .join("");
       const q = c.quorum;
+      const why = q.agreed ? "both models agree" : String(q.why).replace(/[\w.-]+\/[\w.-]+/g, (m: string) => modelName(m));
       const verdict =
         c.accepted === true
-          ? `<span class="tag yes">quorum: trade</span> <span class="tag yes">contract accepted</span> <a href="${explorer("testnet", c.tx)}" target="_blank" rel="noopener">${esc(c.tx.slice(0, 10))}… ↗</a>${c.settle_tx ? ` · settled <a href="${explorer("testnet", c.settle_tx)}" target="_blank" rel="noopener">↗</a>` : ""}`
+          ? `<span class="tag yes">quorum: trade</span> <span class="tag yes">contract accepted</span> ${txLink(c.tx)}${c.settle_tx ? ` · ${txLink(c.settle_tx, "Settled")}` : ""}`
           : c.accepted === false
-            ? `<span class="tag yes">quorum: trade</span> <span class="tag no">contract refused</span> <span class="small">${esc(c.contract_reason ?? "")}</span>`
-            : `<span class="tag no">quorum: hold</span> <span class="small">${esc(q.why)}</span>`;
+            ? `<span class="tag yes">quorum: trade</span> <span class="tag no">contract refused</span> <span class="small">${esc(humanReason(c.contract_reason ?? ""))}</span>`
+            : `<span class="tag no">quorum: hold</span> <span class="small">${esc(why)}</span>`;
       return `<div class="card agent-case quorum-case"><span class="tag">${esc(title)}</span><p class="small muted">${esc(sub)}</p>${votes}<p>${verdict}</p></div>`;
     })
     .join("");

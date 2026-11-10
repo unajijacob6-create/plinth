@@ -97,21 +97,21 @@ export async function verifyFund(net: Net, fund: string): Promise<Verification> 
   const checks: Check[] = [];
   const acct = await rpc<any>(net, "query", { request_type: "view_account", finality: "final", account_id: fund });
   const keys = await rpc<any>(net, "query", { request_type: "view_access_key_list", finality: "final", account_id: fund });
-  checks.push({ ok: keys.keys.length === 0, label: "No access keys", detail: keys.keys.length === 0 ? "Nobody can sign for this account: no redeploy, no withdrawal, no new key." : `${keys.keys.length} key(s): ${keys.keys.map((k: any) => `${k.public_key.slice(0, 18)}… (${k.access_key.permission === "FullAccess" ? "full access" : "function call"})`).join(", ")}` });
+  checks.push({ ok: keys.keys.length === 0, label: "No access keys", detail: keys.keys.length === 0 ? "Nobody can sign for this account: no redeploy, no withdrawal, no new key." : `${keys.keys.length} key(s): ${keys.keys.map((k: any) => (k.access_key.permission === "FullAccess" ? "full access" : "limited")).join(", ")}` });
   const code = await rpc<any>(net, "query", { request_type: "view_code", finality: "final", account_id: fund });
   const bytes = Uint8Array.from(atob(code.code_base64), (c) => c.charCodeAt(0));
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const hash = bs58.encode(digest);
-  checks.push({ ok: hash === acct.code_hash, label: "Code matches its hash", detail: `${bytes.length.toLocaleString("en")} bytes hash to ${hash}.` });
+  checks.push({ ok: hash === acct.code_hash, label: "Code matches its fingerprint", detail: `The ${Math.round(bytes.length / 1000).toLocaleString("en")} KB of code on chain matches the fingerprint NEAR records for this account.` });
   const bad = importNames(bytes).filter((n) => FORBIDDEN.test(n));
-  checks.push({ ok: bad.length === 0, label: "Code cannot change itself", detail: bad.length === 0 ? "The wasm imports no host function that deploys code, adds or deletes keys, stakes or deletes the account." : `Imports ${bad.join(", ")}.` });
+  checks.push({ ok: bad.length === 0, label: "Code cannot change itself", detail: bad.length === 0 ? "The code has no instruction that can deploy new code, add or remove keys, stake, or delete the account." : `It can call functions that change code or keys (${bad.length}).` });
   let state: any = null;
   try {
     state = await view(net, fund, "get_fund");
     const real = state.config.quote_signer === ONECLICK_KEY;
-    checks.push({ ok: true, label: "Mandate reported by the contract", detail: `Operator ${state.config.operator} can only propose trades. Quotes must be signed by ${real ? "NEAR Intents 1Click" : `a test signer (${state.config.quote_signer.slice(0, 20)}…), not 1Click`}.` });
+    checks.push({ ok: true, label: "Rules reported by the contract", detail: `Operator ${state.config.operator} can only propose trades. Quotes must be signed by ${real ? "NEAR Intents 1Click" : "a test signer, not 1Click"}.` });
   } catch {
-    checks.push({ ok: false, label: "Not a Plinth fund", detail: "get_fund is not available on this account." });
+    checks.push({ ok: false, label: "Not a Plinth fund", detail: "This account does not answer like a Plinth fund." });
   }
   return { fund, net, checks, state, codeHash: acct.code_hash, ok: checks.every((c) => c.ok) };
 }

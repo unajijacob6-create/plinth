@@ -1,7 +1,7 @@
 import "./style.css";
 import run from "../../data/testnet-run.json";
 import { verifyFund, explorer, accountLink, type Net } from "./chain.ts";
-import { mountApp } from "./app.ts";
+import { mountApp, fmt, humanReason } from "./app.ts";
 import openFund from "../../data/open-fund.json";
 import earnRun from "../../data/earn-run.json";
 import agentRun from "../../data/agent-run.json";
@@ -11,7 +11,7 @@ import quorumRun from "../../data/quorum-run.json";
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const R: any = run;
-const tx = (k: string) => (R.tx[k] ? `<a href="${explorer("testnet", R.tx[k])}" target="_blank" rel="noopener">${R.tx[k].slice(0, 10)}… ↗</a>` : "");
+const tx = (k: string) => (R.tx[k] ? `<a href="${explorer("testnet", R.tx[k])}" target="_blank" rel="noopener">View transaction ↗</a>` : "");
 const pusd = (v: string | number) => (Number(v) / 1e6).toLocaleString("en", { maximumFractionDigits: 2 });
 const wnear = (v: string | number) => (Number(BigInt(v) / 10n ** 18n) / 1e6).toLocaleString("en", { maximumFractionDigits: 4 });
 
@@ -29,19 +29,19 @@ $("#stats").innerHTML = [
 const steps = [
   {
     t: "Launch keyless",
-    body: `<p>One transaction creates the fund account, deploys the code and sets the mandate. There is no <code>AddKey</code>, so the account has no key from its first block.</p><ul><li>Allowed tokens, trade size, cost cap, cooldown, quote age</li><li>The only operator, and the 1Click signing key</li></ul>`,
+    body: `<p>One transaction creates the fund account, deploys the code and sets the mandate. No key is ever added, so the account has no key from its first block.</p><ul><li>Allowed tokens, trade size, cost cap, cooldown, quote age</li><li>The only operator, and the 1Click signing key</li></ul>`,
     proof: `Fund <a href="${accountLink("testnet", R.fund)}" target="_blank" rel="noopener">${esc(R.fund)}</a><br/>Created in ${tx("create_fund_keyless")}<br/>Access keys after creation: <b>${R.access_keys_after_create}</b>`,
   },
   {
     t: "Subscribe",
-    body: `<p>During the subscription window, depositors send the base token with <code>ft_transfer_call</code> and get one share per unit. Trading starts only after the window closes, so shares are priced without an oracle.</p>`,
+    body: `<p>During the subscription window, depositors send the fund its base token and get one share per unit. Trading starts only after the window closes, so shares are priced without an oracle.</p>`,
     proof: `Alice ${pusd(60_000_000)} pUSD ${tx("alice_subscribe")}<br/>Bob ${pusd(40_000_000)} pUSD ${tx("bob_subscribe")}`,
   },
   {
     t: "Propose",
     op: true,
     body: `<p>The operator, a person or an AI agent, hands the contract a live 1Click quote. That is all it can do. It cannot withdraw, pause, change rules or touch any other method.</p>`,
-    proof: `Operator <span class="mono">${esc(R.accounts.operator)}</span><br/>Accepted proposal ${tx("propose_trade")}`,
+    proof: `Operator ${esc(R.accounts.operator)}<br/>Accepted proposal: ${tx("propose_trade")}`,
   },
   {
     t: "Contract checks",
@@ -50,7 +50,7 @@ const steps = [
   },
   {
     t: "Send and settle",
-    body: `<p>The contract registers the 1Click deposit address on the token and transfers the input in one receipt. 1Click delivers the output to the fund. Anyone can call <code>settle</code>, which reads the fund's balances and closes the trade.</p>`,
+    body: `<p>The contract registers the 1Click deposit address on the token and transfers the input in one receipt. 1Click delivers the output to the fund. Anyone can then settle the trade: the contract reads the fund's balances and closes it.</p>`,
     proof: `Deposit address received ${pusd(R.deposit_address_pusd)} pUSD<br/>Delivered ${tx("solver_delivers")} · settled ${tx("settle")} → <b>${esc(R.settle_status)}</b>`,
   },
   {
@@ -95,7 +95,7 @@ async function runVerify() {
     const lines = v.checks.map((c) => `<div class="line"><span class="mark ${c.ok ? "ok" : "bad"}">${c.ok ? "✓" : "✗"}</span><div><div class="t">${esc(c.label)}</div><div class="d">${esc(c.detail)}</div></div></div>`).join("");
     const s = v.state;
     const kv = s
-      ? `<div class="kv">holds ${s.held.map(([t, a]: [string, string]) => `${esc(a)} ${esc(t)}`).join(" · ")}<br/>shares ${esc(s.total_shares)} · trades ${esc(s.trades)} · refusals ${esc(s.rejections)}${s.pending ? ` · trade ${esc(s.pending.id)} in flight` : ""}</div>`
+      ? `<div class="kv">Holds ${s.held.map(([t, a]: [string, string]) => esc(fmt(t, a))).join(" · ")}<br/>${esc(BigInt(s.total_shares).toLocaleString("en"))} shares · ${esc(s.trades)} trades · ${esc(s.rejections)} refused${s.pending ? " · a trade is in flight" : ""}</div>`
       : "";
     out.innerHTML = lines + kv + `<div class="verdict ${v.ok ? "ok" : "bad"}">${v.ok ? "Verified: nobody can change this fund or block its exit." : "Not verified: see the failed checks above."}</div>`;
   } catch (e) {
@@ -108,13 +108,13 @@ $("#verify-form").addEventListener("submit", (e) => {
 });
 
 // ------------------------------------------------------------ timeline
-$("#run-sub").innerHTML = `Recorded ${esc(R.started_at.slice(0, 10))} on NEAR testnet. Every step links to its transaction. 1Click has no testnet, so a test signer and the solver account <span class="mono">${esc(R.accounts.solver)}</span> stand in for it.`;
+$("#run-sub").innerHTML = `Recorded ${esc(R.started_at.slice(0, 10))} on NEAR testnet. Every step links to its transaction. 1Click has no testnet, so a test signer and a solver account (${esc(R.accounts.solver)}) stand in for it.`;
 const T: [string, string, string, string?][] = [
   ["create_fund_keyless", "Fund created with no keys", `${R.access_keys_after_create} access keys from the first block.`],
   ["alice_subscribe", "Alice subscribes", "60 pUSD → 60,000,000 shares."],
   ["bob_subscribe", "Bob subscribes", "40 pUSD → 40,000,000 shares."],
-  ["refused_wrong_recipient", "Refused: quote pays the operator", R.rejections[0]?.reason ?? "", "no"],
-  ["refused_too_large", "Refused: 30% in one trade", R.rejections[1]?.reason ?? "", "no"],
+  ["refused_wrong_recipient", "Refused: quote pays the operator", humanReason(R.rejections[0]?.reason ?? ""), "no"],
+  ["refused_too_large", "Refused: 30% in one trade", humanReason(R.rejections[1]?.reason ?? ""), "no"],
   ["propose_trade", "Accepted: 10 pUSD → wNEAR", "Signature, recipients, size, cost and freshness all within the mandate; the contract sent the input itself.", "yes"],
   ["solver_delivers", "Output delivered", `${wnear("20000000000000000000000")} wNEAR to the fund.`],
   ["settle", "Settled by anyone", `Status ${R.settle_status}.`, "yes"],
@@ -124,7 +124,7 @@ $("#timeline").innerHTML = T.map(([k, h, p, c]) => `<li class="${c ?? ""}"><div 
 
 // ------------------------------------------------------------ refusals
 $("#refusal-cards").innerHTML = R.rejections
-  .map((r: any, i: number) => `<div class="card"><span class="tag no">refused</span><h3>${esc(r.reason)}</h3><p>Recorded in the contract's own refusal log. ${tx(i === 0 ? "refused_wrong_recipient" : "refused_too_large")}</p></div>`)
+  .map((r: any, i: number) => `<div class="card"><span class="tag no">refused</span><h3>${esc(humanReason(r.reason))}</h3><p>Recorded in the contract's own refusal log. ${tx(i === 0 ? "refused_wrong_recipient" : "refused_too_large")}</p></div>`)
   .join("");
 
 // ------------------------------------------------------------ live funds + wallet
