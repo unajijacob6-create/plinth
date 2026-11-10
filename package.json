@@ -20,7 +20,8 @@
     "web:preview": "vite preview web --port 4173 --strictPort",
     "demo:agent": "NODE_USE_ENV_PROXY=1 tsx tools/demo-agent.ts",
     "smoke:open": "tsx tools/smoke-open.ts",
-    "operate": "NODE_USE_ENV_PROXY=1 tsx tools/operate.ts"
+    "operate": "NODE_USE_ENV_PROXY=1 tsx tools/operate.ts",
+    "test:web": "node web/tests/smoke.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -38,6 +39,7 @@
     "@types/node": "26.6.6",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vite": "8.3.7"
+    "vite": "8.3.7",
+    "playwright": "1.63.0"
   }
 }
