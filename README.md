@@ -1,0 +1,146 @@
+# Plinth
+
+**A NEAR fund nobody can change, with an exit nobody can block.**
+
+A Plinth fund is a NEAR contract on an account with **no access keys**. Its rules (allowed tokens,
+trade size, cost cap, cooldown, quote freshness) are fixed when it is created. A manager, human or
+AI agent, can only **propose** a swap by handing the contract a live NEAR Intents 1Click quote; the
+contract verifies 1Click's signature and checks the quote against the mandate, then sends the input
+itself, with the fund as the only recipient and refund address. Every depositor can **redeem** their
+share of every token the fund holds, in kind, at any time, without the manager.
+
+Built at the NEAR HACKATHON (November 2026) by Unaji Jacob. My other project in this hackathon is
+[Standing Order](https://github.com/unajijacob6-create/standing-order) (recurring DAO payroll).
+
+## The problem
+
+People who put money in a managed fund trust whoever can change it: the key that can redeploy the
+code, the council that can upgrade it, the off-chain service that holds the key. On NEAR anyone can
+see this for any account with one RPC call, `view_access_key_list`. Plinth removes the key entirely
+and keeps what still needs trust small and visible: 1Click delivers the swap, and the code is what
+it is.
+
+## Try it (no keys needed)
+
+```bash
+npm ci
+npm run verify -- fund-mwa9jwo8.plinthfund.testnet --network testnet --wasm contracts/target/near/plinth/plinth.wasm
+```
+
+`verify` reads only the chain and checks:
+
+1. the fund account has **0 access keys** (nobody can sign for it: no redeploy, no withdrawal);
+2. the deployed bytes hash to the account's `code_hash`, and to your local build (with `--wasm`);
+3. the deployed wasm **imports no host function** that deploys code, adds or deletes keys, stakes
+   or deletes the account, so not even the contract itself can do it;
+4. the mandate, operator and quote signer the contract reports.
+
+The website runs the same checks in your browser against public RPC: `npm run web:dev`.
+
+## What was demonstrated (NEAR testnet, recorded in [data/testnet-run.json](data/testnet-run.json))
+
+`npm run demo:testnet` ran on 2026-11-10 and created
+[`fund-mwa9jwo8.plinthfund.testnet`](https://testnet.nearblocks.io/address/fund-mwa9jwo8.plinthfund.testnet). Every account in it was created by the script under
+`plinthfund.testnet`, which was funded only by the public testnet faucet.
+
+| step | result | tx |
+|---|---|---|
+| create the fund in one transaction (CreateAccount, Transfer, DeployContract, `new`), no AddKey | 0 access keys | [CX84bz2E…](https://testnet.nearblocks.io/txns/CX84bz2E2CwsMDr4TDsRRPBYd88FETiL3tBioujhtxAL) |
+| Alice and Bob subscribe 60 and 40 pUSD | 100,000,000 shares | [4FW7c7uw…](https://testnet.nearblocks.io/txns/4FW7c7uwiPsHwyq7fAY5JWRS4CBzoFNT7WgLcxkKAmJD) [5DJUAeYz…](https://testnet.nearblocks.io/txns/5DJUAeYzbzK1KUaNirm5bYVgfmQ1dHWNTTTmMftQr7vg) |
+| operator proposes a quote that pays the operator | refused: "quote must deliver to and refund to this fund on NEAR" | [F9Peb5Zj…](https://testnet.nearblocks.io/txns/F9Peb5ZjDAXNxXvwnubpydrwnoVWBJZd3urTi4UYbnWo) |
+| operator proposes 30% of the fund in one trade | refused: "trade of 30000000 is over 2500 bps of the 100000000 held" | [9m6rtLsX…](https://testnet.nearblocks.io/txns/9m6rtLsXzY4opoKPZk53Lhp2DNzK5zKZM83qAMXr15gV) |
+| operator proposes 10 pUSD → wNEAR within the mandate | accepted; the contract registered the deposit address and sent 10 pUSD to it in one receipt | [HwoGbHAJ…](https://testnet.nearblocks.io/txns/HwoGbHAJaQemiqaebj6YWq51TTxCetZWPRoANQCghsq7) |
+| the output (0.02 wNEAR) arrives; anyone settles | Settled | [Ap2YgL3s…](https://testnet.nearblocks.io/txns/Ap2YgL3svTdv1cbwTtHXALgfmaWmvye1jJ63sKAxrqV7) |
+| Bob redeems his 40% | received 36 pUSD + 0.008 wNEAR, exactly 40% of each | [Gh9pA3AB…](https://testnet.nearblocks.io/txns/Gh9pA3ABYXC95CSjwiaz5PBLpSGPvd7gyEo6xxjd79ee) |
+
+**Testnet stand-in, stated plainly:** NEAR Intents 1Click has no testnet. On testnet the quotes are
+signed by a test key in exactly 1Click's format and verified on chain by the same code, and a solver
+account delivers the output as 1Click would. `pusd.plinthfund.testnet` is a test token anyone can mint;
+it is not money. `verify` labels the test signer. A mainnet fund uses 1Click's real key
+(`ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc`); nothing else changes. A real 1Click quote
+fixture is verified against that key in the tests.
+
+## How a trade is checked
+
+The contract (`contracts/plinth/src/lib.rs`, `quote.rs`) accepts a proposal only if:
+
+- the quote is a **live** 1Click quote and its ed25519 signature verifies over
+  `base58(sha256(stable JSON of the signed fields))`; for live quotes the signed fields include the
+  deposit address, amounts, USD marks, refund fee and deadline, so none can be edited;
+- `recipient` = `refundTo` = the fund, `refundType` = ORIGIN_CHAIN, no `customRecipientMsg`;
+- both tokens are in the mandate and differ; the trade is at most `max_trade_bps` of the holding;
+- the all-in cost at the worst-case output, from 1Click's signed USD marks, is at most
+  `max_cost_bps` (formula credited to Hallmark, another NEAR HACKATHON entry);
+- the quote is fresh, its deposit address stays open long enough and was never used before;
+- no trade is in flight, the cooldown has passed (at least 11 minutes, longer than the redemption
+  wait) and the day's trade count is not used up;
+- the fund's own registration on both tokens succeeded at creation.
+
+A refused proposal does not panic: the reason is stored on chain (`get_rejections`). An accepted one
+registers the 1Click deposit address on the token (deposit addresses start unregistered) and
+transfers to it **in the same receipt**, so both succeed or neither does.
+
+## Exit
+
+`redeem(shares)` burns shares and transfers the same fraction of every token the fund holds. No
+price, oracle, operator or enclave is involved. While one trade is in flight, redemptions wait up to
+10 minutes; after that a redeemer can leave without their share of that one trade. If a payout fails
+(for example, the redeemer is not registered on a token), it stays owed and `claim()` retries it.
+
+## Limits (read these)
+
+- **No fixes.** A keyless contract cannot be upgraded; a bug is permanent. Start small.
+- **1Click delivers.** The contract checks the signed quote; it cannot force delivery. Refunds go to
+  the fund. A trade with neither output nor refund can be written off 7 days after its deposit
+  address expires (`abandon`).
+- **The venue's prices.** The cost cap uses 1Click's own USD marks, so it bounds cost against the
+  venue's valuation, not the whole market.
+- **One signing key.** If 1Click rotates its key, the fund can no longer trade; redemption still works.
+- **App fees.** 1Click does not sign the `appFees` field, so an operator can request quotes that pay
+  it a fee. The fee is inside the signed output amount, so the cost cap still bounds it: at most
+  `max_cost_bps` of each trade, each trade at most `max_trade_bps` of a holding, at most
+  `max_trades_per_day` trades. Choose those three as the most you accept losing to the operator per day.
+- **At most 4 tokens,** so one redemption can pay every token in a single transaction (a 4-token
+  redemption burnt 18 TGas in the sandbox test).
+- **Closed-end.** Subscriptions happen before trading starts (one share per base unit, no oracle).
+- **Small trades cost more.** A real 2 USDC → wNEAR dry quote fetched on 2026-11-10 had a worst-case
+  all-in cost of 113 bps at 1% slippage.
+
+## Security review
+
+An independent adversarial review of the contract on 2026-11-10 found one critical issue (a
+redeemer could claim a payout that was still in flight, paying it twice), three high (gas for
+8-token redemptions, u128 overflow with 24-decimal tokens, unsigned 1Click app fees) and several
+medium and low ones. All are fixed or bounded and documented above; each has a regression test,
+including the reviewer's own sandbox exploit, which now pays the redeemer exactly once.
+
+## Run the tests
+
+```bash
+bash contracts/test.sh   # builds, proves the wasm imports no code/key-changing host function, unit + sandbox tests
+npm test                 # 1Click client tests (real quote fixtures)
+npm run typecheck
+```
+
+The sandbox test runs the whole story on a local NEAR node with token contracts that enforce
+storage registration.
+
+## Repository
+
+```
+contracts/plinth     the fund contract (Rust, near-sdk 5.30)
+contracts/mock-ft    NEP-141 test token for the sandbox and testnet
+contracts/check-wasm.cjs + wasm-reach.cjs   immutability check on the compiled wasm
+tools/               verify, deploy (keyless), operator (quote/propose/settle/status), testnet demo
+web/                 website with the in-browser verifier
+data/                recorded testnet run
+```
+
+Reused, disclosed: the 1Click quote verifier is adapted from Standing Order (same author), and the
+wasm call-graph analyzer (`contracts/wasm-reach.cjs`) is the same author's earlier code from this
+hackathon window. Plinth itself was written from 2026-11-10. Dependencies: near-sdk, near-api-js, @noble/curves and @noble/hashes,
+bs58, Vite, Manrope and JetBrains Mono fonts. Written with Claude Code.
+
+## License
+
+MIT

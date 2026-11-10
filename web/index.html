@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Plinth · keyless funds on NEAR</title>
+    <meta name="description" content="A NEAR fund nobody can change, with an exit nobody can block. Verify any fund from the chain, in your browser." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='20' width='22' height='6' rx='1.5' fill='%233d8bff'/%3E%3Crect x='9' y='12' width='14' height='6' rx='1.5' fill='%2322d3ee'/%3E%3Crect x='13' y='4' width='6' height='6' rx='1.5' fill='%23e2e8f0'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <a class="skip" href="#verify">Skip to the verifier</a>
+    <header class="nav">
+      <a class="brand" href="#top" aria-label="Plinth home">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="20" width="22" height="6" rx="1.5" class="b1" /><rect x="9" y="12" width="14" height="6" rx="1.5" class="b2" /><rect x="13" y="4" width="6" height="6" rx="1.5" class="b3" /></svg>
+        <span>Plinth</span>
+      </a>
+      <nav aria-label="Sections">
+        <a href="#how">How it works</a>
+        <a href="#verify">Verify</a>
+        <a href="#run">Live run</a>
+        <a href="#limits">Limits</a>
+        <a class="gh" href="https://github.com/unajijacob6-create/plinth">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="glow" aria-hidden="true"></div>
+        <p class="eyebrow">Keyless funds on NEAR</p>
+        <h1>A fund nobody can change.<br /><span class="grad">An exit nobody can block.</span></h1>
+        <p class="lede">Plinth funds have no keys. The rules are fixed at launch, the manager can only propose swaps that the contract checks against a signed NEAR Intents quote, and every depositor can take their share of every token out, at any time, in kind.</p>
+        <div class="cta">
+          <a class="btn primary" href="#verify">Verify a fund</a>
+          <a class="btn ghost" href="#run">See the live run</a>
+        </div>
+      </section>
+
+      <section class="stats" id="stats" aria-label="The recorded testnet run"></section>
+
+      <section class="block" id="how">
+        <p class="eyebrow">How it works</p>
+        <h2>Six steps. The manager is in one of them.</h2>
+        <div class="steps" role="tablist" aria-label="Lifecycle"></div>
+        <div class="step-panel" id="step-panel" role="tabpanel"></div>
+      </section>
+
+      <section class="block" id="compare">
+        <p class="eyebrow">Trust model</p>
+        <h2>What you have to trust</h2>
+        <div class="table-wrap">
+          <table class="compare">
+            <thead><tr><th scope="col"></th><th scope="col">Upgradeable fund</th><th scope="col">Enclave-guarded fund</th><th scope="col" class="us">Plinth</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">Keys on the fund account</th><td>Admin or deployer key</td><td>Often still a deployer key</td><td class="us">None, from creation</td></tr>
+              <tr><th scope="row">Who enforces the rules</th><td>Code that can be replaced</td><td>An off-chain enclave</td><td class="us">The contract, on every trade</td></tr>
+              <tr><th scope="row">How you exit</th><td>When the admin allows it</td><td>When the guardian runs</td><td class="us">Any time, in kind, by yourself</td></tr>
+              <tr><th scope="row">How you check it</th><td>Read docs, trust a team</td><td>Verify an attestation</td><td class="us">Three RPC calls, below</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="block" id="verify">
+        <p class="eyebrow">Verify from the chain</p>
+        <h2>Check any fund yourself</h2>
+        <p class="sub">Runs in your browser against public NEAR RPC. No server, no wallet.</p>
+        <form class="console" id="verify-form" autocomplete="off">
+          <div class="console-bar"><i></i><i></i><i></i><span>plinth verify</span></div>
+          <div class="console-input">
+            <label for="fund-id" class="sr">Fund account</label>
+            <input id="fund-id" name="fund" spellcheck="false" />
+            <select id="fund-net" aria-label="Network"><option value="testnet">testnet</option><option value="mainnet">mainnet</option></select>
+            <button class="btn primary" type="submit">Verify</button>
+          </div>
+          <div class="console-out" id="verify-out" aria-live="polite"></div>
+        </form>
+      </section>
+
+      <section class="block" id="run">
+        <p class="eyebrow">Recorded on testnet</p>
+        <h2>The live run</h2>
+        <p class="sub" id="run-sub"></p>
+        <ol class="timeline" id="timeline"></ol>
+      </section>
+
+      <section class="block" id="refusals">
+        <p class="eyebrow">On-chain refusals</p>
+        <h2>What the contract said no to</h2>
+        <div class="cards" id="refusal-cards"></div>
+      </section>
+
+      <section class="block" id="limits">
+        <p class="eyebrow">Limits</p>
+        <h2>Read these before you trust it</h2>
+        <p class="sub">An independent adversarial review found one critical and three high-severity issues on 2026-11-10. All are fixed or bounded below, each with a regression test.</p>
+        <ul class="limits">
+          <li><b>No fixes, ever.</b> A keyless contract cannot be upgraded. A bug is permanent, so funds should start small.</li>
+          <li><b>1Click is trusted to deliver.</b> The contract checks the signed quote; it cannot force delivery. If 1Click refunds, the refund goes back to the fund.</li>
+          <li><b>Prices are 1Click's.</b> The cost cap uses the USD marks in the signed quote, so it bounds cost against the venue's own valuation, not against the whole market.</li>
+          <li><b>One signing key.</b> 1Click's key is fixed in the fund. If it rotates, the fund can no longer trade, but redemption still works.</li>
+          <li><b>Testnet stand-in.</b> 1Click has no testnet, so the recorded run uses a test signer and a solver account in 1Click's place. The verifier labels it.</li>
+          <li><b>App fees are bounded, not blocked.</b> 1Click does not sign its app-fee field, so an operator can take a fee inside a trade. The cost cap still bounds it: at most the cost cap of each trade, each trade capped, a fixed number of trades per day.</li>
+          <li><b>At most 4 tokens.</b> So one redemption can pay every token in a single transaction.</li>
+          <li><b>Exit waits for one trade.</b> While a trade is in flight, redemptions wait up to 10 minutes. After that you can leave without your share of that one trade.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <p>Plinth · built at the NEAR HACKATHON by Unaji Jacob · MIT · <a href="https://github.com/unajijacob6-create/plinth">source</a></p>
+    </footer>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,303 @@
+{
+ "network": "testnet",
+ "started_at": "2026-11-10T05:41:34.842Z",
+ "accounts": {
+  "parent": "plinthfund.testnet",
+  "token": "pusd.plinthfund.testnet",
+  "wrap": "wrap.testnet",
+  "alice": "alice.plinthfund.testnet",
+  "bob": "bob.plinthfund.testnet",
+  "operator": "operator.plinthfund.testnet",
+  "solver": "solver.plinthfund.testnet"
+ },
+ "tx": {
+  "create_alice": "2BahzHUmtUq2cHBns3PCjupJcHaH5f4LkKzwED4LoqXS",
+  "create_bob": "BVs3uUJgxZWbBaTuECfUjF7heLCvUsMLn7hra7REYKAs",
+  "create_operator": "DFTQMhvQpfH1k4mAGK6fky7dfbW6eB4DowAVJBbM4Xx3",
+  "create_solver": "83C36cnNvtE8wasK1sNGUJp6kvGJ8f94dAYo5TszWSS7",
+  "create_token": "B66xrbmoUwC3ZSRG3Z12gGfxbQNrVFvqyyFJFGtqadDq",
+  "register_alice_pusd": "2wu6i8FitwUvFjPKihiseAovHwgiVFSv7LUuZe5y524H",
+  "register_bob_pusd": "6zfSSx8LwueTapcrdFUGL5WfwT8Pe46Pa7mzESAi85YS",
+  "register_solver_pusd": "rVhRtW2UebN29d5uxMbhKfsjUt2DFzWhkMJQEtMtDnc",
+  "register_alice_wrap": "5iyX1BeL3bdcbmfU3oXt3s8mjMLJwp2oLbCjLHRAdyVU",
+  "register_bob_wrap": "AgukMQeBuMQWuo1B8kLB1zMmcKgpQ3HRAaHFThgFCyXo",
+  "register_solver_wrap": "HDnNkHnwQSXwoiD6AqpvBYUJ1RdAQEvyt31P3WikBRfv",
+  "mint_alice": "6nHjjrceE5oSrn4WapjVcSi11AupMRoummHVjdqDJL82",
+  "mint_bob": "HiZfdSwCCc1cC57n8a6ZxfVfp5VkXvJw98vwKfA14uuv",
+  "create_fund_keyless": "CX84bz2E2CwsMDr4TDsRRPBYd88FETiL3tBioujhtxAL",
+  "alice_subscribe": "4FW7c7uwiPsHwyq7fAY5JWRS4CBzoFNT7WgLcxkKAmJD",
+  "bob_subscribe": "5DJUAeYzbzK1KUaNirm5bYVgfmQ1dHWNTTTmMftQr7vg",
+  "refused_wrong_recipient": "F9Peb5ZjDAXNxXvwnubpydrwnoVWBJZd3urTi4UYbnWo",
+  "refused_too_large": "9m6rtLsXzY4opoKPZk53Lhp2DNzK5zKZM83qAMXr15gV",
+  "propose_trade": "HwoGbHAJaQemiqaebj6YWq51TTxCetZWPRoANQCghsq7",
+  "solver_wrap": "9SHiT3fntH5xueyiLPC2Qrvq57bQ1ghH92Lyko2FbmRd",
+  "solver_delivers": "7J5CWhKQf84ccW2QwidyeYWeKHw9UnpQPozG3FGoVino",
+  "settle": "Ap2YgL3svTdv1cbwTtHXALgfmaWmvye1jJ63sKAxrqV7",
+  "bob_redeem": "Gh9pA3ABYXC95CSjwiaz5PBLpSGPvd7gyEo6xxjd79ee"
+ },
+ "notes": [],
+ "quote_signer": "ed25519:A2tpC3tn7ENSXEiu8L6LvW4ghbpkL7Tm5SWVhMrA9GQM",
+ "fund": "fund-mwa9jwo8.plinthfund.testnet",
+ "config": {
+  "mandate": {
+   "tokens": [
+    "pusd.plinthfund.testnet",
+    "wrap.testnet"
+   ],
+   "max_trade_bps": 2500,
+   "max_cost_bps": 150,
+   "min_seconds_between_trades": 660,
+   "max_trades_per_day": 6,
+   "max_quote_age_seconds": 300,
+   "min_deadline_margin_seconds": 600,
+   "subscription_closes_at": 1794289424,
+   "min_subscription": "1000000",
+   "max_total_subscriptions": "1000000000"
+  },
+  "operator": "operator.plinthfund.testnet",
+  "quote_signer": "ed25519:A2tpC3tn7ENSXEiu8L6LvW4ghbpkL7Tm5SWVhMrA9GQM",
+  "storage_deposit": "1250000000000000000000"
+ },
+ "access_keys_after_create": 0,
+ "after_subscribe": {
+  "config": {
+   "mandate": {
+    "tokens": [
+     "pusd.plinthfund.testnet",
+     "wrap.testnet"
+    ],
+    "max_trade_bps": 2500,
+    "max_cost_bps": 150,
+    "min_seconds_between_trades": 660,
+    "max_trades_per_day": 6,
+    "max_quote_age_seconds": 300,
+    "min_deadline_margin_seconds": 600,
+    "subscription_closes_at": 1794289424,
+    "min_subscription": "1000000",
+    "max_total_subscriptions": "1000000000"
+   },
+   "operator": "operator.plinthfund.testnet",
+   "quote_signer": "ed25519:A2tpC3tn7ENSXEiu8L6LvW4ghbpkL7Tm5SWVhMrA9GQM",
+   "storage_deposit": "1250000000000000000000"
+  },
+  "held": [
+   [
+    "pusd.plinthfund.testnet",
+    "100000000"
+   ],
+   [
+    "wrap.testnet",
+    "0"
+   ]
+  ],
+  "total_shares": "100000000",
+  "total_subscribed": "100000000",
+  "subscription_open": true,
+  "trading_open": false,
+  "pending": null,
+  "trades": 0,
+  "rejections": 0,
+  "last_trade_at": 0,
+  "near_available_for_registrations": "435520000000000000000000",
+  "in_flight_payouts": [
+   "0",
+   "0"
+  ],
+  "registered": [
+   true,
+   true
+  ],
+  "trades_today": 0
+ },
+ "refused_wrong_recipient": false,
+ "refused_too_large": false,
+ "rejections": [
+  {
+   "at": 1794289432,
+   "reason": "quote must deliver to and refund to this fund on NEAR",
+   "deposit_address": "64c7273efeeb64080cbe360026a526a8a2b97a112f9b20827b4e8c0e38689f64"
+  },
+  {
+   "at": 1794289436,
+   "reason": "trade of 30000000 is over 2500 bps of the 100000000 held",
+   "deposit_address": "64c7273efeeb64080cbe360026a526a8a2b97a112f9b20827b4e8c0e38689f64"
+  }
+ ],
+ "accepted": true,
+ "deposit_address": "64c7273efeeb64080cbe360026a526a8a2b97a112f9b20827b4e8c0e38689f64",
+ "deposit_address_pusd": "10000000",
+ "after_send": {
+  "config": {
+   "mandate": {
+    "tokens": [
+     "pusd.plinthfund.testnet",
+     "wrap.testnet"
+    ],
+    "max_trade_bps": 2500,
+    "max_cost_bps": 150,
+    "min_seconds_between_trades": 660,
+    "max_trades_per_day": 6,
+    "max_quote_age_seconds": 300,
+    "min_deadline_margin_seconds": 600,
+    "subscription_closes_at": 1794289424,
+    "min_subscription": "1000000",
+    "max_total_subscriptions": "1000000000"
+   },
+   "operator": "operator.plinthfund.testnet",
+   "quote_signer": "ed25519:A2tpC3tn7ENSXEiu8L6LvW4ghbpkL7Tm5SWVhMrA9GQM",
+   "storage_deposit": "1250000000000000000000"
+  },
+  "held": [
+   [
+    "pusd.plinthfund.testnet",
+    "90000000"
+   ],
+   [
+    "wrap.testnet",
+    "0"
+   ]
+  ],
+  "total_shares": "100000000",
+  "total_subscribed": "100000000",
+  "subscription_open": false,
+  "trading_open": true,
+  "pending": {
+   "id": 0,
+   "sell": 0,
+   "buy": 1,
+   "amount_in": "10000000",
+   "quoted_out": "20000000000000000000000",
+   "min_out": "19900000000000000000000",
+   "refund_fee": "4500",
+   "cost_bps": 69,
+   "deposit_address": "64c7273efeeb64080cbe360026a526a8a2b97a112f9b20827b4e8c0e38689f64",
+   "deposit_deadline": 1794548634,
+   "sent_at": 1794289440,
+   "status": "Sent",
+   "received_out": "0",
+   "received_refund": "0",
+   "closed_at": null
+  },
+  "trades": 1,
+  "rejections": 2,
+  "last_trade_at": 1794289440,
+  "near_available_for_registrations": "427099999999999999999999",
+  "in_flight_payouts": [
+   "0",
+   "0"
+  ],
+  "registered": [
+   true,
+   true
+  ],
+  "trades_today": 1
+ },
+ "settle_status": "Settled",
+ "after_settle": {
+  "config": {
+   "mandate": {
+    "tokens": [
+     "pusd.plinthfund.testnet",
+     "wrap.testnet"
+    ],
+    "max_trade_bps": 2500,
+    "max_cost_bps": 150,
+    "min_seconds_between_trades": 660,
+    "max_trades_per_day": 6,
+    "max_quote_age_seconds": 300,
+    "min_deadline_margin_seconds": 600,
+    "subscription_closes_at": 1794289424,
+    "min_subscription": "1000000",
+    "max_total_subscriptions": "1000000000"
+   },
+   "operator": "operator.plinthfund.testnet",
+   "quote_signer": "ed25519:A2tpC3tn7ENSXEiu8L6LvW4ghbpkL7Tm5SWVhMrA9GQM",
+   "storage_deposit": "1250000000000000000000"
+  },
+  "held": [
+   [
+    "pusd.plinthfund.testnet",
+    "90000000"
+   ],
+   [
+    "wrap.testnet",
+    "20000000000000000000000"
+   ]
+  ],
+  "total_shares": "100000000",
+  "total_subscribed": "100000000",
+  "subscription_open": false,
+  "trading_open": true,
+  "pending": null,
+  "trades": 1,
+  "rejections": 2,
+  "last_trade_at": 1794289440,
+  "near_available_for_registrations": "427099999999999999999999",
+  "in_flight_payouts": [
+   "0",
+   "0"
+  ],
+  "registered": [
+   true,
+   true
+  ],
+  "trades_today": 1
+ },
+ "bob_received": {
+  "pusd": "36000000",
+  "wnear": "8000000000000000000000"
+ },
+ "after_redeem": {
+  "config": {
+   "mandate": {
+    "tokens": [
+     "pusd.plinthfund.testnet",
+     "wrap.testnet"
+    ],
+    "max_trade_bps": 2500,
+    "max_cost_bps": 150,
+    "min_seconds_between_trades": 660,
+    "max_trades_per_day": 6,
+    "max_quote_age_seconds": 300,
+    "min_deadline_margin_seconds": 600,
+    "subscription_closes_at": 1794289424,
+    "min_subscription": "1000000",
+    "max_total_subscriptions": "1000000000"
+   },
+   "operator": "operator.plinthfund.testnet",
+   "quote_signer": "ed25519:A2tpC3tn7ENSXEiu8L6LvW4ghbpkL7Tm5SWVhMrA9GQM",
+   "storage_deposit": "1250000000000000000000"
+  },
+  "held": [
+   [
+    "pusd.plinthfund.testnet",
+    "54000000"
+   ],
+   [
+    "wrap.testnet",
+    "12000000000000000000000"
+   ]
+  ],
+  "total_shares": "60000000",
+  "total_subscribed": "100000000",
+  "subscription_open": false,
+  "trading_open": true,
+  "pending": null,
+  "trades": 1,
+  "rejections": 2,
+  "last_trade_at": 1794289440,
+  "near_available_for_registrations": "427099999999999999999997",
+  "in_flight_payouts": [
+   "0",
+   "0"
+  ],
+  "registered": [
+   true,
+   true
+  ],
+  "trades_today": 1
+ },
+ "access_keys_at_end": 0,
+ "code_hash": "9P39GJXvgFpsiPpcDYUyzYikajydDUwfYuHr9b2V9dMj",
+ "finished_at": "2026-11-10T05:44:21.073Z"
+}

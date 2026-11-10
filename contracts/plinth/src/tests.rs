@@ -1,0 +1,602 @@
+//! Unit tests: every mandate rule, refusals recorded, subscribe, trade bookkeeping, settle,
+//! refunds, abandon, and in-kind redemption. Quotes are signed with a test key using exactly the
+//! 1Click scheme (quote::signed_message), so verification runs for real.
+
+use super::*;
+use ed25519_dalek::{Signer, SigningKey};
+use near_sdk::serde_json::{self, Value};
+use near_sdk::test_utils::{accounts, get_logs, VMContextBuilder};
+use near_sdk::{testing_env, PromiseResult, RuntimeFeesConfig};
+
+const USDC: &str = "usdc.test.near";
+const WNEAR: &str = "wrap.test.near";
+const OTHER: &str = "other.test.near";
+const FUND: &str = "fund.test.near";
+const OPERATOR: &str = "operator.test.near";
+const T0: u64 = 1_800_000_000; // seconds
+const CLOSE: u64 = T0 + 3600;
+
+fn sk() -> SigningKey {
+    SigningKey::from_bytes(&[42u8; 32])
+}
+
+fn pk_b58() -> String {
+    format!("ed25519:{}", bs58::encode(sk().verifying_key().to_bytes()).into_string())
+}
+
+fn mandate() -> Mandate {
+    Mandate {
+        tokens: vec![USDC.parse().unwrap(), WNEAR.parse().unwrap()],
+        max_trade_bps: 2_500,
+        max_cost_bps: 100,
+        min_seconds_between_trades: 660,
+        max_trades_per_day: 3,
+        max_quote_age_seconds: 120,
+        min_deadline_margin_seconds: 600,
+        subscription_closes_at: CLOSE,
+        min_subscription: U128(1_000_000),
+        max_total_subscriptions: U128(1_000_000_000),
+    }
+}
+
+fn config() -> Config {
+    Config { mandate: mandate(), operator: OPERATOR.parse().unwrap(), quote_signer: pk_b58(), storage_deposit: U128(1_250_000_000_000_000_000_000) }
+}
+
+fn ctx(predecessor: &str, now: u64) -> VMContextBuilder {
+    let mut b = VMContextBuilder::new();
+    b.current_account_id(FUND.parse().unwrap())
+        .predecessor_account_id(predecessor.parse().unwrap())
+        .signer_account_id(predecessor.parse().unwrap())
+        .block_timestamp(now * 1_000_000_000)
+        .account_balance(NearToken::from_near(5))
+        .attached_deposit(NearToken::from_near(1));
+    b
+}
+
+fn set(predecessor: &str, now: u64) {
+    testing_env!(ctx(predecessor, now).build());
+}
+
+fn set_with_results(now: u64, results: Vec<PromiseResult>) {
+    testing_env!(ctx(FUND, now).build(), near_sdk::test_vm_config(), RuntimeFeesConfig::test(), Default::default(), results);
+}
+
+fn fund() -> Plinth {
+    set("deployer.test.near", T0);
+    let mut f = Plinth::new(config());
+    for i in 0..2 {
+        set_with_results(T0, vec![PromiseResult::Successful(vec![])]);
+        f.on_registered(i);
+    }
+    f
+}
+
+/// A live 1Click-shaped quote, signed with the test key.
+struct Q {
+    sell: &'static str,
+    buy: &'static str,
+    amount: u128,
+    out: u128,
+    min_out: u128,
+    in_usd: &'static str,
+    out_usd: &'static str,
+    issued: u64,
+    deadline: u64,
+    deposit: String,
+    recipient: String,
+    refund_to: String,
+    custom_msg: bool,
+    memo: bool,
+}
+
+impl Default for Q {
+    fn default() -> Self {
+        Q {
+            sell: USDC,
+            buy: WNEAR,
+            amount: 10_000_000,
+            out: 2_700_000_000_000_000_000_000_000,
+            min_out: 2_690_000_000_000_000_000_000_000,
+            in_usd: "10.000000",
+            out_usd: "9.990000",
+            issued: CLOSE + 10,
+            deadline: CLOSE + 10 + 3 * 86_400,
+            deposit: "a".repeat(64),
+            recipient: FUND.into(),
+            refund_to: FUND.into(),
+            custom_msg: false,
+            memo: false,
+        }
+    }
+}
+
+fn iso(secs: u64) -> String {
+    // Inverse of quote::parse_rfc3339_seconds for the range used here.
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", y, m, d, rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+fn quote_json(q: &Q) -> String {
+    let mut req = json!({
+        "dry": false, "depositMode": "SIMPLE", "swapType": "EXACT_INPUT", "slippageTolerance": 50,
+        "originAsset": format!("nep141:{}", q.sell), "depositType": "ORIGIN_CHAIN",
+        "destinationAsset": format!("nep141:{}", q.buy), "amount": q.amount.to_string(),
+        "refundTo": q.refund_to, "refundType": "ORIGIN_CHAIN", "recipient": q.recipient,
+        "recipientType": "DESTINATION_CHAIN", "deadline": iso(q.issued + 600), "quoteWaitingTimeMs": 0,
+    });
+    if q.custom_msg {
+        req["customRecipientMsg"] = json!("hello");
+    }
+    let mut quote = json!({
+        "amountIn": q.amount.to_string(), "amountInFormatted": "x", "amountInUsd": q.in_usd, "minAmountIn": q.amount.to_string(),
+        "amountOut": q.out.to_string(), "amountOutFormatted": "y", "amountOutUsd": q.out_usd, "minAmountOut": q.min_out.to_string(),
+        "timeEstimate": 22, "refundFee": "4500", "deadline": iso(q.deadline), "timeWhenInactive": iso(q.deadline), "depositAddress": q.deposit,
+    });
+    if q.memo {
+        quote["depositMemo"] = json!("123");
+    }
+    let ts = iso(q.issued);
+    let msg = quote::signed_message(&req, &quote, &ts).unwrap();
+    let sig = sk().sign(msg.as_bytes());
+    serde_json::to_string(&json!({
+        "quote": quote, "quoteRequest": req, "timestamp": ts,
+        "signature": format!("ed25519:{}", bs58::encode(sig.to_bytes()).into_string()),
+    }))
+    .unwrap()
+}
+
+fn subscribe(f: &mut Plinth, who: &str, amount: u128, now: u64) -> U128 {
+    set(USDC, now);
+    f.ft_on_transfer(who.parse().unwrap(), U128(amount), String::new())
+}
+
+fn funded() -> Plinth {
+    let mut f = fund();
+    assert_eq!(subscribe(&mut f, "alice.test.near", 60_000_000, T0 + 10).0, 0);
+    assert_eq!(subscribe(&mut f, "bob.test.near", 40_000_000, T0 + 20).0, 0);
+    f
+}
+
+fn propose(f: &mut Plinth, q: &Q, now: u64) -> bool {
+    set(OPERATOR, now);
+    f.propose_trade(quote_json(q))
+}
+
+fn last_reason(f: &Plinth) -> String {
+    let n = f.get_fund().rejections;
+    f.get_rejections(n - 1, 1)[0].reason.clone()
+}
+
+fn ok_sent(f: &mut Plinth, id: u64, now: u64) {
+    set_with_results(now, vec![PromiseResult::Successful(vec![])]);
+    f.on_trade_sent(id);
+}
+
+fn payout(f: &mut Plinth, who: &str, i: u8, amount: u128, ok: bool, now: u64) {
+    set_with_results(now, vec![if ok { PromiseResult::Successful(vec![]) } else { PromiseResult::Failed }]);
+    f.on_payout(who.parse().unwrap(), i, U128(amount));
+}
+
+fn bal(v: u128) -> Result<U128, PromiseError> {
+    Ok(U128(v))
+}
+
+// ------------------------------------------------------------------ setup
+
+#[test]
+fn new_registers_on_every_token_and_reads_back_config() {
+    let f = fund();
+    let v = f.get_fund();
+    assert_eq!(v.config, config());
+    assert!(v.subscription_open && !v.trading_open);
+    assert_eq!(v.held, vec![(USDC.parse().unwrap(), U128(0)), (WNEAR.parse().unwrap(), U128(0))]);
+}
+
+#[test]
+#[should_panic(expected = "duplicate token")]
+fn new_refuses_duplicate_tokens() {
+    set("d.test.near", T0);
+    let mut c = config();
+    c.mandate.tokens.push(USDC.parse().unwrap());
+    Plinth::new(c);
+}
+
+#[test]
+#[should_panic(expected = "subscription must close in the future")]
+fn new_refuses_a_closed_window() {
+    set("d.test.near", CLOSE + 1);
+    Plinth::new(config());
+}
+
+// ------------------------------------------------------------------ subscribe
+
+#[test]
+fn subscriptions_mint_one_share_per_base_unit_and_respect_limits() {
+    let mut f = funded();
+    assert_eq!(f.get_shares("alice.test.near".parse().unwrap()).0, 60_000_000);
+    assert_eq!(f.get_fund().total_shares.0, 100_000_000);
+    // Too small, too large, wrong token, after close: all returned in full.
+    assert_eq!(subscribe(&mut f, "carol.test.near", 999_999, T0 + 30).0, 999_999);
+    assert_eq!(subscribe(&mut f, "carol.test.near", 950_000_000, T0 + 30).0, 950_000_000);
+    set(WNEAR, T0 + 30);
+    assert_eq!(f.ft_on_transfer("carol.test.near".parse().unwrap(), U128(5), String::new()), U128(5));
+    assert_eq!(subscribe(&mut f, "carol.test.near", 5_000_000, CLOSE).0, 5_000_000);
+    assert_eq!(f.get_fund().total_shares.0, 100_000_000);
+}
+
+// ------------------------------------------------------------------ propose_trade: mandate
+
+#[test]
+fn a_quote_inside_the_mandate_is_sent_and_moves_the_input_out_of_holdings() {
+    let mut f = funded();
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    let v = f.get_fund();
+    let t = v.pending.unwrap();
+    assert_eq!((t.status, t.amount_in.0, t.cost_bps), (TradeStatus::Sending, 10_000_000, 47));
+    assert_eq!(v.held[0].1 .0, 90_000_000);
+    assert!(get_logs().iter().any(|l| l.contains("\"trade_sent\"")));
+}
+
+#[test]
+fn every_mandate_rule_refuses_and_records_its_reason() {
+    let cases: Vec<(Q, u64, &str)> = vec![
+        (Q { amount: 30_000_000, ..Default::default() }, CLOSE + 20, "over 2500 bps"),
+        (Q { out_usd: "9.800000", ..Default::default() }, CLOSE + 20, "all-in cost"),
+        (Q { issued: CLOSE + 10, ..Default::default() }, CLOSE + 10 + 121, "s old"),
+        (Q { deadline: CLOSE + 20 + 100, ..Default::default() }, CLOSE + 20, "closes too soon"),
+        (Q { recipient: "thief.test.near".into(), ..Default::default() }, CLOSE + 20, "deliver to and refund to this fund"),
+        (Q { refund_to: "thief.test.near".into(), ..Default::default() }, CLOSE + 20, "deliver to and refund to this fund"),
+        (Q { buy: OTHER, ..Default::default() }, CLOSE + 20, "not allowed by the mandate"),
+        (Q { buy: USDC, ..Default::default() }, CLOSE + 20, "itself"),
+        (Q { custom_msg: true, ..Default::default() }, CLOSE + 20, "customRecipientMsg"),
+        (Q { min_out: 3_000_000_000_000_000_000_000_000, ..Default::default() }, CLOSE + 20, "not usable"),
+    ];
+    for (q, now, why) in cases {
+        let mut f = funded();
+        assert!(!propose(&mut f, &q, now), "{why}");
+        assert!(last_reason(&f).contains(why), "expected '{why}', got '{}'", last_reason(&f));
+        assert_eq!(f.get_fund().held[0].1 .0, 100_000_000, "nothing moves on a refusal");
+        assert!(f.get_fund().pending.is_none());
+    }
+}
+
+#[test]
+fn trading_waits_for_the_subscription_window_to_close() {
+    let mut f = funded();
+    assert!(!propose(&mut f, &Q { issued: CLOSE - 30, ..Default::default() }, CLOSE - 10));
+    assert!(last_reason(&f).contains("subscription window closes"));
+}
+
+#[test]
+fn a_forged_or_edited_quote_is_refused() {
+    let mut f = funded();
+    let tampered = quote_json(&Q::default()).replace(&"a".repeat(64), &"b".repeat(64));
+    set(OPERATOR, CLOSE + 20);
+    assert!(!f.propose_trade(tampered));
+    assert!(last_reason(&f).contains("does not verify"));
+}
+
+#[test]
+#[should_panic(expected = "only the operator")]
+fn nobody_but_the_operator_can_propose() {
+    let mut f = funded();
+    set("alice.test.near", CLOSE + 20);
+    f.propose_trade(quote_json(&Q::default()));
+}
+
+#[test]
+fn one_trade_at_a_time_cooldown_and_no_reused_deposit_address() {
+    let mut f = funded();
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    assert!(!propose(&mut f, &Q { deposit: "c".repeat(64), ..Default::default() }, CLOSE + 25));
+    assert!(last_reason(&f).contains("already in flight"));
+    // Close it as failed (nothing left), then the cooldown still applies.
+    set_with_results(CLOSE + 30, vec![PromiseResult::Failed]);
+    f.on_trade_sent(0);
+    assert_eq!(f.get_fund().held[0].1 .0, 100_000_000, "a failed send restores the input");
+    assert!(!propose(&mut f, &Q { deposit: "c".repeat(64), issued: CLOSE + 100, ..Default::default() }, CLOSE + 110));
+    assert!(last_reason(&f).contains("too soon"));
+    // After the cooldown, the same deposit address is still refused.
+    let later = CLOSE + 20 + 660;
+    assert!(!propose(&mut f, &Q { issued: later, deadline: later + 86_400, ..Default::default() }, later + 5));
+    assert!(last_reason(&f).contains("already used"));
+    assert!(propose(&mut f, &Q { deposit: "c".repeat(64), issued: later, deadline: later + 86_400, ..Default::default() }, later + 5));
+}
+
+#[test]
+fn the_real_1click_signature_is_checked_against_the_configured_key() {
+    // The fixture is a genuine 1Click quote; with the test key it must not verify.
+    let mut f = funded();
+    set(OPERATOR, CLOSE + 20);
+    assert!(!f.propose_trade(include_str!("../tests/fixtures/quote_live.json").to_string()));
+    assert!(last_reason(&f).contains("does not verify"));
+}
+
+// ------------------------------------------------------------------ settle / refund / abandon
+
+fn sent_fund() -> Plinth {
+    let mut f = funded();
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    ok_sent(&mut f, 0, CLOSE + 21);
+    f
+}
+
+#[test]
+fn settle_credits_the_output_when_at_least_min_out_arrived() {
+    let mut f = sent_fund();
+    set_with_results(CLOSE + 60, vec![]);
+    // Not yet: nothing arrived.
+    assert_eq!(f.on_settle(0, 0, bal(0), bal(90_000_000)), TradeStatus::Sent);
+    assert!(f.get_fund().pending.is_some());
+    // Output arrived.
+    let out = 2_695_000_000_000_000_000_000_000;
+    assert_eq!(f.on_settle(0, 0, bal(out), bal(90_000_000)), TradeStatus::Settled);
+    let v = f.get_fund();
+    assert!(v.pending.is_none());
+    assert_eq!((v.held[0].1 .0, v.held[1].1 .0), (90_000_000, out));
+    assert_eq!(f.get_trades(0, 1)[0].received_out.0, out);
+    // A second settle callback for the same trade changes nothing.
+    assert_eq!(f.on_settle(0, 0, bal(out * 2), bal(90_000_000)), TradeStatus::Settled);
+    assert_eq!(f.get_fund().held[1].1 .0, out);
+}
+
+#[test]
+fn a_1click_refund_closes_the_trade_as_refunded() {
+    let mut f = sent_fund();
+    set_with_results(CLOSE + 900, vec![]);
+    assert_eq!(f.on_settle(0, 0, bal(0), bal(90_000_000 + 10_000_000 - 4_500)), TradeStatus::Refunded);
+    assert_eq!(f.get_fund().held[0].1 .0, 100_000_000 - 4_500);
+}
+
+#[test]
+fn abandon_only_long_after_the_deposit_address_expired() {
+    let mut f = sent_fund();
+    let deadline = Q::default().deadline;
+    set("anyone.test.near", deadline + ABANDON_AFTER_SECONDS);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.abandon())).is_err());
+    set("anyone.test.near", deadline + ABANDON_AFTER_SECONDS + 1);
+    f.abandon();
+    assert!(f.get_fund().pending.is_none());
+    assert_eq!(f.get_trades(0, 1)[0].status, TradeStatus::Abandoned);
+}
+
+#[test]
+fn absorb_counts_donations_only_with_no_trade_in_flight() {
+    let mut f = funded();
+    set_with_results(T0 + 100, vec![]);
+    assert_eq!(f.on_absorb(0, 0, bal(100_000_123)).0, 123);
+    assert_eq!(f.get_fund().held[0].1 .0, 100_000_123);
+}
+
+// ------------------------------------------------------------------ redeem
+
+#[test]
+fn redeem_pays_the_pro_rata_amount_of_every_token_in_kind() {
+    let mut f = sent_fund();
+    set_with_results(CLOSE + 60, vec![]);
+    let out = 2_695_000_000_000_000_000_000_000u128;
+    f.on_settle(0, 0, bal(out), bal(90_000_000));
+    // Bob holds 40%.
+    set("bob.test.near", CLOSE + 70);
+    f.redeem(U128(40_000_000));
+    let v = f.get_fund();
+    assert_eq!(v.held[0].1 .0, 90_000_000 - 36_000_000);
+    assert_eq!(v.held[1].1 .0, out - out * 40 / 100);
+    assert_eq!(v.total_shares.0, 60_000_000);
+    assert_eq!(f.get_shares("bob.test.near".parse().unwrap()).0, 0);
+    // In flight, the payouts are tracked per token and are not claimable.
+    assert_eq!(f.get_fund().in_flight_payouts, vec![U128(36_000_000), U128(out * 40 / 100)]);
+    assert!(f.get_owed("bob.test.near".parse().unwrap()).is_empty());
+    payout(&mut f, "bob.test.near", 0, 36_000_000, true, CLOSE + 71);
+    payout(&mut f, "bob.test.near", 1, out * 40 / 100, true, CLOSE + 71);
+    assert_eq!(f.get_fund().in_flight_payouts, vec![U128(0), U128(0)]);
+    assert!(f.get_owed("bob.test.near".parse().unwrap()).is_empty());
+}
+
+#[test]
+fn a_failed_payout_stays_owed_and_is_not_mistaken_for_trade_output() {
+    let mut f = funded();
+    set("bob.test.near", T0 + 100);
+    f.redeem(U128(40_000_000));
+    payout(&mut f, "bob.test.near", 0, 40_000_000, false, T0 + 101);
+    assert_eq!(f.get_owed("bob.test.near".parse().unwrap()), vec![U128(40_000_000), U128(0)]);
+    // The fund's token balance still includes Bob's 40; absorb must not count it as a donation.
+    set_with_results(T0 + 102, vec![]);
+    assert_eq!(f.on_absorb(0, 1, bal(100_000_000)).0, 0);
+    assert_eq!(f.get_fund().held[0].1 .0, 60_000_000);
+    // Claim retries it; success clears it.
+    set("bob.test.near", T0 + 103);
+    f.claim();
+    payout(&mut f, "bob.test.near", 0, 40_000_000, true, T0 + 104);
+    assert!(f.get_owed("bob.test.near".parse().unwrap()).is_empty());
+}
+
+#[test]
+fn redeem_waits_at_most_ten_minutes_for_a_trade_in_flight() {
+    let mut f = sent_fund();
+    set("alice.test.near", CLOSE + 21 + 60);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.redeem(U128(1_000_000)))).is_err());
+    set("alice.test.near", CLOSE + 20 + REDEEM_WAIT_SECONDS);
+    f.redeem(U128(60_000_000));
+    // Alice leaves with 60% of what is held (the 10 USDC in flight stays with the fund).
+    assert_eq!(f.get_fund().held[0].1 .0, 90_000_000 - 54_000_000);
+}
+
+#[test]
+#[should_panic(expected = "not enough shares")]
+fn cannot_redeem_more_than_you_hold() {
+    let mut f = funded();
+    set("bob.test.near", T0 + 100);
+    f.redeem(U128(40_000_001));
+}
+
+#[test]
+fn cost_of_the_real_fixture_matches_the_operator_tool() {
+    // tools/test/oneclick.test.ts asserts the same 109 bps for this quote.
+    set("x.test.near", T0);
+    let key = quote::decode_public_key(quote::ONE_CLICK_MANAGER_PUB_KEY).unwrap();
+    let q = quote::verify_quote(include_str!("../tests/fixtures/quote_live.json"), &key).unwrap();
+    assert_eq!(cost_bps(&q), Some(109));
+}
+
+#[test]
+fn cost_formula_uses_the_worst_case_output() {
+    let q = quote::VerifiedQuote {
+        deposit_address: "x.near".parse().unwrap(),
+        origin_asset: String::new(),
+        destination_asset: String::new(),
+        amount_in: 1,
+        amount_out: 1_000,
+        min_amount_out: 990,
+        amount_in_usd_micros: 10_000_000,
+        amount_out_usd_micros: 9_950_000,
+        refund_fee: 0,
+        recipient: String::new(),
+        refund_to: String::new(),
+        refund_type: String::new(),
+        deadline_seconds: 0,
+        issued_seconds: 0,
+        has_custom_recipient_msg: false,
+        unsupported_field: None,
+    };
+    // worst out = 9.95 * 0.99 = 9.8505 → cost = 1.495% = 149 bps
+    assert_eq!(cost_bps(&q), Some(149));
+    let _ = Value::Null;
+    let _ = accounts(0);
+}
+
+// ------------------------------------------------------------------ audit findings (2026-11-10)
+
+#[test]
+fn audit_c1_an_in_flight_payout_cannot_be_claimed_again() {
+    let mut f = funded();
+    set("bob.test.near", T0 + 100);
+    f.redeem(U128(40_000_000));
+    // Same receipt: claim finds nothing while the payout is in flight.
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.claim())).is_err());
+    payout(&mut f, "bob.test.near", 0, 40_000_000, false, T0 + 101);
+    set("bob.test.near", T0 + 102);
+    f.claim();
+    // Already re-sent: a second claim before it resolves finds nothing.
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.claim())).is_err());
+    assert_eq!(f.get_fund().in_flight_payouts[0].0, 40_000_000);
+    payout(&mut f, "bob.test.near", 0, 40_000_000, true, T0 + 103);
+    assert_eq!(f.get_fund().in_flight_payouts[0].0, 0);
+    assert!(f.get_owed("bob.test.near".parse().unwrap()).is_empty());
+    assert_eq!(f.get_fund().held[0].1 .0, 60_000_000);
+}
+
+#[test]
+#[should_panic(expected = "1 to 4 tokens")]
+fn audit_h1_at_most_four_tokens_so_redemption_fits_in_one_transaction() {
+    set("d.test.near", T0);
+    let mut c = config();
+    c.mandate.tokens = (0..5).map(|i| format!("t{i}.test.near").parse().unwrap()).collect();
+    Plinth::new(c);
+}
+
+#[test]
+fn audit_h2_mul_div_is_exact_beyond_u128_products() {
+    assert_eq!(mul_div(u128::MAX, u128::MAX, u128::MAX), Some(u128::MAX));
+    assert_eq!(mul_div(3 * 10u128.pow(28), 10u128.pow(11), 10u128.pow(11)), Some(3 * 10u128.pow(28)));
+    assert_eq!(mul_div(3 * 10u128.pow(28), 4 * 10u128.pow(10), 10u128.pow(11)), Some(12 * 10u128.pow(27)));
+    assert_eq!(mul_div(7, 3, 2), Some(10));
+    assert_eq!(mul_div(u128::MAX, 2, 1), None);
+    assert_eq!(mul_div(1, 1, 0), None);
+    // 30k wNEAR held by a 100k-share fund: a full redeem no longer overflows.
+    let mut f = funded();
+    set_with_results(T0 + 100, vec![]);
+    f.on_absorb(1, 0, bal(3 * 10u128.pow(28)));
+    set("alice.test.near", T0 + 101);
+    f.redeem(U128(60_000_000));
+    assert_eq!(f.get_fund().in_flight_payouts[1].0, 18 * 10u128.pow(27));
+}
+
+#[test]
+#[should_panic(expected = "at least 660")]
+fn audit_m1_cooldown_must_outlast_the_redemption_wait() {
+    set("d.test.near", T0);
+    let mut c = config();
+    c.mandate.min_seconds_between_trades = 600;
+    Plinth::new(c);
+}
+
+#[test]
+fn audit_m2_a_settle_read_made_before_a_payout_resolved_is_ignored() {
+    let mut f = sent_fund();
+    set("bob.test.near", CLOSE + 20 + REDEEM_WAIT_SECONDS);
+    f.redeem(U128(10_000_000));
+    payout(&mut f, "bob.test.near", 0, 9_000_000, true, CLOSE + 20 + REDEEM_WAIT_SECONDS + 1);
+    set_with_results(CLOSE + 700, vec![]);
+    // Read taken with payouts_resolved = 0, but one payout resolved meanwhile: no credit.
+    assert_eq!(f.on_settle(0, 0, bal(2_695_000_000_000_000_000_000_000), bal(90_000_000)), TradeStatus::Sent);
+    assert_eq!(f.on_settle(0, 1, bal(2_695_000_000_000_000_000_000_000), bal(81_000_000)), TradeStatus::Settled);
+}
+
+#[test]
+fn audit_m3_leaving_during_the_window_frees_the_subscription_cap() {
+    let mut f = fund();
+    for _ in 0..30 {
+        assert_eq!(subscribe(&mut f, "mallory.test.near", 900_000_000, T0 + 10).0, 0);
+        set("mallory.test.near", T0 + 11);
+        f.redeem(U128(900_000_000));
+    }
+    assert_eq!(f.get_fund().total_subscribed.0, 0);
+    assert_eq!(subscribe(&mut f, "alice.test.near", 1_000_000_000, T0 + 20).0, 0);
+}
+
+#[test]
+fn audit_l2_a_deposit_memo_is_refused() {
+    let mut f = funded();
+    assert!(!propose(&mut f, &Q { memo: true, ..Default::default() }, CLOSE + 20));
+    assert!(last_reason(&f).contains("depositMemo"));
+}
+
+#[test]
+fn audit_l3_a_token_the_fund_is_not_registered_on_cannot_be_traded() {
+    set("deployer.test.near", T0);
+    let mut f = Plinth::new(config());
+    set_with_results(T0, vec![PromiseResult::Successful(vec![])]);
+    f.on_registered(0);
+    set_with_results(T0, vec![PromiseResult::Failed]);
+    f.on_registered(1);
+    assert_eq!(subscribe(&mut f, "alice.test.near", 100_000_000, T0 + 10).0, 0);
+    assert!(!propose(&mut f, &Q::default(), CLOSE + 20));
+    assert!(last_reason(&f).contains("not registered"));
+}
+
+#[test]
+fn audit_h3_trades_per_day_are_capped() {
+    let mut f = funded();
+    let mut t = CLOSE + 20;
+    let mut sent = 0;
+    for k in 0..4 {
+        let q = Q { deposit: format!("{:064x}", k + 1), issued: t - 5, deadline: t + 86_400, ..Default::default() };
+        if propose(&mut f, &q, t) {
+            sent += 1;
+            ok_sent(&mut f, k as u64, t + 1);
+            set_with_results(t + 2, vec![]);
+            let held_b = f.get_fund().held[1].1 .0;
+            f.on_settle(k as u64, 0, bal(held_b + 2_695_000_000_000_000_000_000_000), bal(f.get_fund().held[0].1 .0));
+        }
+        t += 700;
+    }
+    // CLOSE + 20 .. + 2100 s is within one UTC day only if it does not cross midnight; the mandate says 3.
+    assert!(sent <= 3, "sent {sent}");
+    if (CLOSE + 20) / 86_400 == (CLOSE + 20 + 2100) / 86_400 {
+        assert_eq!(sent, 3);
+        assert!(last_reason(&f).contains("used up"));
+    }
+}

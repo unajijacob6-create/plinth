@@ -1,0 +1,39 @@
+{
+  "name": "plinth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A NEAR fund nobody can change, with an exit nobody can block.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Unaji Jacob",
+  "scripts": {
+    "test": "node --import tsx --test tools/test/*.test.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "contracts": "bash contracts/test.sh",
+    "verify": "tsx tools/verify.ts",
+    "quote": "tsx tools/quote.ts",
+    "operator": "tsx tools/operator.ts",
+    "deploy": "tsx tools/deploy.ts",
+    "demo:testnet": "tsx tools/demo-testnet.ts",
+    "web:dev": "vite web",
+    "web:build": "vite build web",
+    "web:preview": "vite preview web --port 4173 --strictPort"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@noble/curves": "2.2.0",
+    "@noble/hashes": "2.2.0",
+    "bs58": "6.0.0",
+    "near-api-js": "7.4.0",
+    "@fontsource-variable/manrope": "5.3.0",
+    "@fontsource/jetbrains-mono": "5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.7"
+  }
+}
