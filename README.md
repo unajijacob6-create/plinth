@@ -95,7 +95,7 @@ injection on purpose: the contract decides.
 Honest reading: in these runs both models resisted the injection and held, so the contract was not
 needed against them; the hijacked-operator case shows what the contract does when the operator
 itself is turned. `npm run operate` runs one AI-operated round on a live fund with a real 1Click
-quote (mainnet; not yet run, since the mainnet fund does not exist yet).
+quote. It has only been run on testnet, against the test signer (see Limits).
 
 ### Two models must agree (`--quorum`)
 
@@ -185,6 +185,11 @@ price, oracle, operator or enclave is involved. While one trade is in flight, re
 
 ## Limits (read these)
 
+- **Testnet only.** Every fund, trade and receipt in this README is on NEAR testnet, where 1Click
+  quotes are signed by a test key and delivered by a solver account. No Plinth fund has been
+  deployed on mainnet, and the contract has not been used with a real 1Click quote on chain. The
+  mainnet route is tested only against a recorded real quote and mainnet `wrap.near` /
+  `meta-pool.near` code in the sandbox.
 - **No fixes.** A keyless contract cannot be upgraded; a bug is permanent. Start small.
 - **1Click delivers.** The contract checks the signed quote; it cannot force delivery. Refunds go to
   the fund. A trade with neither output nor refund can be written off 7 days after its deposit
