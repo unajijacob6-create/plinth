@@ -219,3 +219,7 @@ h2::after { content: ""; display: block; width: 44px; height: 3px; margin-top: 1
 .agent-case a { color: var(--cyan); font: 12px var(--mono); }
 .said { margin: 6px 0 0; padding: 10px 12px; border-radius: 10px; background: #070c16; border: 1px solid var(--line); font: 12px/1.5 var(--mono); color: #cbd5e1; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
 .okc { color: var(--ok); }
+
+.sub-h { margin: 2.5rem 0 0.5rem; font-size: 1.15rem; }
+.vote { border-left: 2px solid rgba(140, 160, 180, 0.25); padding: 0.1rem 0 0.1rem 0.7rem; margin: 0.5rem 0; overflow-wrap: anywhere; }
+.danger { color: #ff7a6b; }

@@ -22,7 +22,8 @@
     "smoke:open": "tsx tools/smoke-open.ts",
     "operate": "NODE_USE_ENV_PROXY=1 tsx tools/operate.ts",
     "test:web": "node web/tests/smoke.mjs",
-    "demo:earn": "tsx tools/demo-earn.ts"
+    "demo:earn": "tsx tools/demo-earn.ts",
+    "demo:quorum": "NODE_USE_ENV_PROXY=1 tsx tools/demo-quorum.ts"
   },
   "engines": {
     "node": ">=22"

@@ -36,14 +36,35 @@ export async function chat(system: string, user: string, model = AGENT_MODEL): P
   };
 }
 
-/** Offline check: the signed text names this model and the hashes of these exact bytes, and the
- *  signature recovers to the stated signing address. (That the address belongs to an attested TEE is
- *  shown by NEAR AI's attestation report for the model; see README.) */
-export function verifyReceipt(r: Receipt): { ok: boolean; checks: string[] } {
+/** What a receipt can prove.
+ *  - "enclave": models NEAR AI Cloud runs in its own TEEs (e.g. DeepSeek). The model's enclave key signs
+ *    `model:sha256(request):sha256(response)`; NEAR AI's attestation report for the model ties that key
+ *    to attested hardware (see README).
+ *  - "gateway": external providers (e.g. Google Gemini) proxied by NEAR AI Cloud. A NEAR AI key signs
+ *    `sha256(request):sha256(response)` (no model name). NEAR AI's attestation endpoint answers, for these
+ *    models: "TEE attestation is not supported for external providers. External providers run outside of
+ *    our Trusted Execution Environment." So the receipt shows which bytes NEAR AI relayed, nothing more. */
+export type ReceiptKind = "enclave" | "gateway";
+
+export function receiptKind(r: Pick<Receipt, "model" | "signed_text">): ReceiptKind {
+  return r.signed_text?.startsWith(`${r.model}:`) ? "enclave" : "gateway";
+}
+
+/** Offline check: the signed text covers the hashes of these exact bytes (and, for enclave receipts,
+ *  names the model), and the signature recovers to the stated signing address. */
+export function verifyReceipt(r: Receipt): { ok: boolean; kind: ReceiptKind; checks: string[] } {
   const checks: string[] = [];
-  const expect = `${r.model}:${sha256hex(r.request)}:${sha256hex(r.response)}`;
+  const kind = receiptKind(r);
+  const hashes = `${sha256hex(r.request)}:${sha256hex(r.response)}`;
+  const expect = kind === "enclave" ? `${r.model}:${hashes}` : hashes;
   const textOk = r.signed_text === expect;
-  checks.push(textOk ? "signed text = model:sha256(request):sha256(response)" : `signed text differs from ${expect.slice(0, 60)}…`);
+  checks.push(
+    textOk
+      ? kind === "enclave"
+        ? "signed text = model:sha256(request):sha256(response) (model enclave key)"
+        : "signed text = sha256(request):sha256(response) (NEAR AI gateway key; this model runs outside NEAR AI's TEE)"
+      : `signed text differs from ${expect.slice(0, 60)}…`,
+  );
   let recovered = "";
   try {
     const msg = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${new TextEncoder().encode(r.signed_text).length}${r.signed_text}`);
@@ -61,5 +82,5 @@ export function verifyReceipt(r: Receipt): { ok: boolean; checks: string[] } {
   }
   const sigOk = recovered.toLowerCase() === r.signing_address.toLowerCase();
   checks.push(sigOk ? `signature recovers to ${r.signing_address}` : `signature recovers to ${recovered || "nothing"}, not ${r.signing_address}`);
-  return { ok: textOk && sigOk, checks };
+  return { ok: textOk && sigOk, kind, checks };
 }

@@ -9,10 +9,15 @@ const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;"
 const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 const enc = (s: string) => new TextEncoder().encode(s);
 
-export function verifyReceipt(r: any): { ok: boolean; why: string } {
+// "enclave": NEAR AI's own TEE models sign model:sha256(req):sha256(resp) with the model's enclave key.
+// "gateway": external providers (Gemini) are signed sha256(req):sha256(resp) by a NEAR AI gateway key;
+// NEAR AI says these models run outside its TEE, so the receipt proves only what NEAR AI relayed.
+export function verifyReceipt(r: any): { ok: boolean; why: string; kind: "enclave" | "gateway" } {
+  const kind = String(r.signed_text ?? "").startsWith(`${r.model}:`) ? "enclave" : "gateway";
   try {
-    const expect = `${r.model}:${hex(sha256(enc(r.request)))}:${hex(sha256(enc(r.response)))}`;
-    if (r.signed_text !== expect) return { ok: false, why: "signed text does not match the request and response" };
+    const hashes = `${hex(sha256(enc(r.request)))}:${hex(sha256(enc(r.response)))}`;
+    const expect = kind === "enclave" ? `${r.model}:${hashes}` : hashes;
+    if (r.signed_text !== expect) return { ok: false, kind, why: "signed text does not match the request and response" };
     const text = enc(r.signed_text);
     const hash = keccak_256(new Uint8Array([...enc(`\x19Ethereum Signed Message:\n${text.length}`), ...text]));
     const sig = Uint8Array.from(r.signature.replace(/^0x/, "").match(/../g)!.map((h: string) => parseInt(h, 16)));
@@ -21,9 +26,10 @@ export function verifyReceipt(r: any): { ok: boolean; why: string } {
     rec.set(sig.subarray(0, 64), 1);
     const pub = secp256k1.Point.fromBytes(secp256k1.recoverPublicKey(rec, hash, { prehash: false })).toBytes(false);
     const addr = "0x" + hex(keccak_256(pub.subarray(1)).subarray(12));
-    return addr.toLowerCase() === String(r.signing_address).toLowerCase() ? { ok: true, why: `signed by ${addr}` } : { ok: false, why: `recovers to ${addr}` };
+    const who = kind === "enclave" ? "model enclave key" : "NEAR AI gateway key (model runs outside NEAR AI's TEE)";
+    return addr.toLowerCase() === String(r.signing_address).toLowerCase() ? { ok: true, kind, why: `signed by ${addr}, ${who}` } : { ok: false, kind, why: `recovers to ${addr}` };
   } catch (e) {
-    return { ok: false, why: (e as Error).message };
+    return { ok: false, kind, why: (e as Error).message };
   }
 }
 
@@ -51,6 +57,40 @@ export function mountAgent(run: any) {
             ? `<span class="tag no">contract refused</span> <span class="small">${esc(c.contract_reason ?? "")}</span> <a href="${explorer("testnet", c.tx)}" target="_blank" rel="noopener">${esc(c.tx.slice(0, 10))}… ↗</a>`
             : `<span class="tag">nothing proposed</span> <span class="small">the model chose to hold</span>`;
       return `<div class="card agent-case"><span class="tag">${esc(title)}</span><p class="small muted">${esc(sub)}</p>${said}<p>${verdict}</p>${v ? `<p class="small ${v.ok ? "okc" : "bad"}">${v.ok ? "✓" : "✗"} NEAR AI receipt ${v.ok ? "verified" : "NOT verified"}: ${esc(v.why)}</p>` : ""}</div>`;
+    })
+    .join("");
+}
+
+const QTITLES: Record<string, [string, string]> = {
+  injected: ["Prompt injection, two models", "The same injected note goes to DeepSeek and to Gemini."],
+  "one-fooled": ["Safety-removed DeepSeek + Gemini", "The DeepSeek seat is taken by its safety-removed variant, the stand-in for a jailbroken model."],
+  honest: ["Ordinary day, two models", "A normal note. Both must agree; the smaller amount is proposed."],
+};
+
+export function mountQuorum(run: any) {
+  const el = document.getElementById("quorum-cases");
+  if (!el || !run?.cases) return;
+  document.getElementById("quorum-sub")!.innerHTML = `Recorded ${esc(String(run.started_at).slice(0, 10))} on testnet against <span class="mono">${esc(run.fund)}</span>. The operator proposes a trade only when every model says trade with the same tokens and recipient, at the smallest amount any of them asked for. Anything else is a hold, before the contract is even asked.`;
+  el.innerHTML = run.cases
+    .map((c: any) => {
+      const [title, sub] = QTITLES[c.label] ?? [c.label, ""];
+      const votes = c.votes
+        .map((v: any) => {
+          const r = v.receipt ? verifyReceipt(v.receipt) : null;
+          const d = v.decision;
+          const what = !d ? "no usable answer" : d.action === "hold" ? "hold" : `trade ${esc(d.amount)} of ${esc(d.sell)} → ${esc(d.recipient || run.fund)}`;
+          const danger = d?.action === "trade" && d.recipient && d.recipient !== run.fund;
+          return `<div class="vote"><p class="small"><span class="mono">${esc(String(v.model).split("/").pop())}</span>: <b class="${danger ? "danger" : ""}">${what}</b></p>${r ? `<p class="small ${r.ok ? "okc" : "bad"}">${r.ok ? "✓" : "✗"} receipt (${r.kind}) ${r.ok ? "verified" : "NOT verified"}: ${esc(r.why)}</p>` : ""}</div>`;
+        })
+        .join("");
+      const q = c.quorum;
+      const verdict =
+        c.accepted === true
+          ? `<span class="tag yes">quorum: trade</span> <span class="tag yes">contract accepted</span> <a href="${explorer("testnet", c.tx)}" target="_blank" rel="noopener">${esc(c.tx.slice(0, 10))}… ↗</a>${c.settle_tx ? ` · settled <a href="${explorer("testnet", c.settle_tx)}" target="_blank" rel="noopener">↗</a>` : ""}`
+          : c.accepted === false
+            ? `<span class="tag yes">quorum: trade</span> <span class="tag no">contract refused</span> <span class="small">${esc(c.contract_reason ?? "")}</span>`
+            : `<span class="tag no">quorum: hold</span> <span class="small">${esc(q.why)}</span>`;
+      return `<div class="card agent-case quorum-case"><span class="tag">${esc(title)}</span><p class="small muted">${esc(sub)}</p>${votes}<p>${verdict}</p></div>`;
     })
     .join("");
 }

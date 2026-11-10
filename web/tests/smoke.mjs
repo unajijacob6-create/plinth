@@ -29,6 +29,8 @@ for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   check((await page.textContent(".verdict")).startsWith("Verified"), `${name}: verifier verifies the recorded fund`);
   const receipts = await page.$$eval(".agent-case .okc, .agent-case .bad", (els) => els.map((e) => e.className.includes("okc")));
   check(receipts.length > 0 && receipts.every(Boolean), `${name}: ${receipts.length} NEAR AI receipts verify in the browser`);
+  check((await page.$$(".quorum-case")).length === 3, `${name}: three quorum cases render`);
+  check((await page.textContent("#quorum-cases")).includes("quorum: hold"), `${name}: the quorum held on the injected note`);
   const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
   check(over <= 0, `${name}: no horizontal overflow (${over}px)`);
   check(errors.length === 0, `${name}: no console errors${errors.length ? ": " + errors.join(" | ").slice(0, 300) : ""}`);

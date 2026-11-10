@@ -4,7 +4,8 @@ import { verifyFund, explorer, accountLink, type Net } from "./chain.ts";
 import { mountApp } from "./app.ts";
 import openFund from "../../data/open-fund.json";
 import agentRun from "../../data/agent-run.json";
-import { mountAgent } from "./agent.ts";
+import { mountAgent, mountQuorum } from "./agent.ts";
+import quorumRun from "../../data/quorum-run.json";
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -132,3 +133,4 @@ void mountApp([
 ]);
 
 mountAgent(agentRun);
+mountQuorum(quorumRun);
