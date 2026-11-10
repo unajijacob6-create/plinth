@@ -311,3 +311,87 @@ async fn audit_h1_four_token_redeem_fits_in_one_transaction() -> anyhow::Result<
     }
     Ok(())
 }
+
+/// Earning, end to end on a local node: the fund holds wNEAR, the operator stakes 2 of it into a
+/// liquid-staking token at par (unwrap -> price -> deposit_and_stake), anyone settles, a depositor
+/// exits with stNEAR in kind, and the operator's management fee shares accrue.
+#[tokio::test]
+async fn stake_idle_end_to_end_and_management_fee() -> anyhow::Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let root = worker.root_account()?;
+    let usdc = token(&worker, &root, "usdc").await?;
+    let wnear = token(&worker, &root, "wnear").await?;
+    let lst_acc = root.create_subaccount("stnear").initial_balance(NearToken::from_near(10)).transact().await?.into_result()?;
+    let stnear = lst_acc.deploy(&std::fs::read(MOCK_FT)?).await?.into_result()?;
+    stnear.call("new_staking").args_json(json!({"price": "1500000000000000000000000"})).transact().await?.into_result()?;
+    let alice = root.create_subaccount("alice").initial_balance(NearToken::from_near(10)).transact().await?.into_result()?;
+    let operator = root.create_subaccount("operator").initial_balance(NearToken::from_near(5)).transact().await?.into_result()?;
+    let donor = root.create_subaccount("donor").initial_balance(NearToken::from_near(20)).transact().await?.into_result()?;
+    for t in [&usdc, &wnear, &stnear] {
+        register(&alice, t).await?;
+    }
+    register(&donor, &wnear).await?;
+    root.call(usdc.id(), "mint").args_json(json!({"account_id": alice.id(), "amount": "100000000"})).transact().await?.into_result()?;
+
+    let fund_id: AccountId = format!("fund.{}", root.id()).parse()?;
+    let close = now_s(&worker).await? + 12;
+    let config = json!({
+        "mandate": {
+            "tokens": [usdc.id(), wnear.id(), stnear.id()], "max_trade_bps": 2500, "max_cost_bps": 100,
+            "min_seconds_between_trades": 660, "max_trades_per_day": 6, "max_quote_age_seconds": 300, "min_deadline_margin_seconds": 600,
+            "subscription_closes_at": close, "min_subscription": "1000000", "max_total_subscriptions": "1000000000",
+            "management_fee_bps": 200,
+            "staking": {"wrap_index": 1, "lst_index": 2, "price_method": "get_st_near_price", "min_stake": "1000000000000000000000000", "max_price_slippage_bps": 50},
+        },
+        "operator": operator.id(),
+        "quote_signer": "ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc",
+        "storage_deposit": STORAGE.as_yoctonear().to_string(),
+    });
+    let r = root.batch(&fund_id).create_account().transfer(NearToken::from_near(5)).deploy(&std::fs::read(PLINTH)?)
+        .call(Function::new("new").args_json(json!({"config": config})).deposit(NearToken::from_millinear(20)).gas(Gas::from_tgas(200)))
+        .transact().await?;
+    assert!(r.is_success(), "{:?}", r.failures());
+    alice.call(usdc.id(), "ft_transfer_call").args_json(json!({"receiver_id": fund_id, "amount": "100000000", "msg": ""}))
+        .deposit(NearToken::from_yoctonear(1)).gas(Gas::from_tgas(150)).transact().await?.into_result()?;
+    // 8 wNEAR reach the fund (as a settled trade would leave them) and are absorbed.
+    donor.call(wnear.id(), "near_deposit").deposit(NearToken::from_near(8)).transact().await?.into_result()?;
+    donor.call(wnear.id(), "ft_transfer").args_json(json!({"receiver_id": fund_id, "amount": NearToken::from_near(8).as_yoctonear().to_string()}))
+        .deposit(NearToken::from_yoctonear(1)).transact().await?.into_result()?;
+    donor.call(&fund_id, "absorb").args_json(json!({"token_index": 1})).gas(Gas::from_tgas(50)).transact().await?.into_result()?;
+    while now_s(&worker).await? < close {
+        worker.fast_forward(10).await?;
+    }
+
+    let two = NearToken::from_near(2).as_yoctonear();
+    let r = operator.call(&fund_id, "stake_idle").args_json(json!({"amount": two.to_string()})).gas(Gas::from_tgas(300)).transact().await?;
+    assert!(r.is_success(), "{:?}", r.failures());
+    assert!(r.json::<bool>()?);
+    let v = fund_view(&worker, &fund_id).await?;
+    assert_eq!(v["pending"]["status"], "Sent", "{v}");
+    let minted: u128 = two * 2 / 3; // price 1.5
+    assert_eq!(balance(&stnear, &fund_id).await?, minted);
+    assert_eq!(balance(&wnear, &fund_id).await?, NearToken::from_near(6).as_yoctonear());
+    let st: Value = alice.call(&fund_id, "settle").gas(Gas::from_tgas(100)).transact().await?.json()?;
+    assert_eq!(st, "Settled");
+    let v = fund_view(&worker, &fund_id).await?;
+    assert_eq!(v["held"][2][1], minted.to_string());
+    // A stake over the size cap (30% of 6 wNEAR) is refused on chain.
+    let r: bool = operator.call(&fund_id, "stake_idle").args_json(json!({"amount": NearToken::from_near(2).as_yoctonear().to_string()})).gas(Gas::from_tgas(300)).transact().await?.json()?;
+    assert!(!r);
+
+    // The fee: the operator has accrued shares since the window closed (2%/yr of 100 pUSD is
+    // about 0.06 shares a second, so let some time pass).
+    worker.fast_forward(200).await?;
+    operator.call(&fund_id, "accrue").transact().await?.into_result()?;
+    let v = fund_view(&worker, &fund_id).await?;
+    let op: u128 = v["operator_shares"].as_str().unwrap().parse()?;
+    assert!(op > 0, "operator fee shares accrued");
+    println!("operator fee shares after {}s: {op}", now_s(&worker).await? - close);
+
+    // Alice exits with her share of every token, stNEAR included.
+    alice.call(&fund_id, "redeem").args_json(json!({"shares": "100000000"})).gas(Gas::from_tgas(250)).transact().await?.into_result()?;
+    let got_st = balance(&stnear, alice.id()).await?;
+    assert!(got_st > 0 && got_st < minted, "alice got {got_st} stNEAR (less than all: the operator owns fee shares)");
+    println!("alice got {} USDC units, {} wNEAR, {} stNEAR", balance(&usdc, alice.id()).await?, balance(&wnear, alice.id()).await?, got_st);
+    Ok(())
+}

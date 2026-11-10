@@ -36,6 +36,8 @@ fn mandate() -> Mandate {
         subscription_closes_at: CLOSE,
         min_subscription: U128(1_000_000),
         max_total_subscriptions: U128(1_000_000_000),
+        management_fee_bps: 0,
+        staking: None,
     }
 }
 
@@ -599,4 +601,199 @@ fn audit_h3_trades_per_day_are_capped() {
         assert_eq!(sent, 3);
         assert!(last_reason(&f).contains("used up"));
     }
+}
+
+// ------------------------------------------------------------------ earning: staking + fee
+
+const LST: &str = "stnear.test.near";
+const PRICE: u128 = 1_514_505_000_000_000_000_000_000; // 1.514505 NEAR per stNEAR
+
+fn staking_config(fee_bps: u16) -> Config {
+    let mut c = config();
+    c.mandate.tokens = vec![USDC.parse().unwrap(), WNEAR.parse().unwrap(), LST.parse().unwrap()];
+    c.mandate.management_fee_bps = fee_bps;
+    c.mandate.staking = Some(StakingRoute { wrap_index: 1, lst_index: 2, price_method: "get_st_near_price".into(), min_stake: U128(10u128.pow(24)), max_price_slippage_bps: 50 });
+    c
+}
+
+fn staking_fund(fee_bps: u16) -> Plinth {
+    set("deployer.test.near", T0);
+    let mut f = Plinth::new(staking_config(fee_bps));
+    for i in 0..3 {
+        set_with_results(T0, vec![PromiseResult::Successful(vec![])]);
+        f.on_registered(i);
+    }
+    assert_eq!(subscribe(&mut f, "alice.test.near", 60_000_000, T0 + 10).0, 0);
+    assert_eq!(subscribe(&mut f, "bob.test.near", 40_000_000, T0 + 20).0, 0);
+    // The fund holds 20 wNEAR (a settled trade or a donation).
+    set_with_results(T0 + 30, vec![]);
+    f.on_absorb(1, 0, bal(20 * 10u128.pow(24)));
+    f
+}
+
+fn stake(f: &mut Plinth, amount: u128, now: u64) -> bool {
+    set(OPERATOR, now);
+    f.stake_idle(U128(amount))
+}
+
+#[test]
+fn stake_idle_unwraps_stakes_at_par_and_settles_against_the_price() {
+    let mut f = staking_fund(0);
+    let five = 5 * 10u128.pow(24);
+    assert!(stake(&mut f, five, CLOSE + 20));
+    assert_eq!(f.get_fund().held[1].1 .0, 15 * 10u128.pow(24));
+    // Unwrap succeeded, price read: the contract computes the minimum it must receive.
+    set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Successful(format!("\"{PRICE}\"").into_bytes())]);
+    f.on_unwrapped(0);
+    let t = f.get_fund().pending.unwrap();
+    let expected = mul_div(five, 10u128.pow(24), PRICE).unwrap();
+    assert_eq!(t.quoted_out.0, expected);
+    assert_eq!(t.min_out.0, expected * 9_950 / 10_000);
+    set_with_results(CLOSE + 22, vec![PromiseResult::Successful(vec![])]);
+    f.on_staked(0);
+    assert_eq!(f.get_fund().pending.unwrap().status, TradeStatus::Sent);
+    // Anyone settles: the minted stNEAR shows in the fund's balance.
+    set_with_results(CLOSE + 30, vec![]);
+    assert_eq!(f.on_settle(0, 0, bal(expected), bal(15 * 10u128.pow(24))), TradeStatus::Settled);
+    assert_eq!(f.get_fund().held[2].1 .0, expected);
+    // Redemption pays stNEAR in kind like any other token.
+    set("bob.test.near", CLOSE + 40);
+    f.redeem(U128(40_000_000));
+    assert_eq!(f.get_fund().in_flight_payouts[2].0, expected * 40 / 100);
+}
+
+#[test]
+fn a_mint_below_the_price_minimum_does_not_settle() {
+    let mut f = staking_fund(0);
+    let five = 5 * 10u128.pow(24);
+    assert!(stake(&mut f, five, CLOSE + 20));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Successful(format!("\"{PRICE}\"").into_bytes())]);
+    f.on_unwrapped(0);
+    set_with_results(CLOSE + 22, vec![PromiseResult::Successful(vec![])]);
+    f.on_staked(0);
+    let min = f.get_fund().pending.unwrap().min_out.0;
+    set_with_results(CLOSE + 30, vec![]);
+    assert_eq!(f.on_settle(0, 0, bal(min - 1), bal(15 * 10u128.pow(24))), TradeStatus::Sent);
+}
+
+#[test]
+fn a_failed_unwrap_restores_the_wnear() {
+    let mut f = staking_fund(0);
+    assert!(stake(&mut f, 5 * 10u128.pow(24), CLOSE + 20));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Failed, PromiseResult::Successful(format!("\"{PRICE}\"").into_bytes())]);
+    f.on_unwrapped(0);
+    let v = f.get_fund();
+    assert!(v.pending.is_none());
+    assert_eq!(v.held[1].1 .0, 20 * 10u128.pow(24));
+    assert_eq!(f.get_trades(0, 1)[0].status, TradeStatus::Failed);
+}
+
+#[test]
+fn a_failed_stake_is_wrapped_back_or_left_recoverable() {
+    // deposit_and_stake fails, re-wrap succeeds: holdings restored.
+    let mut f = staking_fund(0);
+    let five = 5 * 10u128.pow(24);
+    assert!(stake(&mut f, five, CLOSE + 20));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Successful(format!("\"{PRICE}\"").into_bytes())]);
+    f.on_unwrapped(0);
+    set_with_results(CLOSE + 22, vec![PromiseResult::Failed]);
+    f.on_staked(0);
+    set_with_results(CLOSE + 23, vec![PromiseResult::Successful(vec![])]);
+    f.on_rewrapped(0, U128(five));
+    assert_eq!(f.get_fund().held[1].1 .0, 20 * 10u128.pow(24));
+    assert!(f.get_fund().pending.is_none());
+    // Same, but the re-wrap fails too: the NEAR is stranded, then recovered by anyone.
+    let mut g = staking_fund(0);
+    assert!(stake(&mut g, five, CLOSE + 20));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
+    g.on_unwrapped(0); // no price: straight to re-wrap
+    set_with_results(CLOSE + 23, vec![PromiseResult::Failed]);
+    g.on_rewrapped(0, U128(five));
+    assert_eq!(g.get_fund().stranded_near.0, five);
+    assert!(g.get_fund().pending.is_none());
+    let mut ctx = ctx("anyone.test.near", CLOSE + 30);
+    ctx.account_balance(NearToken::from_near(20));
+    testing_env!(ctx.build());
+    g.rewrap_stranded();
+    assert_eq!(g.get_fund().stranded_near.0, 0);
+    set_with_results(CLOSE + 31, vec![PromiseResult::Successful(vec![])]);
+    g.on_rewrapped(u64::MAX, U128(five));
+    assert_eq!(g.get_fund().held[1].1 .0, 20 * 10u128.pow(24));
+}
+
+#[test]
+fn stake_idle_obeys_size_minimum_cooldown_and_operator() {
+    let mut f = staking_fund(0);
+    assert!(!stake(&mut f, 6 * 10u128.pow(24), CLOSE + 20)); // 30% of 20
+    assert!(last_reason(&f).contains("over 2500 bps"));
+    assert!(!stake(&mut f, 10u128.pow(23), CLOSE + 20)); // 0.1 NEAR
+    assert!(last_reason(&f).contains("below the minimum"));
+    assert!(stake(&mut f, 5 * 10u128.pow(24), CLOSE + 20));
+    assert!(!stake(&mut f, 10u128.pow(24), CLOSE + 25));
+    assert!(last_reason(&f).contains("already in flight"));
+    set("alice.test.near", CLOSE + 30);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.stake_idle(U128(10u128.pow(24))))).is_err());
+}
+
+#[test]
+#[should_panic(expected = "no staking route")]
+fn a_fund_without_a_staking_route_cannot_stake() {
+    let mut f = funded();
+    set(OPERATOR, CLOSE + 20);
+    f.stake_idle(U128(10u128.pow(24)));
+}
+
+#[test]
+fn management_fee_accrues_only_after_the_window_and_is_capped() {
+    let mut f = staking_fund(100); // 1% a year
+    // During the window nothing accrues.
+    set("anyone.test.near", CLOSE - 1);
+    f.accrue();
+    assert_eq!(f.get_fund().operator_shares.0, 0);
+    // One year after the window closes the operator holds 1% of all shares.
+    set("anyone.test.near", CLOSE + YEAR_SECONDS as u64);
+    f.accrue();
+    let v = f.get_fund();
+    let op = v.operator_shares.0;
+    // 1% of the fund, to within one part in a million (integer rounding).
+    let ppm = op * 1_000_000 / v.total_shares.0;
+    assert!((9_999..=10_000).contains(&ppm), "operator holds {op} of {} = {ppm} ppm", v.total_shares.0);
+    // A second call in the same second mints nothing more.
+    f.accrue();
+    assert_eq!(f.get_fund().operator_shares.0, op);
+    // Bob redeems after a year: he gets 40% of the 99% left to depositors.
+    set("bob.test.near", CLOSE + YEAR_SECONDS as u64 + 1);
+    f.redeem(U128(40_000_000));
+    let paid = f.get_fund().in_flight_payouts[0].0;
+    assert!(paid < 40_000_000 && paid >= 39_590_000, "paid {paid}");
+}
+
+#[test]
+#[should_panic(expected = "at most 200")]
+fn management_fee_is_capped_at_two_percent() {
+    set("d.test.near", T0);
+    let mut c = config();
+    c.mandate.management_fee_bps = 201;
+    Plinth::new(c);
+}
+
+#[test]
+fn frequent_accruals_do_not_round_the_fee_away() {
+    let mut f = staking_fund(200);
+    // Accrue every 5 seconds for an hour: the total must match one accrual over the hour.
+    let mut t = CLOSE;
+    while t < CLOSE + 3600 {
+        t += 5;
+        set("anyone.test.near", t);
+        f.accrue();
+    }
+    let frequent = f.get_fund().operator_shares.0;
+    let mut g = staking_fund(200);
+    set("anyone.test.near", CLOSE + 3600);
+    g.accrue();
+    let once = g.get_fund().operator_shares.0;
+    assert!(once > 0);
+    // Never more than one accrual would give, and within 2% of it (each mint rounds in the
+    // depositors' favour; 1 share here is 0.000001 pUSD).
+    assert!(frequent <= once + 1 && frequent * 100 >= once * 98, "frequent {frequent} vs once {once}");
 }

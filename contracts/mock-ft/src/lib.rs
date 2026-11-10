@@ -12,13 +12,58 @@ const STORAGE: u128 = 1_250_000_000_000_000_000_000;
 #[derive(PanicOnDefault)]
 pub struct Token {
     balances: LookupMap<AccountId, u128>,
+    /// Liquid-staking mode: yocto-NEAR per 1e24 units (0 = not a staking token).
+    price: u128,
 }
 
 #[near]
 impl Token {
     #[init]
     pub fn new() -> Self {
-        Self { balances: LookupMap::new(b"b") }
+        Self { balances: LookupMap::new(b"b"), price: 0 }
+    }
+
+    /// Liquid-staking test token: `deposit_and_stake` mints attached / price.
+    #[init]
+    pub fn new_staking(price: U128) -> Self {
+        Self { balances: LookupMap::new(b"b"), price: price.0 }
+    }
+
+    // ---- wNEAR behaviour (wrap.near): near_deposit / near_withdraw
+
+    #[payable]
+    pub fn near_deposit(&mut self) {
+        let who = env::predecessor_account_id();
+        let amount = env::attached_deposit().as_yoctonear();
+        let b = *self.balances.get(&who).unwrap_or_else(|| env::panic_str("not registered"));
+        self.balances.insert(who, b + amount);
+    }
+
+    #[payable]
+    pub fn near_withdraw(&mut self, amount: U128) -> Promise {
+        require!(env::attached_deposit().as_yoctonear() == 1, "requires 1 yoctoNEAR");
+        let who = env::predecessor_account_id();
+        let b = *self.balances.get(&who).unwrap_or_else(|| env::panic_str("not registered"));
+        require!(b >= amount.0, "not enough balance");
+        self.balances.insert(who.clone(), b - amount.0);
+        Promise::new(who).transfer(NearToken::from_yoctonear(amount.0))
+    }
+
+    // ---- liquid-staking behaviour (Meta Pool style): deposit_and_stake / get_st_near_price
+
+    #[payable]
+    pub fn deposit_and_stake(&mut self) {
+        require!(self.price > 0, "not a staking token");
+        let amount = env::attached_deposit().as_yoctonear();
+        require!(amount >= 1_000_000_000_000_000_000_000_000, "minimum deposit is 1 NEAR");
+        let who = env::predecessor_account_id();
+        let b = self.balances.get(&who).copied().unwrap_or(0);
+        let minted = amount * 1_000_000 / (self.price / 1_000_000_000_000_000_000);
+        self.balances.insert(who, b + minted);
+    }
+
+    pub fn get_st_near_price(&self) -> U128 {
+        U128(self.price)
     }
 
     /// Test helper: credit a registered account.

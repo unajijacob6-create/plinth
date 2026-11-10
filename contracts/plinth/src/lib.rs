@@ -9,6 +9,11 @@
 //!   and can always `redeem` their pro-rata amount of every token the fund holds, in kind. No
 //!   price, oracle, operator or enclave is involved in the exit.
 //!
+//! Earning: a fund may list a liquid-staking token (e.g. Meta Pool stNEAR) and its wNEAR; the
+//! operator can then `stake_idle` wNEAR into it at par (unwrap, deposit_and_stake), so depositors
+//! earn staking yield while NEAR is staked. The operator is paid only by a yearly management fee in
+//! new shares, fixed at launch (at most 2%), accrued per second; there is no per-trade fee.
+//!
 //! One trade is in flight at a time. Output (or a 1Click refund) arrives as a plain `ft_transfer`,
 //! which does not call the fund, so anyone can call `settle()`; it reads the fund's token balances
 //! and closes the trade.
@@ -34,6 +39,18 @@ pub const ABANDON_AFTER_SECONDS: u64 = 7 * 24 * 3600;
 /// NEAR the fund keeps for its own storage before paying deposit-address registrations.
 const NEAR_RESERVE: u128 = 50_000_000_000_000_000_000_000; // 0.05 NEAR
 const MAX_REJECTIONS_KEPT: u32 = 200;
+const GAS_UNWRAP: Gas = Gas::from_tgas(15);
+const GAS_PRICE_VIEW: Gas = Gas::from_tgas(5);
+const GAS_DEPOSIT_AND_STAKE: Gas = Gas::from_tgas(50);
+const GAS_WRAP: Gas = Gas::from_tgas(10);
+const GAS_ON_UNWRAPPED: Gas = Gas::from_tgas(110);
+const GAS_ON_STAKED: Gas = Gas::from_tgas(40);
+/// Largest management fee, basis points per year.
+pub const MAX_MANAGEMENT_FEE_BPS: u16 = 200;
+/// Seconds per year used for fee accrual (365.25 days).
+pub const YEAR_SECONDS: u128 = 31_557_600;
+/// 1 NEAR in yocto: liquid-staking prices are quoted as yocto-NEAR per 1e24 units of the token.
+const ONE_NEAR: u128 = 1_000_000_000_000_000_000_000_000;
 pub const MAX_TOKENS: usize = 4;
 
 /// Whether the single promise this callback waits on succeeded, whatever it returned.
@@ -118,6 +135,30 @@ pub struct Mandate {
     pub min_subscription: U128,
     /// Largest total subscriptions, in base-token units.
     pub max_total_subscriptions: U128,
+    /// Yearly management fee, in basis points, paid to the operator as newly minted shares,
+    /// accrued per second from the close of the subscription window. At most 200 (2%). It is the
+    /// operator's only pay: there is no per-trade or performance fee.
+    #[serde(default)]
+    pub management_fee_bps: u16,
+    /// Optional: let the operator stake the fund's wNEAR into a liquid-staking token at par.
+    #[serde(default)]
+    pub staking: Option<StakingRoute>,
+}
+
+/// How the fund stakes wNEAR: `tokens[wrap_index]` must be a wNEAR contract (`near_withdraw`,
+/// `near_deposit`) and `tokens[lst_index]` a liquid-staking token that mints for attached NEAR
+/// (`deposit_and_stake`) and reports its price in yocto-NEAR per 1e24 units (`price_method`, e.g.
+/// Meta Pool's `get_st_near_price`).
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct StakingRoute {
+    pub wrap_index: u8,
+    pub lst_index: u8,
+    pub price_method: String,
+    /// Smallest stake the liquid-staking contract accepts (Meta Pool: 1 NEAR).
+    pub min_stake: U128,
+    /// The minted amount must be at least amount / price minus this many basis points.
+    pub max_price_slippage_bps: u16,
 }
 
 #[near(serializers = [json, borsh])]
@@ -153,6 +194,8 @@ pub enum TradeStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trade {
     pub id: u64,
+    /// A stake of wNEAR into the liquid-staking token (`stake_idle`) rather than a 1Click swap.
+    pub stake: bool,
     pub sell: u8,
     pub buy: u8,
     pub amount_in: U128,
@@ -194,6 +237,9 @@ pub struct FundView {
     pub in_flight_payouts: Vec<U128>,
     pub registered: Vec<bool>,
     pub trades_today: u32,
+    pub fee_accrued_at: u64,
+    pub stranded_near: U128,
+    pub operator_shares: U128,
 }
 
 #[near(contract_state)]
@@ -221,6 +267,10 @@ pub struct Plinth {
     /// UTC day of the last trade and the number of trades sent that day.
     trade_day: u64,
     trades_today: u32,
+    /// Management fee accrued up to this time.
+    fee_accrued_at: u64,
+    /// Unwrapped NEAR that could not be re-wrapped after a failed stake (`rewrap_stranded`).
+    stranded_near: u128,
     used_deposit_addresses: LookupSet<AccountId>,
     trades: Vector<Trade>,
     pending: Option<u64>,
@@ -267,6 +317,13 @@ impl Plinth {
         require!(m.subscription_closes_at > now_seconds(), "subscription must close in the future");
         require!(m.min_subscription.0 > 0 && m.min_subscription.0 <= m.max_total_subscriptions.0, "bad subscription limits");
         require!(config.operator != env::current_account_id(), "the fund cannot be its own operator");
+        require!(m.management_fee_bps <= MAX_MANAGEMENT_FEE_BPS, "management_fee_bps must be at most 200");
+        if let Some(r) = &m.staking {
+            let n = m.tokens.len() as u8;
+            require!(r.wrap_index < n && r.lst_index < n && r.wrap_index != r.lst_index, "bad staking token indices");
+            require!(!r.price_method.is_empty() && r.price_method.len() <= 64, "bad price_method");
+            require!(r.max_price_slippage_bps <= 500, "max_price_slippage_bps must be at most 500");
+        }
         let signer_key = quote::decode_public_key(&config.quote_signer).unwrap_or_else(|| env::panic_str("quote_signer is not an ed25519 key"));
         let n = m.tokens.len();
         // Register the fund on every token it may hold, so outputs and refunds can land.
@@ -291,6 +348,8 @@ impl Plinth {
             registered: vec![false; n],
             trade_day: 0,
             trades_today: 0,
+            fee_accrued_at: 0,
+            stranded_near: 0,
             used_deposit_addresses: LookupSet::new(StorageKey::UsedDepositAddresses),
             trades: Vector::new(StorageKey::Trades),
             pending: None,
@@ -337,38 +396,243 @@ impl Plinth {
     /// (with its reason) instead of panicking, so refusals are visible on chain.
     pub fn propose_trade(&mut self, quote: String) -> bool {
         require!(env::predecessor_account_id() == self.config.operator, "only the operator can propose trades");
+        self.accrue_fee();
         match self.check_trade(&quote) {
             Ok(t) => {
                 self.send_trade(t);
                 true
             }
             Err((reason, deposit_address)) => {
-                let r = Rejection { at: now_seconds(), reason: reason.clone(), deposit_address: deposit_address.clone() };
-                if self.rejections.len() < MAX_REJECTIONS_KEPT && self.free_near() > 2 * NEAR_RESERVE {
-                    self.rejections.push(r);
-                }
-                event("trade_refused", json!({"reason": reason, "deposit_address": deposit_address}));
+                self.refuse(reason, deposit_address);
                 false
             }
         }
     }
 
+    fn refuse(&mut self, reason: String, deposit_address: Option<String>) {
+        let r = Rejection { at: now_seconds(), reason: reason.clone(), deposit_address: deposit_address.clone() };
+        if self.rejections.len() < MAX_REJECTIONS_KEPT && self.free_near() > 2 * NEAR_RESERVE {
+            self.rejections.push(r);
+        }
+        event("trade_refused", json!({"reason": reason, "deposit_address": deposit_address}));
+    }
+
+    /// The checks every trade and stake share: window closed, nothing in flight, cooldown, daily cap.
+    fn check_timing(&self) -> Result<(), String> {
+        let m = &self.config.mandate;
+        let now = now_seconds();
+        if now < m.subscription_closes_at {
+            return Err("trading starts when the subscription window closes".into());
+        }
+        if self.pending.is_some() {
+            return Err("a trade is already in flight".into());
+        }
+        if self.last_trade_at > 0 && now < self.last_trade_at + m.min_seconds_between_trades {
+            return Err("too soon after the last trade".into());
+        }
+        if now / 86_400 == self.trade_day && self.trades_today >= m.max_trades_per_day {
+            return Err("the mandate's trades for today are used up".into());
+        }
+        Ok(())
+    }
+
+    fn start_trade(&mut self, t: &Trade) {
+        self.held[t.sell as usize] -= t.amount_in.0;
+        self.pending = Some(t.id);
+        self.last_trade_at = t.sent_at;
+        let day = t.sent_at / 86_400;
+        if day != self.trade_day {
+            self.trade_day = day;
+            self.trades_today = 0;
+        }
+        self.trades_today += 1;
+    }
+
+    // ------------------------------------------------------------------ stake
+
+    /// Operator only, if the mandate has a staking route. Stake `amount` of the fund's wNEAR into the
+    /// liquid-staking token at par: unwrap it, read the token's price, `deposit_and_stake` the NEAR,
+    /// then anyone `settle`s once the minted tokens show in the fund's balance. Counts as a trade for
+    /// the size cap, cooldown and daily limit. If staking fails the NEAR is wrapped back.
+    pub fn stake_idle(&mut self, amount: U128) -> bool {
+        require!(env::predecessor_account_id() == self.config.operator, "only the operator can stake");
+        let r = self.config.mandate.staking.clone().unwrap_or_else(|| env::panic_str("this fund has no staking route"));
+        self.accrue_fee();
+        let (w, l) = (r.wrap_index as usize, r.lst_index as usize);
+        let why = self.check_timing().err().or_else(|| {
+            let held = self.held[w];
+            if amount.0 < r.min_stake.0 {
+                Some(format!("stake of {} is below the minimum {}", amount.0, r.min_stake.0))
+            } else if amount.0.checked_mul(10_000).map_or(true, |x| x > held * self.config.mandate.max_trade_bps as u128) {
+                Some(format!("stake of {} is over {} bps of the {} held", amount.0, self.config.mandate.max_trade_bps, held))
+            } else if !self.registered[w] || !self.registered[l] {
+                Some("the fund is not registered on one of these tokens".into())
+            } else {
+                None
+            }
+        });
+        if let Some(reason) = why {
+            self.refuse(reason, None);
+            return false;
+        }
+        let tokens = self.config.mandate.tokens.clone();
+        let now = now_seconds();
+        let t = Trade {
+            id: self.trades.len() as u64,
+            stake: true,
+            sell: w as u8,
+            buy: l as u8,
+            amount_in: amount,
+            quoted_out: U128(0),
+            min_out: U128(0),
+            refund_fee: U128(0),
+            cost_bps: 0,
+            deposit_address: tokens[l].clone(),
+            deposit_deadline: now + 86_400,
+            sent_at: now,
+            status: TradeStatus::Sending,
+            received_out: U128(0),
+            received_refund: U128(0),
+            closed_at: None,
+        };
+        self.start_trade(&t);
+        event("stake_sent", json!({"trade": &t}));
+        let unwrap = call(&tokens[w], "near_withdraw", json!({"amount": amount}), 1, GAS_UNWRAP);
+        let price = call(&tokens[l], &r.price_method, json!({}), 0, GAS_PRICE_VIEW);
+        then_self(env::promise_and(&[unwrap, price]), "on_unwrapped", json!({"trade_id": t.id}), GAS_ON_UNWRAPPED);
+        self.trades.push(t);
+        true
+    }
+
+    #[private]
+    pub fn on_unwrapped(&mut self, trade_id: u64) {
+        let mut t = self.trades[trade_id as u32].clone();
+        let r = self.config.mandate.staking.clone().unwrap_or_else(|| env::panic_str("no staking route"));
+        let tokens = self.config.mandate.tokens.clone();
+        if env::promise_result_checked(0, 16_384).is_err() {
+            // Nothing was unwrapped: restore it.
+            self.held[t.sell as usize] += t.amount_in.0;
+            t.status = TradeStatus::Failed;
+            t.closed_at = Some(now_seconds());
+            self.pending = None;
+            event("stake_failed", json!({"trade_id": trade_id, "at": "unwrap"}));
+            self.trades.replace(trade_id as u32, t);
+            return;
+        }
+        let price = env::promise_result_checked(1, 1_024)
+            .ok()
+            .and_then(|b| near_sdk::serde_json::from_slice::<U128>(&b).ok())
+            .map(|p| p.0)
+            .filter(|p| *p > 0);
+        let Some(price) = price else {
+            self.trades.replace(trade_id as u32, t);
+            self.rewrap(trade_id);
+            return;
+        };
+        let expected = mul_div(t.amount_in.0, ONE_NEAR, price).unwrap_or(0);
+        t.quoted_out = U128(expected);
+        t.min_out = U128(mul_div(expected, 10_000 - r.max_price_slippage_bps as u128, 10_000).unwrap_or(0).max(1));
+        let p = call(&tokens[t.buy as usize], "deposit_and_stake", json!({}), t.amount_in.0, GAS_DEPOSIT_AND_STAKE);
+        then_self(p, "on_staked", json!({"trade_id": trade_id}), GAS_ON_STAKED);
+        self.trades.replace(trade_id as u32, t);
+    }
+
+    #[private]
+    pub fn on_staked(&mut self, trade_id: u64) {
+        if promise_ok() {
+            let mut t = self.trades[trade_id as u32].clone();
+            t.status = TradeStatus::Sent; // anyone can now `settle` it against the minted balance
+            self.trades.replace(trade_id as u32, t);
+        } else {
+            self.rewrap(trade_id);
+        }
+    }
+
+    /// The unwrapped NEAR of a failed stake goes back into wNEAR.
+    fn rewrap(&mut self, trade_id: u64) {
+        let t = &self.trades[trade_id as u32];
+        let wrap = self.config.mandate.tokens[t.sell as usize].clone();
+        let p = call(&wrap, "near_deposit", json!({}), t.amount_in.0, GAS_WRAP);
+        then_self(p, "on_rewrapped", json!({"trade_id": trade_id, "amount": t.amount_in}), GAS_CALLBACK);
+    }
+
+    /// trade_id u64::MAX = a `rewrap_stranded` retry.
+    #[private]
+    pub fn on_rewrapped(&mut self, trade_id: u64, amount: U128) {
+        let ok = promise_ok();
+        if trade_id != u64::MAX {
+            let mut t = self.trades[trade_id as u32].clone();
+            t.status = TradeStatus::Failed;
+            t.closed_at = Some(now_seconds());
+            self.pending = None;
+            self.trades.replace(trade_id as u32, t);
+        }
+        let w = self.config.mandate.staking.as_ref().map(|r| r.wrap_index as usize).unwrap_or(0);
+        if ok {
+            self.held[w] += amount.0;
+            event("stake_failed", json!({"trade_id": trade_id, "rewrapped": amount}));
+        } else {
+            // The NEAR is in the fund's account but not wrapped (e.g. the refund had not arrived
+            // yet); anyone can retry with `rewrap_stranded`.
+            self.stranded_near += amount.0;
+            event("near_stranded", json!({"amount": amount}));
+        }
+    }
+
+    /// Anyone. Wrap NEAR left over from a failed stake back into wNEAR, as fund holdings.
+    pub fn rewrap_stranded(&mut self) {
+        require!(self.stranded_near > 0, "nothing stranded");
+        let amount = self.stranded_near;
+        require!(self.free_near() >= amount + NEAR_RESERVE, "the stranded NEAR has not arrived yet");
+        self.stranded_near = 0;
+        let w = self.config.mandate.staking.as_ref().map(|r| r.wrap_index as usize).unwrap_or(0);
+        let p = call(&self.config.mandate.tokens[w], "near_deposit", json!({}), amount, GAS_WRAP);
+        then_self(p, "on_rewrapped", json!({"trade_id": u64::MAX, "amount": U128(amount)}), GAS_CALLBACK);
+    }
+
+    // ------------------------------------------------------------------ fee
+
+    /// Anyone. Mint the management fee accrued since the last accrual to the operator.
+    pub fn accrue(&mut self) {
+        self.accrue_fee();
+    }
+
+    fn accrue_fee(&mut self) {
+        let m = &self.config.mandate;
+        let now = now_seconds();
+        let from = self.fee_accrued_at.max(m.subscription_closes_at);
+        if now <= from {
+            return;
+        }
+        if m.management_fee_bps == 0 || self.total_shares == 0 {
+            self.fee_accrued_at = now;
+            return;
+        }
+        // The operator ends up with bps * dt / year of the fund: mint s with s / (total + s) = f.
+        let dt = ((now - from) as u128).min(YEAR_SECONDS);
+        let bps = m.management_fee_bps as u128;
+        let minted = mul_div(self.total_shares, bps * dt, 10_000 * YEAR_SECONDS - bps * dt).unwrap_or(0);
+        if minted == 0 {
+            // Too little time for a whole share: keep the clock where it was, so frequent calls
+            // cannot round the fee away.
+            return;
+        }
+        // Advance the clock only by the time these whole shares pay for (s / (total + s) =
+        // bps * t / year), so the fraction left over carries into the next accrual.
+        // Rounded up by one second, so rounding always favours depositors.
+        let used = mul_div(minted, 10_000 * YEAR_SECONDS, bps * (self.total_shares + minted)).map_or(dt, |t| t + 1).min(dt);
+        self.fee_accrued_at = from + used as u64;
+        let op = self.config.operator.clone();
+        let s = self.shares.get(&op).copied().unwrap_or(0);
+        self.shares.insert(op.clone(), s + minted);
+        self.total_shares += minted;
+        event("fee_accrued", json!({"operator": op, "shares": U128(minted), "seconds": dt as u64}));
+    }
+
     fn check_trade(&self, raw: &str) -> Result<Trade, (String, Option<String>)> {
         let m = &self.config.mandate;
         let now = now_seconds();
-        let no = |r: &str| Err((r.to_string(), None));
-        if now < m.subscription_closes_at {
-            return no("trading starts when the subscription window closes");
-        }
-        if self.pending.is_some() {
-            return no("a trade is already in flight");
-        }
-        if self.last_trade_at > 0 && now < self.last_trade_at + m.min_seconds_between_trades {
-            return no("too soon after the last trade");
-        }
-        if now / 86_400 == self.trade_day && self.trades_today >= m.max_trades_per_day {
-            return no("the mandate's trades for today are used up");
-        }
+        self.check_timing().map_err(|e| (e, None))?;
         let q = quote::verify_quote(raw, &self.signer_key).map_err(|e| (e, None))?;
         let dep = Some(q.deposit_address.to_string());
         let fail = |r: String| Err((r, dep.clone()));
@@ -418,6 +682,7 @@ impl Plinth {
         }
         Ok(Trade {
             id: self.trades.len() as u64,
+            stake: false,
             sell: sell as u8,
             buy: buy as u8,
             amount_in: U128(q.amount_in),
@@ -437,16 +702,8 @@ impl Plinth {
 
     fn send_trade(&mut self, t: Trade) {
         let token = self.config.mandate.tokens[t.sell as usize].clone();
-        self.held[t.sell as usize] -= t.amount_in.0;
+        self.start_trade(&t);
         self.used_deposit_addresses.insert(t.deposit_address.clone());
-        self.pending = Some(t.id);
-        self.last_trade_at = t.sent_at;
-        let day = t.sent_at / 86_400;
-        if day != self.trade_day {
-            self.trade_day = day;
-            self.trades_today = 0;
-        }
-        self.trades_today += 1;
         event("trade_sent", json!({"trade": &t}));
         // Register the deposit address on the token and transfer to it in ONE receipt: the actions
         // of a batch succeed or fail together.
@@ -589,6 +846,7 @@ impl Plinth {
     /// no operator, price or oracle. While a trade is in flight (at most REDEEM_WAIT_SECONDS) the
     /// call waits; after that a redeemer may leave without their share of that one trade.
     pub fn redeem(&mut self, shares: U128) {
+        self.accrue_fee();
         let who = env::predecessor_account_id();
         let mine = self.shares.get(&who).copied().unwrap_or(0);
         require!(shares.0 > 0 && shares.0 <= mine, "not enough shares");
@@ -688,6 +946,9 @@ impl Plinth {
             in_flight_payouts: self.in_flight.iter().map(|x| U128(*x)).collect(),
             registered: self.registered.clone(),
             trades_today: if now / 86_400 == self.trade_day { self.trades_today } else { 0 },
+            fee_accrued_at: self.fee_accrued_at,
+            stranded_near: U128(self.stranded_near),
+            operator_shares: U128(self.shares.get(&self.config.operator).copied().unwrap_or(0)),
         }
     }
 
