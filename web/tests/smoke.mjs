@@ -12,8 +12,13 @@ const url = process.argv[2] ?? "http://localhost:4173/";
 const data = (f) => JSON.parse(fs.readFileSync(new URL(`../../data/${f}`, import.meta.url), "utf8"));
 const releases = data("releases.json");
 const factory = releases.factories?.testnet || null;
-const legacy = [data("open-fund.json").fund, data("testnet-run.json").fund, data("earn-run.json").fund];
-const recorded = data("testnet-run.json").fund;
+const run = data("testnet-run.json");
+const recorded = run.fund;
+// Which release the recorded fund runs, from the data: a factory fund reports it as global_contract_hash.
+const recordedRelease = releases.releases[run.global_contract_hash ?? ""] ?? releases.releases[run.code_hash] ?? null;
+const recordedLegacy = !!recordedRelease?.known_issue;
+// A fund from before release 0.3, so the known-issue path is always covered.
+const legacyFund = data("open-fund.json").previous?.fund ?? "open2.plinthfund.testnet";
 
 const browser = await chromium.launch();
 let failed = 0;
@@ -60,24 +65,33 @@ for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
     check(await page.locator('#site-nav a[href="#launch"]').isVisible(), `${name}: navigation links are shown`);
   }
 
-  // ---- fund cards from the chain
-  await page.waitForFunction((n) => document.querySelectorAll("#funds-legacy .fund .fund-h").length === n, legacy.length, { timeout: 45000 }).catch(() => {});
-  check((await page.$$("#funds-legacy .fund .fund-h")).length === legacy.length, `${name}: ${legacy.length} earlier funds render from the chain`);
+  // ---- fund cards from the chain. Every card must be loaded before the tags are judged; the
+  // earlier group is collapsed, so open it to read it.
+  await page.waitForFunction(() => document.querySelectorAll(".fund").length > 0 && [...document.querySelectorAll(".fund")].every((e) => !e.classList.contains("loading")), null, { timeout: 60000 }).catch(() => {});
+  await page.locator("#funds-legacy-wrap").evaluate((d) => (d.open = true));
+  const legacyCards = await page.$$("#funds-legacy .fund .fund-h");
+  check(legacyCards.length >= 1, `${name}: ${legacyCards.length} earlier funds render from the chain`);
+  check((await page.$$("#funds-legacy .fund")).length === legacyCards.length, `${name}: every earlier fund loaded`);
   const tags = await page.$$eval("#funds-legacy .fund", (els) => els.map((e) => !!e.querySelector(".known-tag") && /Known issue: old release/.test(e.querySelector(".known-tag").textContent)));
-  check(tags.length === legacy.length && tags.every(Boolean), `${name}: every earlier fund carries the known-issue tag`);
-  check((await page.$$('#funds-legacy .known-tag a[href="#limit-known"]')).length === legacy.length && (await page.$$("#limit-known")).length === 1, `${name}: the tag links to the limit`);
-  const legacyText = await page.textContent("#funds-legacy");
-  check(legacyText.includes("stNEAR"), `${name}: the earning fund shows its stNEAR`);
-  check(legacyText.includes("0 keys"), `${name}: funds show 0 keys`);
-  check(/shares? holds?/.test(legacyText) && legacyText.includes("Shares issued"), `${name}: cards explain what shares hold`);
-  check(legacyText.includes("Running costs") && legacyText.includes("The most trading can cost a holding in one day"), `${name}: cards show running costs and the worst day`);
-  check((await page.$$("#funds-legacy [data-act=share]")).length === legacy.length, `${name}: every card has a Share link`);
+  check(tags.length === legacyCards.length && tags.every(Boolean), `${name}: every earlier fund carries the known-issue tag`);
+  check((await page.$$("#funds-new .fund .known-tag")).length === 0, `${name}: no fund outside the earlier group carries the tag`);
+  check((await page.$$('#funds-legacy .known-tag a[href="#limit-known"]')).length === legacyCards.length && (await page.$$("#limit-known")).length === 1, `${name}: the tag links to the limit`);
+  check(await page.locator(`#funds-legacy .fund h3 a[title="${legacyFund}"]`).count() === 1, `${name}: ${legacyFund} sits in the earlier group`);
+  const allText = await page.textContent("#try");
+  const allCards = await page.$$(".fund");
+  check(allText.includes("stNEAR"), `${name}: the earning fund shows its stNEAR`);
+  check(allText.includes("0 keys"), `${name}: funds show 0 keys`);
+  check(/shares? holds?/.test(allText) && allText.includes("Shares issued"), `${name}: cards explain what shares hold`);
+  check(allText.includes("Running costs") && allText.includes("The most trading can cost a holding in one day"), `${name}: cards show running costs and the worst day`);
+  check((await page.$$(".fund [data-act=share]")).length === allCards.length, `${name}: every card has a Share link`);
+  await page.locator("#funds-legacy-wrap").evaluate((d) => (d.open = false));
   if (factory) {
     await page.waitForSelector("#funds-new .fund .fund-h", { timeout: 45000 }).catch(() => {});
     const fresh = await page.$$("#funds-new .fund .fund-h");
     check(fresh.length > 0, `${name}: funds from the factory render (${fresh.length})`);
     check((await page.$$("#funds-new .fund .known-tag")).length === 0, `${name}: factory funds carry no known-issue tag`);
     check(!(await page.locator("#funds-legacy-wrap").evaluate((d) => d.open)) || fresh.length === 0, `${name}: earlier funds are collapsed below the new ones`);
+    check(await page.locator(`#funds-new .fund h3 a[title="${recorded}"]`).count() === (recordedLegacy ? 0 : 1), `${name}: the recorded fund is listed ${recordedLegacy ? "among the earlier funds" : "with the factory funds"}`);
     const first = await page.locator("#funds-new .fund h3 a").first().getAttribute("title");
     check((await page.inputValue("#fund-id")) === first, `${name}: the verifier is prefilled with the newest factory fund`);
   } else {
@@ -92,15 +106,28 @@ for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   const cardTrades = await page.$$eval(".fund .kv", (els) => els.filter((e) => /Trades/.test(e.querySelector("span")?.textContent || "")).map((e) => Number(e.querySelector("b").textContent.split("·")[0])));
   check(Number(stats[2]) === cardTrades.reduce((a, b) => a + b, 0), `${name}: the trades total equals the sum on the cards`);
 
-  // ---- verifier: an old-release fund must not read as a clean pass
-  await page.fill("#fund-id", recorded);
-  await page.click("#verify-form button[type=submit]");
-  await page.waitForSelector(".verdict", { timeout: 45000 });
-  const verdict = await page.textContent(".verdict");
-  check(!verdict.startsWith("Verified") && verdict.includes("known accounting bug"), `${name}: the verifier flags the recorded fund's release instead of passing it`);
+  // ---- verifier: the recorded fund, judged by what the data says it runs
+  const verifyId = async (id) => {
+    await page.fill("#fund-id", id);
+    await page.click("#verify-form button[type=submit]");
+    await page.waitForFunction(() => document.querySelector(".verdict") && !/^Reading/.test(document.querySelector("#verify-out").textContent), null, { timeout: 60000 });
+    return page.textContent(".verdict");
+  };
+  const verdict = await verifyId(recorded);
+  if (recordedLegacy) {
+    check(!verdict.startsWith("Verified") && verdict.includes("known accounting bug"), `${name}: the verifier flags the recorded fund's release instead of passing it`);
+    check(await page.locator("#verify-out .known-tag").isVisible(), `${name}: the verifier shows the known-issue tag`);
+  } else {
+    check(!verdict.startsWith("Not verified") && !verdict.includes("known accounting bug"), `${name}: the recorded fund (release ${recordedRelease?.version ?? "?"}) has no failed check and no known issue`);
+    check((await page.textContent("#verify-out")).includes("Refunds can only go to this fund"), `${name}: the verifier checked the recorded fund's refund account`);
+  }
+  check(!(await page.locator(".verdict").evaluate((e) => e.classList.contains("ok"))) === (recordedLegacy || (await page.textContent("#verify-out")).includes("Test signer")), `${name}: the verdict is styled as a pass only for a clean fund with the real signer`);
+  check((await page.textContent("#verify-out")).includes("Test signer"), `${name}: the verifier says quotes come from a test signer`);
+  // ---- an old-release fund must never read as a clean pass
+  const old = await verifyId(legacyFund);
+  check(!old.startsWith("Verified") && old.includes("known accounting bug"), `${name}: the verifier flags ${legacyFund} as an old release instead of passing it`);
   check(!(await page.locator(".verdict").evaluate((e) => e.classList.contains("ok"))), `${name}: that verdict is not styled as a pass`);
   check(await page.locator("#verify-out .known-tag").isVisible(), `${name}: the verifier shows the known-issue tag`);
-  check((await page.textContent("#verify-out")).includes("Test signer"), `${name}: the verifier says quotes come from a test signer`);
   await page.fill("#fund-id", "wrap.testnet");
   await page.click("#verify-form button[type=submit]");
   await page.waitForFunction(() => document.querySelector(".verdict")?.classList.contains("bad"), null, { timeout: 45000 }).catch(() => {});
@@ -151,12 +178,12 @@ for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   // ---- deep link: ?fund=<account> opens that fund's card and prefills the verifier
   const deep = await browser.newPage({ viewport: { width: w, height: h } });
   const deepErrors = watch(deep);
-  const target = legacy[2];
+  const target = legacyFund;
   await deep.goto(`${url}${url.includes("?") ? "&" : "?"}fund=${target}`, { waitUntil: "networkidle" });
   await deep.waitForSelector(".fund.focus .fund-h", { timeout: 45000 }).catch(() => {});
   check((await deep.inputValue("#fund-id")) === target, `${name}: ?fund= prefills the verifier`);
   check((await deep.locator(".fund.focus h3 a").getAttribute("title").catch(() => "")) === target, `${name}: ?fund= highlights that fund's card`);
-  check(await deep.locator("#funds-legacy-wrap").evaluate((d) => d.open), `${name}: ?fund= opens the group the fund is in`);
+  check(await deep.locator("#funds-legacy-wrap").evaluate((d) => d.open), `${name}: ?fund= opens the earlier group the fund is in`);
   await deep.waitForTimeout(400);
   const top = await deep.locator(".fund.focus").evaluate((e) => e.getBoundingClientRect().top).catch(() => 9999);
   check(top > -50 && top < h, `${name}: ?fund= scrolls to the card (top at ${Math.round(top)}px)`);

@@ -511,6 +511,7 @@ async function load(f: FundCard) {
   if (currentAccount() !== me) return;
   f.state = state;
   f.info = info;
+  regroup(f);
   f.keyCount = keys.keys.length;
   f.trades = trades;
   f.rejections = rejections;
@@ -519,6 +520,9 @@ async function load(f: FundCard) {
   f.relay = relay;
   render(f);
 }
+
+/** Cards start in the group their data suggests; the chain's release decides where they belong. */
+let regroup: (f: FundCard) => void = () => {};
 
 async function registrations(me: string, tokens: string[]): Promise<Call[]> {
   const calls: Call[] = [];
@@ -750,6 +754,9 @@ export interface Stats {
   keys: number;
 }
 export interface AppOptions {
+  /** Funds named in the data files; the chain decides which group each belongs in. */
+  known: { id: string; title: string; blurb: string }[];
+  /** Funds from before release 0.3. */
   legacy: { id: string; title: string; blurb: string }[];
   /** A fund named in the page address (?fund=...). */
   linked: string | null;
@@ -773,7 +780,16 @@ export async function mountApp(opt: AppOptions): Promise<App> {
   const cards: FundCard[] = [];
   let factoryCount: number | null = null;
   let factoryLoaded = 0;
+  let newestId = "";
 
+  regroup = (c) => {
+    const rel = c.info?.release;
+    if (!rel) return;
+    const want: FundCard["group"] = rel.known_issue ? "legacy" : "new";
+    if (want === c.group) return;
+    c.group = want;
+    (want === "legacy" ? rootLegacy : rootNew).appendChild(c.el);
+  };
   const publish = () => {
     const ready = cards.filter((c) => c.state && c.keyCount !== undefined);
     if (ready.length < cards.filter((c) => !c.failed).length || (factory && factoryCount === null)) return;
@@ -852,10 +868,17 @@ export async function mountApp(opt: AppOptions): Promise<App> {
     const { count, funds } = await factoryFunds(NET, factory, factoryLoaded, PAGE);
     // New funds may have been created since the first page: skip the ones already listed.
     const fresh = funds.filter((e) => !cards.some((c) => c.id === e.account_id));
+    if (factoryLoaded === 0 && funds[0]) newestId = funds[0].account_id;
     factoryCount = count;
+    const added = fresh.map((e) => addCard(factoryDef(e), "new"));
+    // Keep the factory's order on the page, newest first, whichever cards the data files put there first.
+    if (factoryLoaded === 0) for (const e of [...funds].reverse()) {
+      const c = cards.find((x) => x.id === e.account_id);
+      if (c && c.group === "new") rootNew.prepend(c.el);
+    }
     factoryLoaded += funds.length;
     moreBtn.hidden = factoryLoaded >= count;
-    return fresh.map((e) => addCard(factoryDef(e), "new"));
+    return added;
   }
 
   function focusCard(c: FundCard) {
@@ -866,12 +889,13 @@ export async function mountApp(opt: AppOptions): Promise<App> {
 
   // ---- first paint: skeletons for everything we know about, then the chain fills them in
   for (const l of opt.legacy) addCard(l, "legacy");
+  for (const k of opt.known) if (!opt.legacy.some((l) => l.id === k.id)) addCard(k, "new");
   let first: FundCard[] = [];
   if (factory) {
     try {
       first = await loadFactoryPage();
-      if (first[0]) opt.onNewest(first[0].id);
-      note.textContent = first.length ? "" : "The factory is live on testnet and no fund has been created through it yet. You can create the first one under Launch a fund.";
+      if (newestId) opt.onNewest(newestId);
+      note.textContent = newestId ? "" : "The factory is live on testnet and no fund has been created through it yet. You can create the first one under Launch a fund.";
     } catch (e) {
       note.textContent = `The list of new funds could not be read from the factory: ${(e as Error).message}. The earlier funds below are still shown.`;
       factoryCount = 0;
@@ -881,7 +905,7 @@ export async function mountApp(opt: AppOptions): Promise<App> {
   }
   note.hidden = !note.textContent;
   // With nothing newer to show, the earlier funds are the page: open the group.
-  if (!first.length) legacyWrap.open = true;
+  if (!newestId && !opt.known.length) legacyWrap.open = true;
   let linkedCard: FundCard | null = null;
   if (opt.linked) {
     linkedCard = cards.find((c) => c.id === opt.linked) ?? addCard({ id: opt.linked, title: opt.linked.split(".")[0], blurb: "Opened from a shared link." }, "new", "start");

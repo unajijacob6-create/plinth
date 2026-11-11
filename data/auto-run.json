@@ -1,0 +1,410 @@
+{
+ "network": "testnet",
+ "started_at": "2026-11-11T13:33:37.567Z",
+ "strategy_file": "data/strategy-testnet.json",
+ "quote_signer": "ed25519:8UL3S2m1rTjYVAF15EJR4KH7A8NaNnn9GYgnhHFx2r9",
+ "accounts": {
+  "parent": "plinthfund.testnet",
+  "token": "pusd.plinthfund.testnet",
+  "wrap": "wrap.testnet",
+  "alice": "alice.plinthfund.testnet",
+  "operator": "operator.plinthfund.testnet",
+  "solver": "solver.plinthfund.testnet",
+  "caller": "bob.plinthfund.testnet",
+  "factory": "funds.plinthfund.testnet"
+ },
+ "strategy": {
+  "outlayer": "outlayer.testnet",
+  "wasm_url": "https://test.fastfs.io/plinth-ol-spike-mwb6xcaj.testnet/outlayer.testnet/d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1.wasm",
+  "wasm_hash": "d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1",
+  "max_instructions": 1000000000,
+  "max_execution_seconds": 30,
+  "exclusive": true
+ },
+ "tx": {
+  "create_fund_keyless": "5pCFL4UBwDvAHDKad2SwdZPpGGDm5B2QvBbTEQJAVyNs",
+  "alice_subscribe": "vHzjV7gyiqBwXMqTsEVC6uDbWATC6A2kAqKsZcTef3o",
+  "operator_propose_rejected": "BtvZgB131RPTX5iFeo1bP9w2q4GCR3hwtFxZyW9TFUNH",
+  "rebalance": "9uTU9UCkjnztoMa5JskgMeNK9QWNdkxZBN2mtWFc5woy",
+  "solver_delivers": "AoUgnDWR3S3Nw4gFdku6VCwxxPx8VYZCcpRYaZz2YWdw"
+ },
+ "strategy_wasm_check": {
+  "bytes": 447693,
+  "sha256": "d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1"
+ },
+ "config": {
+  "mandate": {
+   "tokens": [
+    "pusd.plinthfund.testnet",
+    "wrap.testnet"
+   ],
+   "max_trade_bps": 2500,
+   "max_cost_bps": 150,
+   "min_seconds_between_trades": 660,
+   "max_trades_per_day": 6,
+   "max_quote_age_seconds": 300,
+   "min_deadline_margin_seconds": 600,
+   "subscription_closes_at": 1794404108,
+   "min_subscription": "1000000",
+   "max_total_subscriptions": "1000000000",
+   "management_fee_bps": 0,
+   "staking": null,
+   "open_ended": false,
+   "strategy": {
+    "outlayer": "outlayer.testnet",
+    "wasm_url": "https://test.fastfs.io/plinth-ol-spike-mwb6xcaj.testnet/outlayer.testnet/d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1.wasm",
+    "wasm_hash": "d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1",
+    "max_instructions": 1000000000,
+    "max_execution_seconds": 30,
+    "exclusive": true
+   }
+  },
+  "operator": "operator.plinthfund.testnet",
+  "quote_signer": "ed25519:8UL3S2m1rTjYVAF15EJR4KH7A8NaNnn9GYgnhHFx2r9",
+  "storage_deposit": "1250000000000000000000"
+ },
+ "fund": "auto-mwc5tnnh.funds.plinthfund.testnet",
+ "created": {
+  "fund": "auto-mwc5tnnh.funds.plinthfund.testnet",
+  "relay": "auto-mwc5tnnh-r.funds.plinthfund.testnet",
+  "factory": "funds.plinthfund.testnet",
+  "tx": "5pCFL4UBwDvAHDKad2SwdZPpGGDm5B2QvBbTEQJAVyNs",
+  "code_hash": "3j5tSNim99x5caDaQF618gJL1QdcZQTJT7yk9G4PJn23",
+  "attached": "1038000000000000000000000",
+  "access_keys": 0,
+  "registered": [
+   true,
+   true
+  ],
+  "version": "0.3.0"
+ },
+ "after_subscribe": {
+  "config": {
+   "mandate": {
+    "tokens": [
+     "pusd.plinthfund.testnet",
+     "wrap.testnet"
+    ],
+    "max_trade_bps": 2500,
+    "max_cost_bps": 150,
+    "min_seconds_between_trades": 660,
+    "max_trades_per_day": 6,
+    "max_quote_age_seconds": 300,
+    "min_deadline_margin_seconds": 600,
+    "subscription_closes_at": 1794404108,
+    "min_subscription": "1000000",
+    "max_total_subscriptions": "1000000000",
+    "management_fee_bps": 0,
+    "staking": null,
+    "open_ended": false,
+    "strategy": {
+     "outlayer": "outlayer.testnet",
+     "wasm_url": "https://test.fastfs.io/plinth-ol-spike-mwb6xcaj.testnet/outlayer.testnet/d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1.wasm",
+     "wasm_hash": "d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1",
+     "max_instructions": 1000000000,
+     "max_execution_seconds": 30,
+     "secrets_profile": null,
+     "secrets_owner": null,
+     "exclusive": true
+    }
+   },
+   "operator": "operator.plinthfund.testnet",
+   "quote_signer": "ed25519:8UL3S2m1rTjYVAF15EJR4KH7A8NaNnn9GYgnhHFx2r9",
+   "storage_deposit": "1250000000000000000000",
+   "refund_relay": "auto-mwc5tnnh-r.funds.plinthfund.testnet"
+  },
+  "held": [
+   [
+    "pusd.plinthfund.testnet",
+    "60000000"
+   ],
+   [
+    "wrap.testnet",
+    "0"
+   ]
+  ],
+  "total_shares": "60000000",
+  "total_subscribed": "60000000",
+  "subscription_open": true,
+  "trading_open": false,
+  "pending": null,
+  "trades": 0,
+  "rejections": 0,
+  "last_trade_at": 0,
+  "near_available_for_registrations": "938660000000000000000000",
+  "in_flight_payouts": [
+   "0",
+   "0"
+  ],
+  "registered": [
+   true,
+   true
+  ],
+  "trades_today": 0,
+  "fee_accrued_at": 0,
+  "stranded_near": "0",
+  "operator_shares": "0",
+  "version": "0.3.0",
+  "owed_total": [
+   "0",
+   "0"
+  ],
+  "basket_total": [
+   "0",
+   "0"
+  ],
+  "near_free": "988660000000000000000000",
+  "max_daily_cost_bps": 225,
+  "strategy_started": 0,
+  "joins_blocked_until": 0
+ },
+ "operator_propose_failed": "{\"ActionError\":{\"index\":0,\"kind\":{\"FunctionCallError\":{\"ExecutionError\":\"Smart contract panicked: this fund has no manager: only its strategy proposes (rebalance)\"}}}}",
+ "rebalance": {
+  "by": "bob.plinthfund.testnet",
+  "attached_near": "0.01",
+  "failed": null,
+  "result": "trade",
+  "events": [
+   {
+    "standard": "plinth",
+    "event": "strategy_requested",
+    "data": {
+     "by": "bob.plinthfund.testnet"
+    }
+   },
+   {
+    "standard": "plinth",
+    "event": "trade_sent",
+    "data": {
+     "trade": {
+      "id": 0,
+      "stake": false,
+      "sell": 0,
+      "buy": 1,
+      "amount_in": "14250000",
+      "quoted_out": "3788600000000000000000000",
+      "min_out": "3769657000000000000000000",
+      "refund_fee": "0",
+      "cost_bps": 79,
+      "deposit_address": "55d69f1243bbc2f6094291616d86dbf73886456c7ba3356fad8a560414b4bd27",
+      "deposit_deadline": 1794490520,
+      "sent_at": 1794404176,
+      "status": "Sending",
+      "received_out": "0",
+      "received_refund": "0",
+      "closed_at": null
+     }
+    }
+   }
+  ],
+  "logs": [
+   "EVENT_JSON:{\"standard\":\"plinth\",\"version\":\"1.0.0\",\"event\":\"strategy_requested\",\"data\":[{\"by\":\"bob.plinthfund.testnet\"}]}",
+   "EVENT_JSON:{\"standard\":\"near-outlayer\",\"version\":\"1.0.0\",\"event\":\"execution_requested\",\"data\":[{\"request_data\":\"{\\\"request_id\\\":22760,\\\"sender_id\\\":\\\"bob.plinthfund.testnet\\\",\\\"predecessor_id\\\":\\\"auto-mwc5tnnh.funds.plinthfund.testnet\\\",\\\"code_source\\\":{\\\"WasmUrl\\\":{\\\"url\\\":\\\"https://test.fastfs.io/plinth-ol-spike-mwb6xcaj.testnet/outlayer.testnet/d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1.wasm\\\",\\\"hash\\\":\\\"d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1\\\",\\\"build_target\\\":\\\"wasm32-wasip2\\\"}},\\\"resource_limits\\\":{\\\"max_instructions\\\":1000000000,\\\"max_memory_mb\\\":128,\\\"max_execution_seconds\\\":30},\\\"input_data\\\":\\\"{\\\\\\\"fund\\\\\\\":\\\\\\\"auto-mwc5tnnh.funds.plinthfund.testnet\\\\\\\",\\\\\\\"now\\\\\\\":1794404120,\\\\\\\"next_trade_id\\\\\\\":0,\\\\\\\"refund_to\\\\\\\":\\\\\\\"auto-mwc5tnnh-r.funds.plinthfund.testnet\\\\\\\",\\\\\\\"tokens\\\\\\\":[\\\\\\\"pusd.plinthfund.testnet\\\\\\\",\\\\\\\"wrap.testnet\\\\\\\"],\\\\\\\"held\\\\\\\":[\\\\\\\"60000000\\\\\\\",\\\\\\\"0\\\\\\\"],\\\\\\\"total_shares\\\\\\\":\\\\\\\"60000000\\\\\\\",\\\\\\\"max_trade_bps\\\\\\\":2500,\\\\\\\"max_cost_bps\\\\\\\":150,\\\\\\\"staking\\\\\\\":null}\\\",\\\"input_data_in_state\\\":false,\\\"secrets_ref\\\":null,\\\"response_format\\\":\\\"Json\\\",\\\"payment\\\":\\\"10000000000000000000000\\\",\\\"attached_usd\\\":\\\"0\\\",\\\"timestamp\\\":1794404120729765312,\\\"compile_only\\\":false,\\\"force_rebuild\\\":false,\\\"store_on_fastfs\\\":false,\\\"use_bound_identity\\\":false,\\\"project_uuid\\\":null,\\\"project_id\\\":null}\",\"data_id\":[180,201,3,122,38,217,241,39,76,194,212,235,178,200,159,24,81,22,97,246,215,104,165,129,100,214,199,19,68,212,139,4],\"timestamp\":1794404120729765312}]}",
+   "Retrieving large output from storage for request_id: 22760",
+   "[[yNEAR charged: \"1116301000000000000000\"]]",
+   "EVENT_JSON:{\"standard\":\"near-outlayer\",\"version\":\"1.0.0\",\"event\":\"execution_completed\",\"data\":[{\"sender_id\":\"bob.plinthfund.testnet\",\"code_source\":{\"WasmUrl\":{\"url\":\"https://test.fastfs.io/plinth-ol-spike-mwb6xcaj.testnet/outlayer.testnet/d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1.wasm\",\"hash\":\"d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1\",\"build_target\":\"wasm32-wasip2\"}},\"resources_used\":{\"instructions\":10554469,\"time_ms\":1163,\"compile_time_ms\":null},\"success\":true,\"error_message\":null,\"payment_charged\":\"1116301000000000000000\",\"payment_refunded\":\"8883699000000000000000\",\"compilation_note\":\"Cached WASM from 2026-11-11T12:41:42.188560+00:00\",\"timestamp\":1794404176272814004}]}",
+   "Execution completed successfully. Output: Json(1249 bytes), Resources: { instructions: 10554469, time_ms: 1163 }, Cost: 1116301000000000000000 yoctoNEAR, Refund: 8883699000000000000000 yoctoNEAR, Cached WASM from 2026-11-11T12:41:42.188560+00:00",
+   "EVENT_JSON:{\"standard\":\"plinth\",\"version\":\"1.0.0\",\"event\":\"trade_sent\",\"data\":[{\"trade\":{\"id\":0,\"stake\":false,\"sell\":0,\"buy\":1,\"amount_in\":\"14250000\",\"quoted_out\":\"3788600000000000000000000\",\"min_out\":\"3769657000000000000000000\",\"refund_fee\":\"0\",\"cost_bps\":79,\"deposit_address\":\"55d69f1243bbc2f6094291616d86dbf73886456c7ba3356fad8a560414b4bd27\",\"deposit_deadline\":1794490520,\"sent_at\":1794404176,\"status\":\"Sending\",\"received_out\":\"0\",\"received_refund\":\"0\",\"closed_at\":null}}]}"
+  ],
+  "caller_paid_near": "0.0030280113712316"
+ },
+ "after_rebalance": {
+  "config": {
+   "mandate": {
+    "tokens": [
+     "pusd.plinthfund.testnet",
+     "wrap.testnet"
+    ],
+    "max_trade_bps": 2500,
+    "max_cost_bps": 150,
+    "min_seconds_between_trades": 660,
+    "max_trades_per_day": 6,
+    "max_quote_age_seconds": 300,
+    "min_deadline_margin_seconds": 600,
+    "subscription_closes_at": 1794404108,
+    "min_subscription": "1000000",
+    "max_total_subscriptions": "1000000000",
+    "management_fee_bps": 0,
+    "staking": null,
+    "open_ended": false,
+    "strategy": {
+     "outlayer": "outlayer.testnet",
+     "wasm_url": "https://test.fastfs.io/plinth-ol-spike-mwb6xcaj.testnet/outlayer.testnet/d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1.wasm",
+     "wasm_hash": "d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1",
+     "max_instructions": 1000000000,
+     "max_execution_seconds": 30,
+     "secrets_profile": null,
+     "secrets_owner": null,
+     "exclusive": true
+    }
+   },
+   "operator": "operator.plinthfund.testnet",
+   "quote_signer": "ed25519:8UL3S2m1rTjYVAF15EJR4KH7A8NaNnn9GYgnhHFx2r9",
+   "storage_deposit": "1250000000000000000000",
+   "refund_relay": "auto-mwc5tnnh-r.funds.plinthfund.testnet"
+  },
+  "held": [
+   [
+    "pusd.plinthfund.testnet",
+    "45750000"
+   ],
+   [
+    "wrap.testnet",
+    "0"
+   ]
+  ],
+  "total_shares": "60000000",
+  "total_subscribed": "60000000",
+  "subscription_open": false,
+  "trading_open": true,
+  "pending": {
+   "id": 0,
+   "stake": false,
+   "sell": 0,
+   "buy": 1,
+   "amount_in": "14250000",
+   "quoted_out": "3788600000000000000000000",
+   "min_out": "3769657000000000000000000",
+   "refund_fee": "0",
+   "cost_bps": 79,
+   "deposit_address": "55d69f1243bbc2f6094291616d86dbf73886456c7ba3356fad8a560414b4bd27",
+   "deposit_deadline": 1794490520,
+   "sent_at": 1794404176,
+   "status": "Sent",
+   "received_out": "0",
+   "received_refund": "0",
+   "closed_at": null
+  },
+  "trades": 1,
+  "rejections": 0,
+  "last_trade_at": 1794404176,
+  "near_available_for_registrations": "933839999999999999999999",
+  "in_flight_payouts": [
+   "0",
+   "0"
+  ],
+  "registered": [
+   true,
+   true
+  ],
+  "trades_today": 1,
+  "fee_accrued_at": 1794404176,
+  "stranded_near": "0",
+  "operator_shares": "0",
+  "version": "0.3.0",
+  "owed_total": [
+   "0",
+   "0"
+  ],
+  "basket_total": [
+   "0",
+   "0"
+  ],
+  "near_free": "983839999999999999999999",
+  "max_daily_cost_bps": 225,
+  "strategy_started": 0,
+  "joins_blocked_until": 0
+ },
+ "trade": {
+  "id": 0,
+  "stake": false,
+  "sell": 0,
+  "buy": 1,
+  "amount_in": "14250000",
+  "quoted_out": "3788600000000000000000000",
+  "min_out": "3769657000000000000000000",
+  "refund_fee": "0",
+  "cost_bps": 79,
+  "deposit_address": "55d69f1243bbc2f6094291616d86dbf73886456c7ba3356fad8a560414b4bd27",
+  "deposit_deadline": 1794490520,
+  "sent_at": 1794404176,
+  "status": "Settled",
+  "received_out": "3788600000000000000000000",
+  "received_refund": "0",
+  "closed_at": 1794404185
+ },
+ "settle_status": "Settled",
+ "after": {
+  "config": {
+   "mandate": {
+    "tokens": [
+     "pusd.plinthfund.testnet",
+     "wrap.testnet"
+    ],
+    "max_trade_bps": 2500,
+    "max_cost_bps": 150,
+    "min_seconds_between_trades": 660,
+    "max_trades_per_day": 6,
+    "max_quote_age_seconds": 300,
+    "min_deadline_margin_seconds": 600,
+    "subscription_closes_at": 1794404108,
+    "min_subscription": "1000000",
+    "max_total_subscriptions": "1000000000",
+    "management_fee_bps": 0,
+    "staking": null,
+    "open_ended": false,
+    "strategy": {
+     "outlayer": "outlayer.testnet",
+     "wasm_url": "https://test.fastfs.io/plinth-ol-spike-mwb6xcaj.testnet/outlayer.testnet/d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1.wasm",
+     "wasm_hash": "d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1",
+     "max_instructions": 1000000000,
+     "max_execution_seconds": 30,
+     "secrets_profile": null,
+     "secrets_owner": null,
+     "exclusive": true
+    }
+   },
+   "operator": "operator.plinthfund.testnet",
+   "quote_signer": "ed25519:8UL3S2m1rTjYVAF15EJR4KH7A8NaNnn9GYgnhHFx2r9",
+   "storage_deposit": "1250000000000000000000",
+   "refund_relay": "auto-mwc5tnnh-r.funds.plinthfund.testnet"
+  },
+  "held": [
+   [
+    "pusd.plinthfund.testnet",
+    "45750000"
+   ],
+   [
+    "wrap.testnet",
+    "3788600000000000000000000"
+   ]
+  ],
+  "total_shares": "60000000",
+  "total_subscribed": "60000000",
+  "subscription_open": false,
+  "trading_open": true,
+  "pending": null,
+  "trades": 1,
+  "rejections": 0,
+  "last_trade_at": 1794404176,
+  "near_available_for_registrations": "933839999999999999999999",
+  "in_flight_payouts": [
+   "0",
+   "0"
+  ],
+  "registered": [
+   true,
+   true
+  ],
+  "trades_today": 1,
+  "fee_accrued_at": 1794404176,
+  "stranded_near": "0",
+  "operator_shares": "0",
+  "version": "0.3.0",
+  "owed_total": [
+   "0",
+   "0"
+  ],
+  "basket_total": [
+   "0",
+   "0"
+  ],
+  "near_free": "983839999999999999999999",
+  "max_daily_cost_bps": 225,
+  "strategy_started": 0,
+  "joins_blocked_until": 0
+ },
+ "access_keys_at_end": 0,
+ "global_contract_hash": "3j5tSNim99x5caDaQF618gJL1QdcZQTJT7yk9G4PJn23",
+ "finished_at": "2026-11-11T13:36:29.736Z"
+}

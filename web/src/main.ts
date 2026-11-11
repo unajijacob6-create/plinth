@@ -16,7 +16,12 @@ const R: any = run;
 const tx = (k: string) => (R.tx[k] ? `<a href="${explorer("testnet", R.tx[k])}" target="_blank" rel="noopener">View transaction ↗</a>` : "");
 const TOK: string = R.accounts.token;
 const WRAP: string = R.accounts.wrap;
-const runRelease = RELEASES[R.code_hash]?.version ?? "an old release";
+// A fund made by the factory reports its code under global_contract_hash; older ones under code_hash.
+const runRel = RELEASES[R.global_contract_hash ?? ""] ?? RELEASES[R.code_hash];
+const runRelease = runRel?.version ?? "an unlisted release";
+const runKnown = !!runRel?.known_issue;
+/** Funds from before release 0.3, kept as history. Those in the data files that turn out to be old join them. */
+const LEGACY_IDS: string[] = [(openFund as any).previous?.fund, "fund-mwa9jwo8.plinthfund.testnet", "earn-mwad1ypv.plinthfund.testnet"].filter((x): x is string => typeof x === "string" && x.length > 0);
 const factory = factoryOf("testnet");
 
 // ------------------------------------------------------------ phone menu
@@ -61,7 +66,7 @@ const steps = [
   {
     t: "Launch keyless",
     body: `<p>One call to the factory creates the fund account, points it at the one published copy of the code and sets the rules. No key is ever added, so the account has no key from its first block.</p><ul><li>Allowed tokens, trade size, cost cap, time between trades</li><li>The only manager, and the 1Click signing key</li></ul>`,
-    proof: `Fund <a href="${accountLink("testnet", R.fund)}" target="_blank" rel="noopener">${esc(shortAccount(R.fund))}</a><br/>Created in ${tx("create_fund_keyless")}<br/>Access keys after creation: <b>${esc(R.access_keys_after_create)}</b><br/><span class="muted">This run created the fund directly, before the factory existed.</span>`,
+    proof: `Fund <a href="${accountLink("testnet", R.fund)}" target="_blank" rel="noopener">${esc(shortAccount(R.fund))}</a><br/>Created in ${tx("create_fund_keyless")}<br/>Access keys after creation: <b>${esc(R.access_keys_after_create)}</b>${runKnown ? `<br/><span class="muted">This run created the fund directly, before the factory existed.</span>` : R.created?.relay ? `<br/>Refund account <a href="${accountLink("testnet", R.created.relay)}" target="_blank" rel="noopener">${esc(shortAccount(R.created.relay))}</a>, created with it` : ""}`,
   },
   {
     t: "Join",
@@ -82,12 +87,14 @@ const steps = [
   {
     t: "Send and settle",
     body: `<p>The contract registers the 1Click deposit address on the token and transfers the input in one step. 1Click hands the output to the fund, which settles the trade on the spot.</p><p>If the trade fails, 1Click's refund goes to the fund's refund account: a second keyless account that holds nothing else and can only pass tokens on to its fund. Anyone can press the button that hands it over.</p><p>The fund counts a token only when it is handed it. It reads no balance anywhere.</p>`,
-    proof: `Deposit address received ${esc(fmt(TOK, R.deposit_address_pusd))}<br/>Delivered ${tx("solver_delivers")}<br/>Settled ${tx("settle")}<br/><span class="muted">In this older run the trade was settled by a separate call that read the fund's balance. Release 0.3 removed that step; it is where the known issue was.</span>`,
+    proof: runKnown
+      ? `Deposit address received ${esc(fmt(TOK, R.deposit_address_pusd))}<br/>Delivered ${tx("solver_delivers")}<br/>Settled ${tx("settle")}<br/><span class="muted">In this older run the trade was settled by a separate call that read the fund's balance. Release 0.3 removed that step; it is where the known issue was.</span>`
+      : `Deposit address received ${esc(fmt(TOK, R.deposit_address_pusd))}<br/>Delivered and settled in one step ${tx("solver_delivers")}${R.tx.refund_sent_to_relay ? `<br/>A refund reached the refund account ${tx("refund_sent_to_relay")}<br/>and was handed to the fund ${tx("relay_forward")}` : ""}`,
   },
   {
     t: "Exit in kind",
     body: `<p>Any holder burns shares, all or some, and receives the same fraction of every token the fund holds. No price, no price feed, no manager. If a transfer fails, the amount stays owed and can be claimed later.</p>`,
-    proof: `Bob exited with 40% ${tx("bob_redeem")}<br/>received ${esc(fmt(TOK, R.bob_received.pusd))} + ${esc(fmt(WRAP, R.bob_received.wnear))}`,
+    proof: `Bob exited with his 40 shares ${tx("bob_redeem")}<br/>received ${esc(fmt(TOK, R.bob_received.pusd))} + ${esc(fmt(WRAP, R.bob_received.wnear))}`,
   },
 ];
 const stepsEl = $(".steps");
@@ -173,7 +180,7 @@ function verifyNow(id: string, scroll = true) {
 }
 
 // ------------------------------------------------------------ timeline
-$("#run-sub").innerHTML = `Recorded ${esc(R.started_at.slice(0, 10))} on NEAR testnet, on release ${esc(runRelease)}, which has the known issue described under <a href="#limit-known">Limits</a>. Every step links to its transaction. 1Click has no testnet, so a test signer and a solver account (${esc(shortAccount(R.accounts.solver))}) stand in for it.`;
+$("#run-sub").innerHTML = `Recorded ${esc(R.started_at.slice(0, 10))} on NEAR testnet, on release ${esc(runRelease)}${runKnown ? `, which has the known issue described under <a href="#limit-known">Limits</a>` : ""}. Every step links to its transaction. 1Click has no testnet, so a test signer and a solver account (${esc(shortAccount(R.accounts.solver))}) stand in for it.`;
 const T: [string, string, string, string?][] = [
   ["create_fund_keyless", "Fund created with no keys", `${R.access_keys_after_create} access keys from the first block.`],
   ["alice_subscribe", "Alice joins", `${fmt(TOK, "60000000")} for 60 shares.`],
@@ -181,9 +188,11 @@ const T: [string, string, string, string?][] = [
   ["refused_wrong_recipient", "Refused: quote pays the manager", humanReason(R.rejections[0]?.reason ?? ""), "no"],
   ["refused_too_large", "Refused: 30% in one trade", humanReason(R.rejections[1]?.reason ?? ""), "no"],
   ["propose_trade", `Accepted: ${fmt(TOK, R.deposit_address_pusd)} for wNEAR`, "Signature, recipients, size, cost and freshness all within the rules; the contract sent the input itself.", "yes"],
-  ["solver_delivers", "Output delivered", `${fmt(WRAP, "20000000000000000000000")} to the fund.`],
-  ["settle", "Settled by a separate call", "How releases 0.1 and 0.2 closed a trade. Release 0.3 settles when the output arrives.", "yes"],
-  ["bob_redeem", "Bob exits in kind", `${fmt(TOK, R.bob_received.pusd)} + ${fmt(WRAP, R.bob_received.wnear)}, exactly 40% of each.`, "yes"],
+  ["solver_delivers", runKnown ? "Output delivered" : "Output delivered and settled on the spot", `${fmt(WRAP, R.settled_trade?.received_out ?? "20000000000000000000000")} to the fund.`, runKnown ? undefined : "yes"],
+  ...(runKnown ? [["settle", "Settled by a separate call", "How releases 0.1 and 0.2 closed a trade. Release 0.3 settles when the output arrives.", "yes"] as [string, string, string, string?]] : []),
+  ...(R.tx.carol_join_in_kind && R.join_in_kind ? [["carol_join_in_kind", "Carol joins in kind", `After the window: she added ${fmt(TOK, R.join_in_kind.basket[0])} + ${fmt(WRAP, R.join_in_kind.basket[1])}, the fund's own proportions, and received ${units(R.join_in_kind.shares_minted, dec(TOK), 6)} shares. No price was used.`, "yes"] as [string, string, string, string?]] : []),
+  ...(R.tx.refund_sent_to_relay && R.refund ? [["refund_sent_to_relay", "A refund arrives at the refund account", `1Click's stand-in refunded a second trade: ${fmt(TOK, R.refund.amount)} after its fee. The fund did not see it land; its refund account did.`], ["relay_forward", "Handed to the fund", `${shortAccount(R.refund.forwarded_by)} pressed the button. The fund counted the ${fmt(TOK, R.refund.amount)} when it was handed over.`, "yes"]] as [string, string, string, string?][] : []),
+  ["bob_redeem", "Bob exits in kind", `${fmt(TOK, R.bob_received.pusd)} + ${fmt(WRAP, R.bob_received.wnear)}: his 40 shares' slice of each token the fund held at that moment.`, "yes"],
 ];
 $("#timeline").innerHTML = T.map(([k, h, p, c]) => `<li class="${c ?? ""}"><div class="tl-h"><b>${esc(h)}</b>${c ? `<span class="tag ${c}">${c === "no" ? "refused" : "ok"}</span>` : ""}${tx(k)}</div><p>${esc(p)}</p></li>`).join("");
 
@@ -195,11 +204,12 @@ $("#refusal-cards").innerHTML = R.rejections
 // ------------------------------------------------------------ live funds + wallet + launch
 let app: App | null = null;
 void mountApp({
-  legacy: [
+  known: [
     { id: (openFund as any).fund, title: "Open fund", blurb: "Anyone can join with test pUSD while its window is open, and exit at any time." },
     { id: R.fund, title: "Demo fund", blurb: "The fund from the recorded run; the AI operator traded it." },
     { id: (earnRun as any).fund, title: "Earning fund", blurb: "Stakes idle wNEAR into Meta Pool stNEAR; the manager is paid in new shares." },
   ],
+  legacy: LEGACY_IDS.map((id) => ({ id, title: id.split(".")[0], blurb: "A fund from before release 0.3, kept as history." })),
   linked,
   onStats: paintStats,
   onNewest: (id) => {
