@@ -45,13 +45,15 @@ export async function rpc<T = any>(method: string, params: unknown): Promise<T> 
 }
 
 export async function view<T = any>(contract: string, method: string, args: Record<string, unknown> = {}, blockId?: number): Promise<T> {
-  const r = await rpc<{ result: number[] }>("query", {
+  const r = await rpc<{ result: number[]; error?: string }>("query", {
     request_type: "call_function",
     account_id: contract,
     method_name: method,
     args_base64: Buffer.from(JSON.stringify(args)).toString("base64"),
     ...(blockId ? { block_id: blockId } : { finality: "final" }),
   });
+  // A view that panics comes back as a result with `error` text instead of bytes.
+  if (!Array.isArray(r.result)) throw new Error(`${contract}.${method}: ${(r as any).error ?? "no result"}`.slice(0, 300));
   return JSON.parse(Buffer.from(r.result).toString("utf8")) as T;
 }
 

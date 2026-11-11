@@ -1,0 +1,29 @@
+{
+  "mode": "direct",
+  "label": "no-refund-to",
+  "tx": "CsDDd62rgeXJqhWngrFZry1oXdtchUMhyUffaGWdAWj4",
+  "seconds": 66.646,
+  "input": "{\"fund\":\"proxy.plinth-ol-spike-mwb6xcaj.testnet\",\"now\":1794400962,\"next_trade_id\":0,\"tokens\":[\"usdc.fakes.testnet\",\"wrap.testnet\"],\"held\":[\"60000000\",\"4000000000000000000000000\"],\"total_shares\":\"74000000\",\"max_trade_bps\":2500,\"max_cost_bps\":100,\"staking\":null}",
+  "status": "see decision",
+  "resources_used": {
+    "instructions": 46448,
+    "time_ms": 1129,
+    "compile_time_ms": null
+  },
+  "payment_charged": "1112900000000000000000",
+  "payment_refunded": "2888100000000000000000",
+  "compilation_note": "Cached WASM from 2026-11-11T12:41:42.188560+00:00",
+  "outlayer_log": "Execution completed successfully. Output: Json(77 bytes), Resources: { instructions: 46448, time_ms: 1129 }, Cost: 1112900000000000000000 yoctoNEAR, Refund: 2888100000000000000000 yoctoNEAR, Cached WASM from 2026-11-11T12:41:42.188560+00:00",
+  "gas_burnt": [
+    [
+      "outlayer",
+      3.782
+    ],
+    [
+      "outlayer",
+      3.103
+    ]
+  ],
+  "decision_len": 77,
+  "decision": "{\"action\":\"hold\",\"reason\":\"input has no refund_to (the fund's refund relay)\"}"
+}

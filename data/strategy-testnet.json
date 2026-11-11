@@ -3,8 +3,8 @@
  "quote_signer": "ed25519:8UL3S2m1rTjYVAF15EJR4KH7A8NaNnn9GYgnhHFx2r9",
  "strategy": {
   "outlayer": "outlayer.testnet",
-  "wasm_url": "https://test.fastfs.io/plinth-ol-spike-mwb6xcaj.testnet/outlayer.testnet/2646d24d0d6c604e3d5024431de92153b35856c9f3dfd4b97cc2fc29b5d0c12b.wasm",
-  "wasm_hash": "2646d24d0d6c604e3d5024431de92153b35856c9f3dfd4b97cc2fc29b5d0c12b",
+  "wasm_url": "https://test.fastfs.io/plinth-ol-spike-mwb6xcaj.testnet/outlayer.testnet/d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1.wasm",
+  "wasm_hash": "d7bf6ba8c5ff9231dba1649e7caff23ff862097dd962a624c9b8d34be584b1d1",
   "max_instructions": 1000000000,
   "max_execution_seconds": 30,
   "exclusive": true

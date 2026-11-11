@@ -3981,11 +3981,14 @@ fn v3_rebalance_tells_the_strategy_where_refunds_go() {
 
 // ------------------------------------------------------------------ v3: relay mode
 //
-// `relay_init`, `relay_forward` and `relay_fund` call `env::setup_panic_hook()`, which installs a
-// process-wide panic hook that calls `env::panic_str`. In a native test process that hook panics
-// again inside itself, and Rust aborts the whole process: one refusal inside a relay function
-// would kill every other test. So each relay call runs in a child process (this same test binary,
-// running only `v3_relay_child`), which reports what the call did on stdout.
+// `relay_init`, `relay_forward` and `relay_fund` start with `env::setup_panic_hook()`, which installs
+// a process-wide panic hook that calls `env::panic_str`. In a native test process that hook panics
+// again inside itself and Rust aborts the whole process, so (a) one refusal inside a relay
+// function would kill every other test, and (b) the refusal's message is never printed. Each
+// relay call therefore runs in a child process (this same test binary, running only
+// `v3_relay_child`) that reports what the call did on stdout. A refusal shows as an abort with no
+// report. The messages of the two helpers that do not install the hook (`relay_args`,
+// `relay_fund_id`) are checked in-process.
 
 const PER: u128 = 1_250_000_000_000_000_000_000;
 
@@ -4011,31 +4014,12 @@ fn v3_relay_child() {
             other => panic!("unknown step {other}"),
         };
     }
-    // The relay functions install near-sdk's panic hook, which cannot run in a native process
-    // (it aborts). Keep putting a printing hook back from a second thread, so that a refusal is
-    // reported as RELAY_PANIC instead of killing the process before it can say why. If the swap
-    // loses the race the process aborts with neither marker, and the parent runs the case again.
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let spinner = {
-        let stop = stop.clone();
-        std::thread::spawn(move || {
-            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                std::panic::set_hook(Box::new(|info| println!("\nRELAY_PANIC:{}", info.to_string().replace('\n', " "))));
-            }
-        })
-    };
-    let call = spec["call"].as_str().unwrap().to_string();
-    let outcome = std::panic::catch_unwind(move || match call.as_str() {
+    println!("\nRELAY_CALLING");
+    match spec["call"].as_str().unwrap() {
         "relay_init" => super::relay_init(),
         "relay_forward" => super::relay_forward(),
         "relay_fund" => super::relay_fund(),
         other => panic!("unknown call {other}"),
-    });
-    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    spinner.join().unwrap();
-    let _ = std::panic::take_hook();
-    if outcome.is_err() {
-        std::process::exit(3);
     }
     let receipts: Vec<Value> = near_sdk::test_utils::get_created_receipts()
         .into_iter()
@@ -4065,29 +4049,28 @@ fn v3_relay_child() {
     println!("\nRELAY_RESULT:{result}");
 }
 
-/// Run one relay function in a child process. Ok(what it did) or Err(the child's output) if the
-/// call panicked.
+/// Run one relay function in a child process: Ok(what it did), or Err(the child's output) when
+/// the call refused (panicked, which aborts the child before it can report).
 fn relay_call(call: &str, input: &str, deposit: u128, pre: &[&str], current: &str) -> Result<Value, String> {
     let spec = json!({"call": call, "input": input, "deposit": deposit.to_string(), "pre": pre, "current": current});
-    let mut last = String::new();
-    for _ in 0..50 {
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "tests::v3_relay_child", "--nocapture", "--test-threads=1"])
-            .env("PLINTH_RELAY_CHILD", spec.to_string())
-            .output()
-            .expect("spawn the test binary");
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        if let Some(reason) = stdout.lines().find_map(|l| l.strip_prefix("RELAY_PANIC:")) {
-            return Err(reason.to_string());
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "tests::v3_relay_child", "--nocapture", "--test-threads=1"])
+        .env("PLINTH_RELAY_CHILD", spec.to_string())
+        .output()
+        .expect("spawn the test binary");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(stdout.contains("RELAY_CALLING"), "the child never got to the call:\n{stdout}\n{stderr}");
+    match stdout.lines().find_map(|l| l.strip_prefix("RELAY_RESULT:")) {
+        Some(j) => {
+            assert!(out.status.success(), "{stdout}\n{stderr}");
+            Ok(serde_json::from_str(j).unwrap())
         }
-        if let Some(j) = stdout.lines().find_map(|l| l.strip_prefix("RELAY_RESULT:")) {
-            assert!(out.status.success(), "{stdout}");
-            return Ok(serde_json::from_str(j).unwrap());
+        None => {
+            assert!(!out.status.success() && stderr.contains("panicked"), "no report and no panic:\n{stdout}\n{stderr}");
+            Err(format!("{stdout}\n{stderr}"))
         }
-        // Aborted inside near-sdk's hook before ours was back in place: try again.
-        last = format!("{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
     }
-    panic!("the relay child never reported: {last}");
 }
 
 fn init_args(fund: &str, tokens: &[&str]) -> String {
@@ -4110,42 +4093,46 @@ fn v3_relay_init_remembers_its_fund_and_registers_on_every_token() {
         );
     }
     assert!(r["logs"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().contains("\"relay_created\"")));
-    // One token, the exact deposit; four tokens, more than needed.
+    // One token with the exact deposit; four tokens with more than needed; extra fields ignored.
     let r = relay_call("relay_init", &init_args(FUND, &[USDC]), PER, &[], RELAY).expect("one token");
     assert_eq!(r["receipts"].as_array().unwrap().len(), 1);
     let r = relay_call("relay_init", &init_args(FUND, &[USDC, WNEAR, LST, OTHER]), 10 * PER, &[], RELAY).expect("four tokens");
     assert_eq!(r["receipts"].as_array().unwrap().len(), 4);
+    let extra = json!({"fund": FUND, "tokens": [USDC], "storage_deposit": PER.to_string(), "owner": "mallory.test.near"}).to_string();
+    let r = relay_call("relay_init", &extra, PER, &[], RELAY).expect("extra fields");
+    assert_eq!(r["relay_key"], json!(FUND));
 }
 
 #[test]
 fn v3_relay_init_refusals() {
+    // Each case is a refusal (the child aborts without a report). The accepted neighbour of each
+    // boundary is in v3_relay_init_remembers_its_fund_and_registers_on_every_token.
     let ok = init_args(FUND, &[USDC, WNEAR]);
     let per = PER.to_string();
     let five: Vec<String> = (0..5).map(|i| format!("t{i}.test.near")).collect();
-    let cases: Vec<(&str, String, u128, Vec<&str>, &str)> = vec![
-        ("already a fund", ok.clone(), 2 * PER, vec!["fund-state"], "this account is already set up"),
-        ("already a relay", ok.clone(), 2 * PER, vec!["relay-state"], "this account is already set up"),
-        ("not JSON", "fund".into(), 2 * PER, vec![], "arguments are not JSON"),
-        ("empty input", String::new(), 2 * PER, vec![], "arguments are not JSON"),
-        ("no fund", json!({"tokens": [USDC], "storage_deposit": per}).to_string(), PER, vec![], "fund is not an account"),
-        ("fund not a string", json!({"fund": 5, "tokens": [USDC], "storage_deposit": per}).to_string(), PER, vec![], "fund is not an account"),
-        ("fund not an account", json!({"fund": "Not An Account", "tokens": [USDC], "storage_deposit": per}).to_string(), PER, vec![], "fund is not an account"),
-        ("its own fund", init_args(RELAY, &[USDC]), PER, vec![], "a relay cannot serve itself"),
-        ("no tokens", json!({"fund": FUND, "storage_deposit": per}).to_string(), PER, vec![], "tokens: 1 to 4 accounts"),
-        ("empty tokens", init_args(FUND, &[]), PER, vec![], "tokens: 1 to 4 accounts"),
-        ("five tokens", json!({"fund": FUND, "tokens": five, "storage_deposit": per}).to_string(), 5 * PER, vec![], "tokens: 1 to 4 accounts"),
-        ("a token that is not an account", json!({"fund": FUND, "tokens": [USDC, "NOT VALID"], "storage_deposit": per}).to_string(), 2 * PER, vec![], "tokens: 1 to 4 accounts"),
-        ("a token that is not a string", json!({"fund": FUND, "tokens": [USDC, 7], "storage_deposit": per}).to_string(), 2 * PER, vec![], "tokens: 1 to 4 accounts"),
-        ("tokens not a list", json!({"fund": FUND, "tokens": USDC, "storage_deposit": per}).to_string(), PER, vec![], "tokens: 1 to 4 accounts"),
-        ("no storage_deposit", json!({"fund": FUND, "tokens": [USDC]}).to_string(), PER, vec![], "storage_deposit is missing"),
-        ("storage_deposit a number", json!({"fund": FUND, "tokens": [USDC], "storage_deposit": 1250}).to_string(), PER, vec![], "storage_deposit is missing"),
-        ("too little attached", ok.clone(), 2 * PER - 1, vec![], "attach storage_deposit for each token"),
-        ("nothing attached", ok.clone(), 0, vec![], "attach storage_deposit for each token"),
-        ("deposit overflow", json!({"fund": FUND, "tokens": [USDC, WNEAR], "storage_deposit": u128::MAX.to_string()}).to_string(), u128::MAX / 2, vec![], "attach storage_deposit for each token"),
+    let cases: Vec<(&str, String, u128, Vec<&str>)> = vec![
+        ("already a fund", ok.clone(), 2 * PER, vec!["fund-state"]),
+        ("already a relay", ok.clone(), 2 * PER, vec!["relay-state"]),
+        ("not JSON", "fund".into(), 2 * PER, vec![]),
+        ("empty input", String::new(), 2 * PER, vec![]),
+        ("no fund", json!({"tokens": [USDC], "storage_deposit": per}).to_string(), PER, vec![]),
+        ("fund not a string", json!({"fund": 5, "tokens": [USDC], "storage_deposit": per}).to_string(), PER, vec![]),
+        ("fund not an account", json!({"fund": "Not An Account", "tokens": [USDC], "storage_deposit": per}).to_string(), PER, vec![]),
+        ("its own fund", init_args(RELAY, &[USDC]), PER, vec![]),
+        ("no tokens", json!({"fund": FUND, "storage_deposit": per}).to_string(), PER, vec![]),
+        ("empty tokens", init_args(FUND, &[]), PER, vec![]),
+        ("five tokens", json!({"fund": FUND, "tokens": five, "storage_deposit": per}).to_string(), 5 * PER, vec![]),
+        ("a token that is not an account", json!({"fund": FUND, "tokens": [USDC, "NOT VALID"], "storage_deposit": per}).to_string(), 2 * PER, vec![]),
+        ("a token that is not a string", json!({"fund": FUND, "tokens": [USDC, 7], "storage_deposit": per}).to_string(), 2 * PER, vec![]),
+        ("tokens not a list", json!({"fund": FUND, "tokens": USDC, "storage_deposit": per}).to_string(), PER, vec![]),
+        ("no storage_deposit", json!({"fund": FUND, "tokens": [USDC]}).to_string(), PER, vec![]),
+        ("storage_deposit a number", json!({"fund": FUND, "tokens": [USDC], "storage_deposit": 1250}).to_string(), PER, vec![]),
+        ("too little attached", ok.clone(), 2 * PER - 1, vec![]),
+        ("nothing attached", ok.clone(), 0, vec![]),
+        ("deposit overflow", json!({"fund": FUND, "tokens": [USDC, WNEAR], "storage_deposit": u128::MAX.to_string()}).to_string(), u128::MAX / 2, vec![]),
     ];
-    for (what, input, deposit, pre, why) in cases {
-        let err = relay_call("relay_init", &input, deposit, &pre, RELAY).expect_err(what);
-        assert!(err.contains(why), "{what}: expected '{why}' in:\n{err}");
+    for (what, input, deposit, pre) in cases {
+        relay_call("relay_init", &input, deposit, &pre, RELAY).expect_err(what);
     }
 }
 
@@ -4163,7 +4150,8 @@ fn v3_relay_forward_creates_exactly_one_refund_transfer_call() {
     );
     assert_eq!(r["relay_key"], json!(FUND), "forwarding changes nothing in the relay");
     // Any amount and any token account are passed on as given: the token contract is what
-    // refuses an amount the relay does not hold. The receiver is always the relay's own fund.
+    // refuses an amount the relay does not hold. The receiver is always the relay's own fund and
+    // the message always "refund", whatever else the caller passes.
     let huge = json!({"token": "some-other-token.test.near", "amount": u128::MAX.to_string(), "receiver_id": "mallory.test.near", "msg": "donate"}).to_string();
     let r = relay_call("relay_forward", &huge, 0, &["relay-state"], RELAY).expect("relay_forward, any token");
     let call = &r["receipts"][0]["calls"][0];
@@ -4171,29 +4159,31 @@ fn v3_relay_forward_creates_exactly_one_refund_transfer_call() {
     assert_eq!(call["args"], json!({"receiver_id": FUND, "amount": u128::MAX.to_string(), "msg": "refund"}), "extra arguments are ignored");
     assert_eq!((&call["deposit"], &call["tgas"]), (&json!("1"), &json!(80)));
     assert_eq!(r["receipts"].as_array().unwrap().len(), 1);
+    // The smallest amount.
+    let r = relay_call("relay_forward", &json!({"token": USDC, "amount": "1"}).to_string(), 0, &["relay-state"], RELAY).expect("one unit");
+    assert_eq!(r["receipts"][0]["calls"][0]["args"]["amount"], json!("1"));
 }
 
 #[test]
 fn v3_relay_forward_refusals() {
     let relay = vec!["relay-state"];
-    let cases: Vec<(&str, String, Vec<&str>, &str)> = vec![
-        ("zero", json!({"token": USDC, "amount": "0"}).to_string(), relay.clone(), "amount must be a positive integer string"),
-        ("a number", json!({"token": USDC, "amount": 5}).to_string(), relay.clone(), "amount must be a positive integer string"),
-        ("negative", json!({"token": USDC, "amount": "-1"}).to_string(), relay.clone(), "amount must be a positive integer string"),
-        ("words", json!({"token": USDC, "amount": "all"}).to_string(), relay.clone(), "amount must be a positive integer string"),
-        ("decimal", json!({"token": USDC, "amount": "1.5"}).to_string(), relay.clone(), "amount must be a positive integer string"),
-        ("empty", json!({"token": USDC, "amount": ""}).to_string(), relay.clone(), "amount must be a positive integer string"),
-        ("over u128", json!({"token": USDC, "amount": "340282366920938463463374607431768211456"}).to_string(), relay.clone(), "amount must be a positive integer string"),
-        ("no amount", json!({"token": USDC}).to_string(), relay.clone(), "amount must be a positive integer string"),
-        ("no token", json!({"amount": "5"}).to_string(), relay.clone(), "token is not an account"),
-        ("token not an account", json!({"token": "NOT VALID", "amount": "5"}).to_string(), relay.clone(), "token is not an account"),
-        ("not JSON", "5".repeat(3) + "x", relay.clone(), "arguments are not JSON"),
-        ("not a relay", json!({"token": USDC, "amount": "5"}).to_string(), vec![], "this account is not a refund relay"),
-        ("a fund, not a relay", json!({"token": USDC, "amount": "5"}).to_string(), vec!["fund-state"], "this account is not a refund relay"),
+    let cases: Vec<(&str, String, Vec<&str>)> = vec![
+        ("zero", json!({"token": USDC, "amount": "0"}).to_string(), relay.clone()),
+        ("a number", json!({"token": USDC, "amount": 5}).to_string(), relay.clone()),
+        ("negative", json!({"token": USDC, "amount": "-1"}).to_string(), relay.clone()),
+        ("words", json!({"token": USDC, "amount": "all"}).to_string(), relay.clone()),
+        ("decimal", json!({"token": USDC, "amount": "1.5"}).to_string(), relay.clone()),
+        ("empty", json!({"token": USDC, "amount": ""}).to_string(), relay.clone()),
+        ("over u128", json!({"token": USDC, "amount": "340282366920938463463374607431768211456"}).to_string(), relay.clone()),
+        ("no amount", json!({"token": USDC}).to_string(), relay.clone()),
+        ("no token", json!({"amount": "5"}).to_string(), relay.clone()),
+        ("token not an account", json!({"token": "NOT VALID", "amount": "5"}).to_string(), relay.clone()),
+        ("not JSON", "555x".into(), relay.clone()),
+        ("not a relay", json!({"token": USDC, "amount": "5"}).to_string(), vec![]),
+        ("a fund, not a relay", json!({"token": USDC, "amount": "5"}).to_string(), vec!["fund-state"]),
     ];
-    for (what, input, pre, why) in cases {
-        let err = relay_call("relay_forward", &input, 0, &pre, RELAY).expect_err(what);
-        assert!(err.contains(why), "{what}: expected '{why}' in:\n{err}");
+    for (what, input, pre) in cases {
+        relay_call("relay_forward", &input, 0, &pre, RELAY).expect_err(what);
     }
 }
 
@@ -4201,16 +4191,47 @@ fn v3_relay_forward_refusals() {
 fn v3_relay_fund_reports_the_fund_only_on_a_relay() {
     let r = relay_call("relay_fund", "", 0, &["relay-state"], RELAY).expect("relay_fund");
     assert!(r["receipts"].as_array().unwrap().is_empty());
-    let err = relay_call("relay_fund", "", 0, &[], RELAY).expect_err("not a relay");
-    assert!(err.contains("this account is not a refund relay"), "{err}");
-    let err = relay_call("relay_fund", "", 0, &["fund-state"], FUND).expect_err("a fund");
-    assert!(err.contains("this account is not a refund relay"), "{err}");
-    // What it returns is the stored account, read back the same way here.
+    relay_call("relay_fund", "", 0, &[], RELAY).expect_err("not a relay");
+    relay_call("relay_fund", "", 0, &["fund-state"], FUND).expect_err("a fund");
+}
+
+#[test]
+fn v3_relay_helpers_give_the_reasons_the_relay_functions_panic_with() {
+    // The two helpers do not install the panic hook, so their messages can be read here.
+    set(ANYONE, T0);
+    near_sdk::mock::with_mocked_blockchain(|b| {
+        b.take_storage();
+    });
+    assert!(panics(|| super::relay_fund_id()).contains("this account is not a refund relay"));
+    env::storage_write(b"RELAY", b"Not An Account");
+    assert!(panics(|| super::relay_fund_id()).contains("corrupt relay state"));
+    env::storage_write(b"RELAY", FUND.as_bytes());
+    assert_eq!(super::relay_fund_id(), acct(FUND));
+    assert_eq!(json!(super::relay_fund_id()).to_string(), format!("\"{FUND}\""));
+    for bad in ["", "fund", "{", "[1,2"] {
+        let mut c = ctx(ANYONE, T0).build();
+        c.input = bad.as_bytes().to_vec().into();
+        testing_env!(c);
+        assert!(panics(|| super::relay_args()).contains("arguments are not JSON"), "{bad:?}");
+    }
+    let mut c = ctx(ANYONE, T0).build();
+    c.input = br#"{"token":"x","amount":"5"}"#.to_vec().into();
+    testing_env!(c);
+    assert_eq!(super::relay_args(), json!({"token": "x", "amount": "5"}));
+}
+
+#[test]
+fn v3_every_fund_method_panics_on_an_account_in_relay_mode() {
+    // A relay has no fund state: every Plinth method fails to load it. Exercised through the
+    // deserialization the near macro does on entry: with no STATE the contract cannot even be read.
     set(ANYONE, T0);
     near_sdk::mock::with_mocked_blockchain(|b| {
         b.take_storage();
     });
     env::storage_write(b"RELAY", FUND.as_bytes());
-    assert_eq!(super::relay_fund_id(), acct(FUND));
-    assert_eq!(json!(super::relay_fund_id()).to_string(), format!("\"{FUND}\""));
+    assert!(!env::state_exists());
+    assert!(std::panic::catch_unwind(|| env::state_read::<Plinth>()).is_err() || env::state_read::<Plinth>().is_none(), "no fund state to load");
+    // And the relay can never be turned into a fund.
+    set("deployer.test.near", T0);
+    assert!(panics(|| Plinth::new(config())).contains("this account is a refund relay"));
 }
