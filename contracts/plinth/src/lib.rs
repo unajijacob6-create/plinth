@@ -21,9 +21,12 @@
 //! - Trade output: the 1Click quote must carry `customRecipientMsg = "trade:<id>"`, so 1Click
 //!   delivers with `ft_transfer_call` and the trade settles inside `ft_on_transfer`.
 //! - Stake output: the amount `deposit_and_stake` returns.
-//! - Refunds arrive as a plain transfer, so `settle_refund` is the one place a balance is read. It
-//!   can only run an hour after a trade was sent without output, credits exactly
-//!   `amount_in - refund_fee` once, and is undone if the output arrives after all.
+//! - Refunds: 1Click refunds with a plain transfer, which the receiver cannot see arrive. So the
+//!   quote's `refundTo` must be the fund's **refund relay**: an account that runs this same code
+//!   in relay mode, holds nothing else, and can do one thing: `ft_transfer_call` a token to its
+//!   fund with `msg = "refund"`. The refund reaches the fund as a push like everything else.
+//!
+//! No balance is read anywhere in this contract.
 //!
 //! No manager (optional, `strategy`): anyone can call `rebalance()`. The fund asks OutLayer to run
 //! a strategy program, pinned by its sha256 in the mandate, inside a TEE; the program's answer comes
@@ -38,12 +41,11 @@ pub mod quote;
 use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_sdk::store::{LookupMap, LookupSet, Vector};
-use near_sdk::{env, near, require, AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, PromiseError, PromiseIndex};
+use near_sdk::{env, near, require, AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, PromiseIndex};
 
 const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 const GAS_STORAGE_DEPOSIT: Gas = Gas::from_tgas(10);
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(15);
-const GAS_FT_BALANCE: Gas = Gas::from_tgas(5);
 const GAS_CALLBACK: Gas = Gas::from_tgas(20);
 /// Redemptions wait at most this long for a trade in flight to settle; after that a redeemer can
 /// leave and forfeits only their share of that one trade (which stays with the other holders).
@@ -76,19 +78,13 @@ const STUCK_STAKE_SECONDS: u64 = 86_400;
 const ONE_NEAR: u128 = 1_000_000_000_000_000_000_000_000;
 pub const MAX_TOKENS: usize = 4;
 pub const VERSION: &str = "0.3.0";
-/// A refund is a plain transfer the fund cannot see arrive. It is looked for only this long after
-/// the trade was sent, when 1Click would long have delivered (its estimate is seconds to minutes).
-pub const REFUND_WAIT_SECONDS: u64 = 3600;
-/// A counted refund is taken back if the trade's output arrives within this long of the quote's
-/// deadline; later pushes are plain donations.
-pub const REFUND_UNDO_SECONDS: u64 = 86_400;
-/// A quote whose deposit address stays open longer than this is refused: `abandon` and the refund
-/// window are counted from that deadline, and a far-off one would let a lost trade block trading.
-/// (A live 1Click quote recorded on 2026-11-08 had a deadline 3.4 days after it was issued.)
+/// A quote whose deposit address stays open longer than this is refused: `abandon` is counted from
+/// that deadline, and a far-off one would let a lost trade block trading. (A live 1Click quote
+/// recorded on 2026-11-08 had a deadline 3.4 days after it was issued.)
 pub const MAX_DEADLINE_SECONDS: u64 = 14 * 86_400;
-/// A refund is counted only this long after the quote's deadline. 1Click refunds within hours; an
-/// old unresolved trade must not stay open to `settle_refund` forever.
-pub const REFUND_CLOSES_SECONDS: u64 = 14 * 86_400;
+/// After a trade is written off, its refund or output can still turn up for a while. In-kind joins
+/// stay closed this long after the quote's deadline, so nobody buys a share of that for nothing.
+pub const LATE_ARRIVAL_SECONDS: u64 = 14 * 86_400;
 /// NEAR a joiner attaches to `open_basket`: pays for their basket and share entries, stays with the
 /// fund (the contract cannot send NEAR).
 pub const BASKET_DEPOSIT: u128 = 5_000_000_000_000_000_000_000; // 0.005 NEAR
@@ -265,6 +261,9 @@ pub struct Config {
     /// NEAR attached to each NEP-145 `storage_deposit` (registration of a 1Click deposit address
     /// on the token sold). 0.00125 NEAR for the common tokens.
     pub storage_deposit: U128,
+    /// The account every quote must name as `refundTo`: this fund's refund relay (this same code
+    /// started with `relay_init`). It hands refunds to the fund with `ft_transfer_call`.
+    pub refund_relay: AccountId,
 }
 
 #[near(serializers = [json, borsh])]
@@ -302,7 +301,7 @@ pub struct Trade {
     /// Output pushed to the fund for this trade so far (`ft_on_transfer` with `trade:<id>`), or
     /// the amount a stake minted.
     pub received_out: U128,
-    /// Refund counted by `settle_refund` (exactly `amount_in - refund_fee`, or 0).
+    /// Refund pushed to the fund by its relay while this trade was in flight.
     pub received_refund: U128,
     pub closed_at: Option<u64>,
 }
@@ -368,9 +367,6 @@ pub struct Plinth {
     owed_total: Vec<u128>,
     /// Redemption payouts whose transfer has not resolved yet, per token. Not claimable.
     in_flight: Vec<u128>,
-    /// Bumped whenever tokens move in or out of what the fund accounts for. The one balance read
-    /// (`settle_refund`) is ignored if this changed between the read and its callback.
-    flux: u64,
     /// Whether the fund's own storage registration on each token succeeded.
     registered: Vec<bool>,
     /// UTC day of the last trade and the number of trades sent that day.
@@ -394,8 +390,8 @@ pub struct Plinth {
     /// When `rewrap_stranded` last sent NEAR back into wNEAR with the result not in yet; 0 = none.
     /// A time, not an amount: if the callback is ever lost, the wait it causes ends by itself.
     rewrap_started: u64,
-    /// In-kind joins wait until this time: an abandoned trade can still be refunded or delivered
-    /// until then, and a joiner must not buy a share of that for nothing.
+    /// In-kind joins wait until this time after a trade is written off: its refund or output may
+    /// still turn up, and a joiner must not buy a share of that for nothing.
     joins_blocked_until: u64,
     used_deposit_addresses: LookupSet<AccountId>,
     trades: Vector<Trade>,
@@ -443,6 +439,8 @@ impl Plinth {
         require!(m.subscription_closes_at > now_seconds(), "subscription must close in the future");
         require!(m.min_subscription.0 > 0 && m.min_subscription.0 <= m.max_total_subscriptions.0, "bad subscription limits");
         require!(config.operator != env::current_account_id(), "the fund cannot be its own operator");
+        require!(config.refund_relay != env::current_account_id(), "the refund relay must be a separate account");
+        require!(!env::storage_has_key(RELAY_KEY), "this account is a refund relay");
         require!(m.management_fee_bps <= MAX_MANAGEMENT_FEE_BPS, "management_fee_bps must be at most 200");
         if let Some(r) = &m.staking {
             let n = m.tokens.len() as u8;
@@ -484,7 +482,6 @@ impl Plinth {
             owed: LookupMap::new(StorageKey::Owed),
             owed_total: vec![0; n],
             in_flight: vec![0; n],
-            flux: 0,
             registered: vec![false; n],
             trade_day: 0,
             trades_today: 0,
@@ -510,6 +507,7 @@ impl Plinth {
     /// NEP-141 receiver: the only way tokens enter the fund's accounts. By `msg`:
     /// - `trade:<id>`: output of a trade (1Click delivers this way because the quote's signed
     ///   `customRecipientMsg` says so). Always kept. The trade settles here once `min_out` is in.
+    /// - `refund`: kept. From the fund's refund relay it also closes the trade in flight as refunded.
     /// - `donate`: kept and added to the fund's holdings.
     /// - `basket`: kept towards the sender's in-kind join (`open_basket` first).
     /// - anything else: a base-token subscription while the window is open; otherwise returned.
@@ -518,9 +516,6 @@ impl Plinth {
         let Some(i) = self.config.mandate.tokens.iter().position(|t| *t == token) else {
             return amount; // not one of the fund's tokens
         };
-        // Every transfer of a fund token moves the balance for a moment, kept or not: a refund
-        // check that overlaps it is discarded.
-        self.flux += 1;
         if amount.0 == 0 || self.held[i].checked_add(amount.0).is_none() {
             return amount;
         }
@@ -533,6 +528,10 @@ impl Plinth {
                 self.credit_push(i, None, amount.0, &sender_id);
                 U128(0)
             }
+            "refund" => {
+                self.credit_refund(i, amount.0, &sender_id);
+                U128(0)
+            }
             "basket" => self.basket_deposit(sender_id, i, amount),
             _ => self.subscribe(sender_id, i, amount),
         }
@@ -541,7 +540,6 @@ impl Plinth {
     /// Tokens the fund keeps: add them to its holdings, and close the trade they belong to.
     fn credit_push(&mut self, i: usize, trade_id: Option<u64>, amount: u128, sender: &AccountId) {
         self.held[i] += amount;
-        self.flux += 1;
         let token = self.config.mandate.tokens[i].clone();
         let Some(id) = trade_id.filter(|id| *id < self.trades.len() as u64) else {
             event("donated", json!({"token": token, "amount": U128(amount), "from": sender}));
@@ -558,23 +556,10 @@ impl Plinth {
         self.trades.replace(id as u32, t);
     }
 
-    /// Settle a trade whose output has been pushed in full. If a refund had been counted for it
-    /// (`settle_refund`), that credit is taken back: 1Click delivers or refunds, never both.
+    /// Settle a trade whose output has been pushed in full.
     fn close_if_delivered(&mut self, t: &mut Trade) {
         if t.status == TradeStatus::Sending || t.received_out.0 < t.min_out.0 {
             return;
-        }
-        if t.received_refund.0 > 0 && now_seconds() > t.deposit_deadline.max(t.sent_at) + REFUND_UNDO_SECONDS {
-            // Long after 1Click could still deliver: this is a gift, not the trade's output. The
-            // refund stands (otherwise anyone could pay min_out to strike an old refund off the books).
-            return;
-        }
-        if t.received_refund.0 > 0 {
-            let s = t.sell as usize;
-            let undo = t.received_refund.0.min(self.held[s]);
-            self.held[s] -= undo;
-            event("refund_undone", json!({"trade_id": t.id, "amount": U128(undo)}));
-            t.received_refund = U128(0);
         }
         if self.pending == Some(t.id) {
             self.pending = None;
@@ -582,6 +567,33 @@ impl Plinth {
         t.status = TradeStatus::Settled;
         t.closed_at = Some(now_seconds());
         event("trade_closed", json!({"trade": &*t}));
+    }
+
+    /// A refund handed over by the relay (or anyone using the same message): the tokens are the
+    /// fund's. If they come from the relay, are of the token the trade in flight sold, and reach
+    /// `amount_in - refund_fee`, that trade closes as refunded.
+    fn credit_refund(&mut self, i: usize, amount: u128, sender: &AccountId) {
+        self.held[i] += amount;
+        let token = self.config.mandate.tokens[i].clone();
+        if *sender != self.config.refund_relay {
+            event("donated", json!({"token": token, "amount": U128(amount), "from": sender}));
+            return;
+        }
+        event("refund_received", json!({"token": token, "amount": U128(amount)}));
+        let Some(id) = self.pending else { return };
+        let mut t = self.trades[id as u32].clone();
+        if t.stake || t.sell as usize != i || t.status != TradeStatus::Sent {
+            return;
+        }
+        t.received_refund = U128(t.received_refund.0.saturating_add(amount));
+        let floor = t.amount_in.0.saturating_sub(t.refund_fee.0);
+        if floor > 0 && t.received_refund.0 >= floor {
+            t.status = TradeStatus::Refunded;
+            t.closed_at = Some(now_seconds());
+            self.pending = None;
+            event("trade_closed", json!({"trade": &t}));
+        }
+        self.trades.replace(id as u32, t);
     }
 
     fn subscribe(&mut self, sender_id: AccountId, i: usize, amount: U128) -> U128 {
@@ -610,7 +622,6 @@ impl Plinth {
         self.total_shares += amount.0;
         self.total_subscribed += amount.0;
         self.held[0] += amount.0;
-        self.flux += 1;
         event("subscribed", json!({"account_id": sender_id, "amount": amount, "shares": amount}));
         U128(0)
     }
@@ -636,7 +647,6 @@ impl Plinth {
         };
         b[i] += amount.0;
         self.basket_total[i] += amount.0;
-        self.flux += 1;
         self.baskets.insert(sender_id.clone(), b);
         event("basket_deposit", json!({"account_id": sender_id, "token": self.config.mandate.tokens[i], "amount": amount}));
         U128(0)
@@ -651,7 +661,7 @@ impl Plinth {
         require!(now_seconds() >= self.config.mandate.subscription_closes_at, "the subscription window is open: subscribe in the base token");
         require!(self.pending.is_none(), "a trade is in flight; join when it has settled");
         require!(self.stranded_near == 0 && !self.rewrap_in_flight(), "NEAR from a failed stake is being wrapped back (rewrap_stranded); join after that");
-        require!(now_seconds() > self.joins_blocked_until, "a written-off trade can still be refunded; joins reopen when that closes");
+        require!(now_seconds() > self.joins_blocked_until, "a written-off trade can still be refunded or delivered; joins reopen when that window closes");
         self.accrue_fee();
         let who = env::predecessor_account_id();
         let mut b = self.baskets.get(&who).cloned().unwrap_or_else(|| env::panic_str("no basket: call open_basket first"));
@@ -754,7 +764,6 @@ impl Plinth {
 
     fn start_trade(&mut self, t: &Trade) {
         self.held[t.sell as usize] -= t.amount_in.0;
-        self.flux += 1;
         self.pending = Some(t.id);
         self.last_trade_at = t.sent_at;
         let day = t.sent_at / 86_400;
@@ -836,7 +845,6 @@ impl Plinth {
 
     #[private]
     pub fn on_unwrapped(&mut self, trade_id: u64) {
-        self.flux += 1;
         let mut t = self.trades[trade_id as u32].clone();
         if !self.still_sending(&t) {
             return;
@@ -874,7 +882,6 @@ impl Plinth {
 
     #[private]
     pub fn on_staked(&mut self, trade_id: u64) {
-        self.flux += 1;
         let Ok(bytes) = env::promise_result_checked(0, 1_024) else {
             if self.still_sending(&self.trades[trade_id as u32]) {
                 self.rewrap(trade_id);
@@ -916,7 +923,6 @@ impl Plinth {
     /// trade_id u64::MAX = a `rewrap_stranded` retry.
     #[private]
     pub fn on_rewrapped(&mut self, trade_id: u64, amount: U128) {
-        self.flux += 1;
         let ok = promise_ok();
         if trade_id != u64::MAX {
             let mut t = self.trades[trade_id as u32].clone();
@@ -952,7 +958,6 @@ impl Plinth {
         require!(self.free_near() >= NEAR_RESERVE, "the stranded NEAR is not in the account");
         self.stranded_near = 0;
         self.rewrap_started = now_seconds();
-        self.flux += 1;
         let w = self.config.mandate.staking.as_ref().map(|r| r.wrap_index as usize).unwrap_or(0);
         let p = call(&self.config.mandate.tokens[w], "near_deposit", json!({}), amount, GAS_WRAP);
         then_self(p, "on_rewrapped", json!({"trade_id": u64::MAX, "amount": U128(amount)}), GAS_CALLBACK);
@@ -976,21 +981,20 @@ impl Plinth {
         t.status = TradeStatus::Failed;
         t.closed_at = Some(now_seconds());
         self.pending = None;
-        self.flux += 1;
         event("stake_recovered", json!({"trade_id": id, "stranded": present}));
         self.trades.replace(id as u32, t);
     }
 
     /// Anyone, a day after a swap was sent and still `Sending` (its callback never ran): treat the
-    /// input as sent. If the output then arrives the trade settles; if the input never left, it is
-    /// still in the fund's balance and `settle_refund` counts it back.
+    /// input as sent. If the output or a refund then arrives the trade closes; otherwise it can be
+    /// written off (`abandon`). If the input in fact never left, it stays in the fund's balance
+    /// uncounted: that is the price of never trusting a balance read.
     pub fn recover_stuck_trade(&mut self) {
         let id = self.pending.unwrap_or_else(|| env::panic_str("no trade in flight"));
         let mut t = self.trades[id as u32].clone();
         require!(!t.stake && t.status == TradeStatus::Sending, "no swap is stuck");
         require!(now_seconds() > t.sent_at + STUCK_TRADE_SECONDS, "too early to recover this trade");
         t.status = TradeStatus::Sent;
-        self.flux += 1;
         self.close_if_delivered(&mut t);
         self.trades.replace(id as u32, t);
     }
@@ -1016,6 +1020,7 @@ impl Plinth {
             "fund": env::current_account_id(),
             "now": now,
             "next_trade_id": self.trades.len(),
+            "refund_to": self.config.refund_relay,
             "tokens": m.tokens,
             "held": self.held.iter().map(|h| U128(*h)).collect::<Vec<_>>(),
             "total_shares": U128(self.total_shares),
@@ -1125,8 +1130,8 @@ impl Plinth {
         let dep = Some(q.deposit_address.to_string());
         let fail = |r: String| Err((r, dep.clone()));
         let me = env::current_account_id();
-        if q.recipient != me.as_str() || q.refund_to != me.as_str() || q.refund_type != "ORIGIN_CHAIN" {
-            return fail("quote must deliver to and refund to this fund on NEAR".into());
+        if q.recipient != me.as_str() || q.refund_to != self.config.refund_relay.as_str() || q.refund_type != "ORIGIN_CHAIN" {
+            return fail("quote must deliver to this fund and refund to its relay on NEAR".into());
         }
         // 1Click must deliver with ft_transfer_call and this exact message, so the output is
         // counted when it arrives and never from a balance read.
@@ -1223,7 +1228,6 @@ impl Plinth {
     #[private]
     pub fn on_trade_sent(&mut self, trade_id: u64) {
         let mut t = self.trades[trade_id as u32].clone();
-        self.flux += 1;
         if !self.still_sending(&t) {
             return;
         }
@@ -1241,71 +1245,6 @@ impl Plinth {
         self.trades.replace(trade_id as u32, t);
     }
 
-    /// Anyone, at least REFUND_WAIT_SECONDS after a swap was sent with no output: check whether
-    /// 1Click refunded it. A refund is a plain transfer, so this reads the fund's balance of the
-    /// token sold; if it holds at least `amount_in - refund_fee` more than the fund accounts for,
-    /// exactly that amount is counted and the trade closes as `Refunded`. Counted once per trade,
-    /// and taken back if the output arrives after all.
-    pub fn settle_refund(&mut self, trade_id: u64) {
-        let t = self.refundable(trade_id).unwrap_or_else(|e| env::panic_str(e));
-        let token = &self.config.mandate.tokens[t.sell as usize];
-        let p = call(token, "ft_balance_of", json!({"account_id": env::current_account_id()}), 0, GAS_FT_BALANCE);
-        env::promise_return(then_self(p, "on_settle_refund", json!({"trade_id": trade_id, "flux": self.flux}), GAS_CALLBACK));
-    }
-
-    fn refundable(&self, trade_id: u64) -> Result<Trade, &'static str> {
-        if trade_id >= self.trades.len() as u64 {
-            return Err("no such trade");
-        }
-        let t = self.trades[trade_id as u32].clone();
-        if t.stake || !matches!(t.status, TradeStatus::Sent | TradeStatus::Abandoned) || t.received_refund.0 > 0 {
-            return Err("this trade is not waiting for a refund");
-        }
-        if now_seconds() < t.sent_at + REFUND_WAIT_SECONDS {
-            return Err("a refund can be counted an hour after the trade was sent");
-        }
-        if now_seconds() > t.deposit_deadline.max(t.sent_at) + REFUND_CLOSES_SECONDS {
-            return Err("too late: refunds are counted for 14 days after the quote's deadline");
-        }
-        // Nothing of the fund's may be on its way out or in while the balance is read.
-        if self.near_in_flight > 0 || self.rewrap_in_flight() || self.pending.map_or(false, |id| self.trades[id as u32].status == TradeStatus::Sending) {
-            return Err("another trade is being sent; try again shortly");
-        }
-        Ok(t)
-    }
-
-    #[private]
-    pub fn on_settle_refund(&mut self, trade_id: u64, flux: u64, #[callback_result] balance: Result<U128, PromiseError>) -> TradeStatus {
-        let Ok(mut t) = self.refundable(trade_id) else { return self.trades[(trade_id.min(self.trades.len() as u64 - 1)) as u32].status.clone() };
-        let status = t.status.clone();
-        if flux != self.flux {
-            env::log_str("tokens moved while the balance was read; try again");
-            return status;
-        }
-        let Ok(bal) = balance else {
-            env::log_str("could not read the balance; try again");
-            return status;
-        };
-        let s = t.sell as usize;
-        let back = bal.0.saturating_sub(self.accounted(s));
-        let refund = t.amount_in.0.saturating_sub(t.refund_fee.0);
-        if refund == 0 || back < refund {
-            env::log_str(&format!("trade {trade_id}: {back} back, a refund would be {refund}"));
-            return status;
-        }
-        self.held[s] += refund;
-        self.flux += 1;
-        t.received_refund = U128(refund);
-        t.status = TradeStatus::Refunded;
-        t.closed_at = Some(now_seconds());
-        if self.pending == Some(trade_id) {
-            self.pending = None;
-        }
-        event("trade_closed", json!({"trade": &t}));
-        self.trades.replace(trade_id as u32, t);
-        TradeStatus::Refunded
-    }
-
     /// Anyone, after the trade's deposit address has been expired for ABANDON_AFTER_SECONDS with
     /// neither output nor refund: write the trade off so trading can continue.
     pub fn abandon(&mut self) {
@@ -1316,7 +1255,7 @@ impl Plinth {
         t.status = TradeStatus::Abandoned;
         t.closed_at = Some(now_seconds());
         self.pending = None;
-        self.joins_blocked_until = self.joins_blocked_until.max(t.deposit_deadline.max(t.sent_at) + REFUND_CLOSES_SECONDS);
+        self.joins_blocked_until = self.joins_blocked_until.max(t.deposit_deadline.max(t.sent_at) + LATE_ARRIVAL_SECONDS);
         event("trade_abandoned", json!({"trade_id": id}));
         self.trades.replace(id as u32, t);
     }
@@ -1344,7 +1283,7 @@ impl Plinth {
         require!(shares.0 > 0 && shares.0 <= mine, "not enough shares");
         if let Some(id) = self.pending {
             let t = &self.trades[id as u32];
-            require!(now_seconds() >= t.sent_at + REDEEM_WAIT_SECONDS, "a trade is in flight; settle it or wait up to 10 minutes");
+            require!(now_seconds() >= t.sent_at + REDEEM_WAIT_SECONDS, "a trade is in flight; wait for it to close, or up to 10 minutes");
         }
         let total = self.total_shares;
         let mut paid = Vec::new();
@@ -1398,7 +1337,6 @@ impl Plinth {
     /// Payouts in flight are tracked per token only, never as claimable, so they can be paid once.
     fn pay(&mut self, to: AccountId, i: usize, amount: u128) {
         self.in_flight[i] += amount;
-        self.flux += 1;
         let p = call(&self.config.mandate.tokens[i], "ft_transfer", json!({"receiver_id": to, "amount": U128(amount), "memo": "plinth redemption"}), 1, GAS_FT_TRANSFER);
         then_self(p, "on_payout", json!({"account_id": to, "token_index": i as u8, "amount": U128(amount)}), GAS_CALLBACK);
     }
@@ -1407,7 +1345,6 @@ impl Plinth {
     pub fn on_payout(&mut self, account_id: AccountId, token_index: u8, amount: U128) {
         let i = token_index as usize;
         self.in_flight[i] -= amount.0;
-        self.flux += 1;
         if !promise_ok() {
             // Becomes claimable; the redeemer can `claim` it later.
             let mut v = self.owed.get(&account_id).cloned().unwrap_or_else(|| vec![0; self.held.len()]);
@@ -1437,12 +1374,6 @@ impl Plinth {
             env::log_str(&format!("late callback for trade {} ignored", t.id));
         }
         ok
-    }
-
-    /// What of token i the fund's balance must cover: holdings, claimable failed payouts, payouts
-    /// in flight, and joiners' baskets.
-    fn accounted(&self, i: usize) -> u128 {
-        self.held[i] + self.owed_total[i] + self.in_flight[i] + self.basket_total[i]
     }
 
     /// The account's NEAR, not counting NEAR already set aside as stranded. Used to tell whether a
@@ -1513,6 +1444,65 @@ impl Plinth {
     pub fn get_rejections(&self, from: u32, limit: u32) -> Vec<Rejection> {
         (from..from.saturating_add(limit).min(self.rejections.len())).map(|i| self.rejections[i].clone()).collect()
     }
+}
+
+// ---------------------------------------------------------------------------------- refund relay
+//
+// The same code can start in relay mode instead of as a fund (`relay_init` instead of `new`). A
+// relay is where 1Click sends refunds. It holds nothing else and has two methods:
+// - `relay_init({fund, tokens, storage_deposit})`: once. Remembers its fund and registers itself on
+//   the fund's tokens so refunds can land.
+// - `relay_forward({token, amount})`: anyone. `ft_transfer_call`s that amount of that token to the
+//   fund with `msg = "refund"`. If the relay does not hold it, the call fails and nothing moves.
+// Because the relay never holds anything but refunds for its one fund, a bounced transfer cannot
+// make it give away anyone else's tokens: whoever tries only loses what they bounced.
+
+const RELAY_KEY: &[u8] = b"RELAY";
+const GAS_RELAY_TRANSFER: Gas = Gas::from_tgas(80);
+
+fn relay_args() -> near_sdk::serde_json::Value {
+    near_sdk::serde_json::from_slice(&env::input().unwrap_or_default()).unwrap_or_else(|_| env::panic_str("arguments are not JSON"))
+}
+
+#[no_mangle]
+pub extern "C" fn relay_init() {
+    env::setup_panic_hook();
+    require!(!env::storage_has_key(b"STATE") && !env::storage_has_key(RELAY_KEY), "this account is already set up");
+    let a = relay_args();
+    let fund: AccountId = a["fund"].as_str().and_then(|f| f.parse().ok()).unwrap_or_else(|| env::panic_str("fund is not an account"));
+    require!(fund != env::current_account_id(), "a relay cannot serve itself");
+    let tokens: Vec<AccountId> = a["tokens"].as_array().map(|t| t.iter().filter_map(|x| x.as_str().and_then(|x| x.parse().ok())).collect()).unwrap_or_default();
+    require!(!tokens.is_empty() && tokens.len() <= MAX_TOKENS && Some(tokens.len()) == a["tokens"].as_array().map(|t| t.len()), "tokens: 1 to 4 accounts");
+    let per: u128 = a["storage_deposit"].as_str().and_then(|x| x.parse().ok()).unwrap_or_else(|| env::panic_str("storage_deposit is missing"));
+    require!(env::attached_deposit().as_yoctonear() >= per.saturating_mul(tokens.len() as u128), "attach storage_deposit for each token");
+    env::storage_write(RELAY_KEY, fund.as_bytes());
+    for t in &tokens {
+        call(t, "storage_deposit", json!({"account_id": env::current_account_id(), "registration_only": true}), per, GAS_STORAGE_DEPOSIT);
+    }
+    event("relay_created", json!({"fund": fund, "tokens": tokens}));
+}
+
+fn relay_fund_id() -> AccountId {
+    let raw = env::storage_read(RELAY_KEY).unwrap_or_else(|| env::panic_str("this account is not a refund relay"));
+    String::from_utf8(raw).ok().and_then(|f| f.parse().ok()).unwrap_or_else(|| env::panic_str("corrupt relay state"))
+}
+
+#[no_mangle]
+pub extern "C" fn relay_forward() {
+    env::setup_panic_hook();
+    let fund = relay_fund_id();
+    let a = relay_args();
+    let token: AccountId = a["token"].as_str().and_then(|t| t.parse().ok()).unwrap_or_else(|| env::panic_str("token is not an account"));
+    let amount: u128 = a["amount"].as_str().and_then(|x| x.parse().ok()).filter(|x| *x > 0).unwrap_or_else(|| env::panic_str("amount must be a positive integer string"));
+    let p = call(&token, "ft_transfer_call", json!({"receiver_id": fund, "amount": U128(amount), "msg": "refund"}), 1, GAS_RELAY_TRANSFER);
+    env::promise_return(p);
+}
+
+/// View: the fund this relay serves.
+#[no_mangle]
+pub extern "C" fn relay_fund() {
+    env::setup_panic_hook();
+    env::value_return(json!(relay_fund_id()).to_string().as_bytes());
 }
 
 #[cfg(test)]

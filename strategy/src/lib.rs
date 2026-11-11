@@ -184,32 +184,81 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{:02x}", x)).collect()
 }
 
+/// The fund's input, checked. Built before any network call, so a bad input costs no HTTP request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Input {
+    pub fund: String,
+    /// The fund's refund relay: where a failed swap's refund goes (`quoteRequest.refundTo`).
+    pub refund_to: String,
+    pub now: u64,
+    pub trade_id: u64,
+    pub tokens: [String; 2],
+    pub held: [u128; 2],
+    pub max_trade_bps: u128,
+    pub max_cost_bps: u128,
+}
+
+/// NEAR's account id rule: 2..=64 of a-z 0-9, with single `-` `_` `.` separators inside.
+pub fn is_account_id(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() < 2 || b.len() > 64 {
+        return false;
+    }
+    let mut last_sep = true;
+    for &c in b {
+        let sep = matches!(c, b'-' | b'_' | b'.');
+        if sep {
+            if last_sep {
+                return false;
+            }
+        } else if !(c.is_ascii_lowercase() || c.is_ascii_digit()) {
+            return false;
+        }
+        last_sep = sep;
+    }
+    !last_sep
+}
+
+/// Parse and check the fund's stdin JSON. The error is the reason for a hold.
+pub fn parse_input(input_json: &str) -> Result<Input, String> {
+    let input: Value = serde_json::from_str(input_json).map_err(|e| format!("input is not JSON: {e}"))?;
+    let fund = input.get("fund").and_then(Value::as_str).ok_or("input has no fund")?;
+    if !is_account_id(fund) {
+        return Err("input fund is not a valid account id".into());
+    }
+    let refund_to = input.get("refund_to").and_then(Value::as_str).ok_or("input has no refund_to (the fund's refund relay)")?;
+    if !is_account_id(refund_to) {
+        return Err("input refund_to is not a valid account id".into());
+    }
+    if refund_to == fund {
+        return Err("input refund_to must be the fund's refund relay, not the fund itself".into());
+    }
+    let now = input.get("now").and_then(Value::as_u64).ok_or("input has no now")?;
+    let trade_id = input.get("next_trade_id").and_then(Value::as_u64).ok_or("input has no next_trade_id")?;
+    let token_list = input.get("tokens").and_then(Value::as_array).ok_or("input has no tokens")?;
+    let held_list = input.get("held").and_then(Value::as_array).ok_or("input has no held")?;
+    if token_list.len() != 2 || held_list.len() != 2 {
+        return Err(format!("this strategy handles two-token funds (USD stable, wNEAR); this fund lists {}", token_list.len()));
+    }
+    let token = |i: usize| token_list[i].as_str().filter(|t| is_account_id(t)).map(str::to_string).ok_or("tokens is not a list of account ids");
+    let amount = |i: usize| held_list[i].as_str().and_then(|s| s.parse::<u128>().ok()).ok_or("held is not a list of integer strings");
+    let max_trade_bps = input.get("max_trade_bps").and_then(Value::as_u64).ok_or("input has no max_trade_bps")? as u128;
+    let max_cost_bps = input.get("max_cost_bps").and_then(Value::as_u64).ok_or("input has no max_cost_bps")? as u128;
+    Ok(Input { fund: fund.to_string(), refund_to: refund_to.to_string(), now, trade_id, tokens: [token(0)?, token(1)?], held: [amount(0)?, amount(1)?], max_trade_bps, max_cost_bps })
+}
+
 /// The Decision for this input at this NEAR price. Never panics; every problem is a hold.
 pub fn decide(input_json: &str, near_price_micros: u128) -> Value {
-    match try_decide(input_json, near_price_micros) {
+    match parse_input(input_json).and_then(|i| decide_parsed(&i, near_price_micros)) {
         Ok(v) => v,
         Err(reason) => hold(reason),
     }
 }
 
-fn try_decide(input_json: &str, price: u128) -> Result<Value, String> {
-    let input: Value = serde_json::from_str(input_json).map_err(|e| format!("input is not JSON: {e}"))?;
-    let fund = input.get("fund").and_then(Value::as_str).ok_or("input has no fund")?;
-    let now = input.get("now").and_then(Value::as_u64).ok_or("input has no now")?;
-    let trade_id = input.get("next_trade_id").and_then(Value::as_u64).ok_or("input has no next_trade_id")?;
-    let tokens: Vec<&str> = input.get("tokens").and_then(Value::as_array).ok_or("input has no tokens")?.iter().filter_map(Value::as_str).collect();
-    let held: Vec<u128> = input
-        .get("held")
-        .and_then(Value::as_array)
-        .ok_or("input has no held")?
-        .iter()
-        .map(|h| h.as_str().and_then(|s| s.parse::<u128>().ok()).ok_or("held is not a list of integer strings"))
-        .collect::<Result<_, _>>()?;
-    if tokens.len() != 2 || held.len() != 2 {
-        return Err(format!("this strategy handles two-token funds (USD stable, wNEAR); this fund lists {}", tokens.len()));
-    }
-    let max_trade_bps = input.get("max_trade_bps").and_then(Value::as_u64).ok_or("input has no max_trade_bps")? as u128;
-    let max_cost_bps = input.get("max_cost_bps").and_then(Value::as_u64).ok_or("input has no max_cost_bps")? as u128;
+/// The Decision for an already checked input.
+pub fn decide_parsed(input: &Input, price: u128) -> Result<Value, String> {
+    let Input { fund, refund_to, now, trade_id, tokens, held, max_trade_bps, max_cost_bps } = input;
+    let (now, trade_id, max_trade_bps, max_cost_bps) = (*now, *trade_id, *max_trade_bps, *max_cost_bps);
     if price == 0 {
         return Err("no NEAR price".into());
     }
@@ -268,7 +317,7 @@ fn try_decide(input_json: &str, price: u128) -> Result<Value, String> {
         "dry": false, "depositMode": "SIMPLE", "swapType": "EXACT_INPUT", "slippageTolerance": SLIPPAGE_BPS as u64,
         "originAsset": format!("nep141:{}", tokens[sell]), "depositType": "ORIGIN_CHAIN",
         "destinationAsset": format!("nep141:{}", tokens[buy]),
-        "amount": amount_in.to_string(), "refundTo": fund, "refundType": "ORIGIN_CHAIN", "recipient": fund,
+        "amount": amount_in.to_string(), "refundTo": refund_to, "refundType": "ORIGIN_CHAIN", "recipient": fund,
         "recipientType": "DESTINATION_CHAIN", "deadline": iso(now + 600), "quoteWaitingTimeMs": 0,
         "customRecipientMsg": format!("trade:{trade_id}"),
     });

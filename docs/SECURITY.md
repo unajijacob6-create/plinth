@@ -38,9 +38,10 @@ of its own calls returns it.** It never credits trade output from a balance it r
 | in-kind join | `ft_on_transfer` with `msg = "basket"`, held apart from the fund until `join_in_kind` |
 | stake output | the amount `deposit_and_stake` returns, capped by the price the fund read |
 | failed stake | the fund's own `near_deposit` succeeding |
-| refund of a failed trade | see below: the one balance read left |
+| refund of a failed trade | `ft_on_transfer` with `msg = "refund"` from the fund's relay (see "Refunds: the relay") |
 
-There is no `settle()` and no `absorb()`. A plain `ft_transfer` to a fund is never counted.
+There is no `settle()`, no `absorb()` and no balance read of any kind. A plain `ft_transfer` to a
+fund is never counted.
 
 Tests (`contracts/plinth/tests/regression.rs`, run by `contracts/test.sh`):
 
@@ -49,7 +50,7 @@ Tests (`contracts/plinth/tests/regression.rs`, run by `contracts/test.sh`):
 - `regression_bounced_transfer_cannot_settle_a_trade`: the second exploit, replayed. The trade stays
   in flight until the real delivery.
 - `randomized_steps_keep_the_books_exact`: random subscriptions, donations, bounces, in-kind joins,
-  redemptions, delivered trades and refunded trades. After every step the invariant below holds,
+  redemptions, delivered trades and trades refunded through the relay. After every step the invariant below holds,
   shares add up, each redemption pays exactly `floor(held × shares / total)` of every token, and an
   in-kind join never lowers what one share holds.
 
@@ -59,42 +60,42 @@ The invariant, checked after every step of those tests:
 ft_balance_of(fund) >= held + owed + payouts in flight + baskets      (for every token)
 ```
 
-## What is still a balance read: refunds
+## Refunds: the relay
 
-1Click refunds a failed trade with a plain transfer, which the fund cannot see arrive. So
-`settle_refund(trade_id)` reads the balance of the token sold. It is bounded four ways:
+1Click refunds a failed trade with a plain transfer, which the receiver cannot see arrive. An
+earlier draft of 0.3 counted refunds by reading the fund's balance, with limits. An independent
+review broke it before anything was deployed: a holder who dominated a fund bounced the sold token
+to fake a refund, redeemed, and was paid out of another person's waiting deposit. The repair it
+proposed for late deliveries did not undo that. So the read is gone.
 
-1. It only runs an hour after the trade was sent with no output (`REFUND_WAIT_SECONDS`).
-2. It credits exactly `amount_in - refund_fee`, whatever the balance shows, and only if the balance
-   shows at least that.
-3. It runs once per trade.
-4. If the trade's output arrives within a day of the quote's deadline, the credit is taken back
-   (`refund_undone`) and the trade becomes `Settled`.
-5. It closes 14 days after the quote's deadline (`REFUND_CLOSES_SECONDS`), so an old unresolved
-   trade does not stay open to it forever.
-6. Any transfer of the token that reaches the fund between the read and its result, kept or
-   returned, cancels the check (`flux`). That stops the ordinary bounce. It does not stop a bounce
-   whose `ft_on_transfer` never runs because the sender starved it of gas: that one leaves no trace.
+Now every quote must name the fund's **refund relay** as `refundTo`. The relay is a second
+keyless account, created with the fund, that runs the same published code in relay mode. It has
+two calls and a view:
 
-**What an attacker can still do.** On a trade that has had no output for an hour, an attacker can
-bounce the sold token (starved of gas) while calling `settle_refund`, and make the fund count a refund that has not
-arrived. `faked_refund_is_bounded_and_undone_when_output_arrives` does exactly this and shows the
-two outcomes that follow:
+- `relay_init` runs once when the account is created. It records the fund and registers the relay
+  on the fund's tokens.
+- `relay_forward(token, amount)` can be called by anyone. It makes the relay send that amount to
+  the fund with `ft_transfer_call` and the message `refund`. If the relay does not hold the
+  amount, the call fails and nothing moves.
+- `relay_fund` reports the fund it serves.
 
-- 1Click then delivers: the credit is undone and the books are exact again.
-- 1Click then refunds: the books are exact (the credit was the refund).
+The fund counts a refund when the relay hands it over, like every other arrival. If it covers
+`amount_in - refund_fee` of the trade in flight, the trade closes as refunded.
 
-The case that is not repaired: 1Click **neither delivers nor refunds, ever**. That money is lost
-either way. Without the attack every holder shares the loss. With it, the fund's books overstate
-the sold token by `amount_in - refund_fee`, so holders who exit early are paid in full and the last
-holders to exit are short by that amount. One trade is at most `max_trade_bps` of one token's
-holding. `claim` accepts partial amounts so a holder is never stuck behind an amount the fund
-cannot pay in full.
+Why bouncing no longer helps: the relay holds nothing but refunds for its one fund. Someone who
+bounces tokens off the relay while calling `relay_forward` either gets a failed call, or has their
+own tokens passed on to the fund for good. `bouncing_off_the_relay_can_only_cost_the_bouncer`
+checks after each attempt that the fund counts exactly what it holds and that the bouncer's
+balance never grows. `regression_a_basket_cannot_be_drained_through_a_faked_refund` replays the
+reviewer's exploit.
 
-This is a real limit, not a formality. A sound fix needs the refund to arrive as a call too. One
-route is to have 1Click refund into the fund's balance inside `intents.near` and let the fund
-withdraw it with a message, which makes the refund a push like the output. That cannot be tested on
-testnet (there is no `intents.testnet`), so it is not in this release.
+**No balance is read anywhere in the fund's code.** The cost of that rule:
+
+- Tokens sent straight to a fund with a plain transfer are never counted. They stay in its balance
+  for good.
+- If 1Click sent a refund anywhere other than the relay, it would be lost to the fund.
+- If a transfer to a 1Click deposit address was never confirmed (a lost callback) and in fact did
+  not leave, the fund cannot count those tokens back.
 
 ## What has not been tested on mainnet
 
@@ -150,11 +151,22 @@ What this does and does not prove:
 
 ## Found while reviewing 0.3, before any deployment
 
+An independent attacker-style review, with its own sandbox exploits, found one exploitable
+weakness: the refund balance read described above. It is removed. The same review measured that a
+delivery settles with 1.3 TGas given to the fund, and that the manager-less path fits in 300 TGas.
+It also listed what it tried and found sound: quote replay and tampering, share and rounding
+maths, settlement by third parties, callback ordering, and the factory's accounting.
+
+A lost callback for a re-wrap of stranded NEAR that then arrives more than an hour late, while a
+second re-wrap is in flight, could briefly let a joiner in before that second re-wrap is counted.
+It needs a callback over an hour late and is accepted.
+
 Two review passes of the 0.3 code (by a second engineer writing the unit tests) found bugs in the
 new code itself. All are fixed, each with a unit test that failed before the fix:
 
-- a trade id above 2^32 passed to `settle_refund` could close a trade without clearing the "in
-  flight" marker, which would have blocked trading for good;
+- a trade id above 2^32 passed to the refund check of that draft could close a trade without
+  clearing the "in flight" marker, which would have blocked trading for good (the check itself has
+  since been removed);
 - the stuck-stake check could be thrown off by NEAR stranded earlier or by storage growth;
 - an in-kind joiner could buy a share of value the fund had not counted yet (NEAR being wrapped
   back, or the refund of a written-off trade). Joins now wait for both;

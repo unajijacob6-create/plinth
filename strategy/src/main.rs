@@ -27,12 +27,16 @@ fn fetch_tokens() -> Result<String, String> {
 }
 
 fn main() {
-    let mut input = String::new();
-    let decision = match io::stdin().read_to_string(&mut input) {
+    let mut raw = String::new();
+    let decision = match io::stdin().read_to_string(&mut raw) {
         Err(e) => plinth_strategy_v1::hold(format!("cannot read input: {e}")),
-        Ok(_) => match fetch_tokens().and_then(|t| plinth_strategy_v1::near_price_micros(&t)) {
-            Ok(price) => plinth_strategy_v1::decide(&input, price),
-            Err(e) => plinth_strategy_v1::hold(format!("no NEAR price, so no trade: {e}")),
+        // The input is checked first: a bad one is a hold without any network call.
+        Ok(_) => match plinth_strategy_v1::parse_input(&raw) {
+            Err(reason) => plinth_strategy_v1::hold(reason),
+            Ok(input) => match fetch_tokens().and_then(|t| plinth_strategy_v1::near_price_micros(&t)) {
+                Ok(price) => plinth_strategy_v1::decide_parsed(&input, price).unwrap_or_else(plinth_strategy_v1::hold),
+                Err(e) => plinth_strategy_v1::hold(format!("no NEAR price, so no trade: {e}")),
+            },
         },
     };
     let mut out = io::stdout();

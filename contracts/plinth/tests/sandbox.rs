@@ -38,12 +38,18 @@ fn iso(secs: u64) -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", y, m, d, rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
+/// In these tests a fund `fund.<root>` names `relay.<root>` as its refund relay (refunds are
+/// exercised in tests/regression.rs, where the relay account really exists).
+fn relay_of(fund: &AccountId) -> AccountId {
+    fund.as_str().replacen("fund.", "relay.", 1).parse().unwrap()
+}
+
 /// A live 1Click-shaped quote signed with the test key, using the contract's own message rule.
 fn quote(sell: &AccountId, buy: &AccountId, amount: u128, out: u128, min_out: u128, recipient: &AccountId, deposit: &str, issued: u64, trade_id: u64) -> String {
     let req = json!({
         "dry": false, "depositMode": "SIMPLE", "swapType": "EXACT_INPUT", "slippageTolerance": 50,
         "originAsset": format!("nep141:{sell}"), "depositType": "ORIGIN_CHAIN", "destinationAsset": format!("nep141:{buy}"),
-        "amount": amount.to_string(), "refundTo": recipient, "refundType": "ORIGIN_CHAIN", "recipient": recipient,
+        "amount": amount.to_string(), "refundTo": relay_of(recipient), "refundType": "ORIGIN_CHAIN", "recipient": recipient,
         "recipientType": "DESTINATION_CHAIN", "deadline": iso(issued + 600), "quoteWaitingTimeMs": 0,
         "customRecipientMsg": format!("trade:{trade_id}"),
     });
@@ -118,6 +124,7 @@ async fn keyless_fund_end_to_end() -> anyhow::Result<()> {
         "operator": operator.id(),
         "quote_signer": format!("ed25519:{}", bs58::encode(sk().verifying_key().to_bytes()).into_string()),
         "storage_deposit": STORAGE.as_yoctonear().to_string(),
+        "refund_relay": format!("relay.{}", root.id()),
     });
     let r = root
         .batch(&fund_id)
@@ -159,7 +166,7 @@ async fn keyless_fund_end_to_end() -> anyhow::Result<()> {
     let ok: bool = operator.call(&fund_id, "propose_trade").args_json(json!({"quote": evil})).gas(Gas::from_tgas(150)).transact().await?.json()?;
     assert!(!ok);
     let rej: Value = worker.view(&fund_id, "get_rejections").args_json(json!({"from": 0, "limit": 5})).await?.json()?;
-    assert!(rej[0]["reason"].as_str().unwrap().contains("deliver to and refund to this fund"), "{rej}");
+    assert!(rej[0]["reason"].as_str().unwrap().contains("deliver to this fund"), "{rej}");
     assert_eq!(balance(&usdc, &fund_id).await?, 100_000_000);
 
     // ---- someone else cannot propose
@@ -236,6 +243,7 @@ async fn plain_fund(worker: &Worker<near_workspaces::network::Sandbox>, root: &A
         "operator": root.id(),
         "quote_signer": "ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc",
         "storage_deposit": STORAGE.as_yoctonear().to_string(),
+        "refund_relay": format!("relay.{}", root.id()),
     });
     let r = root.batch(&fund_id).create_account().transfer(NearToken::from_near(5)).deploy(&std::fs::read(PLINTH)?)
         .call(Function::new("new").args_json(json!({"config": config})).deposit(NearToken::from_millinear(20)).gas(Gas::from_tgas(200)))
@@ -350,6 +358,7 @@ async fn stake_idle_end_to_end_and_management_fee() -> anyhow::Result<()> {
         "operator": operator.id(),
         "quote_signer": "ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc",
         "storage_deposit": STORAGE.as_yoctonear().to_string(),
+        "refund_relay": format!("relay.{}", root.id()),
     });
     let r = root.batch(&fund_id).create_account().transfer(NearToken::from_near(5)).deploy(&std::fs::read(PLINTH)?)
         .call(Function::new("new").args_json(json!({"config": config})).deposit(NearToken::from_millinear(20)).gas(Gas::from_tgas(200)))

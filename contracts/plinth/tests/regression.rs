@@ -6,6 +6,9 @@
 //! with nothing delivered). The exploit code below is the original proof of concept, unchanged in
 //! what the attacker does; on release 0.3 it must achieve nothing.
 //!
+//! Release 0.3 reads no balance at all. Refunds, which 1Click sends as a plain transfer, go to a
+//! relay account that holds nothing else and hands them to the fund with a call the fund sees.
+//!
 //! The invariant checked after every step: for each token,
 //!   ft_balance_of(fund) >= held + owed + payouts in flight + baskets.
 //! Build first: `bash contracts/test.sh`.
@@ -45,7 +48,7 @@ fn quote(sell: &AccountId, buy: &AccountId, amount: u128, out: u128, min_out: u1
     let req = json!({
         "dry": false, "depositMode": "SIMPLE", "swapType": "EXACT_INPUT", "slippageTolerance": 50,
         "originAsset": format!("nep141:{sell}"), "depositType": "ORIGIN_CHAIN", "destinationAsset": format!("nep141:{buy}"),
-        "amount": amount.to_string(), "refundTo": recipient, "refundType": "ORIGIN_CHAIN", "recipient": recipient,
+        "amount": amount.to_string(), "refundTo": relay_of(recipient), "refundType": "ORIGIN_CHAIN", "recipient": recipient,
         "recipientType": "DESTINATION_CHAIN", "deadline": iso(issued + 600), "quoteWaitingTimeMs": 0,
         "customRecipientMsg": format!("trade:{trade_id}"),
     });
@@ -85,7 +88,12 @@ async fn fund_view(worker: &Worker<near_workspaces::network::Sandbox>, fund: &Ac
     Ok(worker.view(fund, "get_fund").await?.json()?)
 }
 
-fn cfg(tokens: Vec<String>, op: &AccountId, close: u64) -> Value {
+/// In these tests a fund `fund.<root>` has its refund relay at `relay.<root>`.
+fn relay_of(fund: &AccountId) -> AccountId {
+    fund.as_str().replacen("fund.", "relay.", 1).parse().unwrap()
+}
+
+fn cfg(tokens: Vec<String>, op: &AccountId, close: u64, relay: &AccountId) -> Value {
     json!({
         "mandate": {
             "tokens": tokens, "max_trade_bps": 2500, "max_cost_bps": 100,
@@ -95,6 +103,7 @@ fn cfg(tokens: Vec<String>, op: &AccountId, close: u64) -> Value {
         "operator": op,
         "quote_signer": format!("ed25519:{}", bs58::encode(sk().verifying_key().to_bytes()).into_string()),
         "storage_deposit": STORAGE.as_yoctonear().to_string(),
+        "refund_relay": relay,
     })
 }
 
@@ -130,12 +139,27 @@ async fn mint(root: &Account, t: &Contract, to: &AccountId, amount: u128) -> any
 }
 
 async fn create(worker: &Sb, root: &Account, fund_id: &AccountId, tokens: Vec<String>, op: &AccountId, close: u64) -> anyhow::Result<()> {
+    // The refund relay: the same code, started in relay mode, keyless, serving this one fund.
+    let relay = relay_of(fund_id);
+    let r = root.batch(&relay).create_account().transfer(NearToken::from_near(1)).deploy(&std::fs::read(PLINTH)?)
+        .call(Function::new("relay_init").args_json(json!({"fund": fund_id, "tokens": tokens, "storage_deposit": STORAGE.as_yoctonear().to_string()})).deposit(NearToken::from_millinear(20)).gas(Gas::from_tgas(100)))
+        .transact().await?;
+    assert!(r.is_success(), "{:?}", r.failures());
+    assert!(worker.view_access_keys(&relay).await?.is_empty(), "the relay is keyless");
     let r = root.batch(fund_id).create_account().transfer(NearToken::from_near(5)).deploy(&std::fs::read(PLINTH)?)
-        .call(Function::new("new").args_json(json!({"config": cfg(tokens, op, close)})).deposit(NearToken::from_millinear(20)).gas(Gas::from_tgas(200)))
+        .call(Function::new("new").args_json(json!({"config": cfg(tokens, op, close, &relay)})).deposit(NearToken::from_millinear(20)).gas(Gas::from_tgas(200)))
         .transact().await?;
     assert!(r.is_success(), "{:?}", r.failures());
     assert!(worker.view_access_keys(fund_id).await?.is_empty(), "keyless");
     Ok(())
+}
+
+/// What 1Click does when it refunds: a plain transfer to the quote's refundTo (the relay). Then
+/// anyone asks the relay to hand it to the fund.
+async fn refund_via_relay(payer: &Account, anyone: &Account, t: &Contract, fund: &AccountId, amount: u128) -> anyhow::Result<near_workspaces::result::ExecutionFinalResult> {
+    let relay = relay_of(fund);
+    payer.call(t.id(), "ft_transfer").args_json(json!({"receiver_id": relay, "amount": amount.to_string()})).deposit(NearToken::from_yoctonear(1)).transact().await?.into_result()?;
+    Ok(anyone.call(&relay, "relay_forward").args_json(json!({"token": t.id(), "amount": amount.to_string()})).gas(Gas::from_tgas(150)).transact().await?)
 }
 
 async fn wait_until(worker: &Sb, t: u64) -> anyhow::Result<()> {
@@ -280,62 +304,99 @@ async fn regression_bounced_transfer_cannot_settle_a_trade() -> anyhow::Result<(
     Ok(())
 }
 
-/// An honest refund (a plain transfer back from 1Click) is counted once, an hour after the trade
-/// was sent, for exactly amount_in - refund_fee.
+/// A refund from 1Click goes to the relay as a plain transfer; anyone asks the relay to hand it
+/// over; the fund sees it arrive, counts all of it and closes the trade as refunded.
 #[tokio::test]
-async fn refund_is_counted_once_and_exactly() -> anyhow::Result<()> {
+async fn refund_arrives_through_the_relay() -> anyhow::Result<()> {
     let s = trade_in_flight().await?;
     let toks = [&s.usdc, &s.wnear];
-    let sent = now_s(&s.worker).await?;
+    let relay = relay_of(&s.fund_id);
+    // A plain transfer straight to the fund is never counted, and nothing can make it count.
+    s.solver.call(s.usdc.id(), "ft_transfer").args_json(json!({"receiver_id": s.fund_id, "amount": "777"})).deposit(NearToken::from_yoctonear(1)).transact().await?.into_result()?;
+    for m in ["settle_refund", "settle", "absorb"] {
+        assert!(s.eve.call(&s.fund_id, m).args_json(json!({"trade_id": 0, "token_index": 0})).gas(Gas::from_tgas(100)).transact().await?.is_failure(), "{m} does not exist");
+    }
+    assert_eq!(num(&fund_view(&s.worker, &s.fund_id).await?["held"][0][1]), 90_000_000);
+    // Asking the relay for more than it holds moves nothing.
+    let r = s.eve.call(&relay, "relay_forward").args_json(json!({"token": s.usdc.id(), "amount": "1"})).gas(Gas::from_tgas(150)).transact().await?;
+    assert!(r.is_failure(), "the relay holds nothing yet");
     // 1Click refunds a little more than the floor (it charged less than the stated refund fee).
-    s.solver.call(s.usdc.id(), "ft_transfer").args_json(json!({"receiver_id": s.fund_id, "amount": (REFUND + 100).to_string()})).deposit(NearToken::from_yoctonear(1)).transact().await?.into_result()?;
-    let r = s.eve.call(&s.fund_id, "settle_refund").args_json(json!({"trade_id": 0})).gas(Gas::from_tgas(100)).transact().await?;
-    assert!(r.is_failure(), "too early");
-    wait_until(&s.worker, sent + 3700).await?;
-    let st: Value = s.eve.call(&s.fund_id, "settle_refund").args_json(json!({"trade_id": 0})).gas(Gas::from_tgas(100)).transact().await?.json()?;
-    assert_eq!(st, "Refunded");
+    let r = refund_via_relay(&s.solver, &s.eve, &s.usdc, &s.fund_id, REFUND + 100).await?;
+    assert!(r.is_success(), "{:?}", r.failures());
+    println!("refund hand-over (relay_forward + ft_transfer_call + close) burnt {} TGas", r.total_gas_burnt.as_tgas());
     let v = fund_view(&s.worker, &s.fund_id).await?;
     assert!(v["pending"].is_null());
-    assert_eq!(num(&v["held"][0][1]), 90_000_000 + REFUND, "exactly amount_in - refund_fee, not the 100 extra");
-    let r = s.eve.call(&s.fund_id, "settle_refund").args_json(json!({"trade_id": 0})).gas(Gas::from_tgas(100)).transact().await?;
-    assert!(r.is_failure(), "only once");
+    let trades: Value = s.worker.view(&s.fund_id, "get_trades").args_json(json!({"from": 0, "limit": 5})).await?.json()?;
+    assert_eq!(trades[0]["status"], "Refunded", "{trades}");
+    assert_eq!(num(&v["held"][0][1]), 90_000_000 + REFUND + 100, "every unit the relay handed over is counted");
+    assert_eq!(balance(&s.usdc, &relay).await?, 0);
     invariant(&s.worker, &s.fund_id, &toks, "after the refund").await?;
+    // A late delivery of the same trade is simply more of the fund's tokens.
+    push(&s.solver, &s.wnear, &s.fund_id, MIN_OUT, "trade:0").await?.into_result()?;
+    assert_eq!(num(&fund_view(&s.worker, &s.fund_id).await?["held"][1][1]), MIN_OUT);
+    invariant(&s.worker, &s.fund_id, &toks, "after a late delivery too").await?;
+    let _ = (&s.root, &s.alice, &s.operator, &s.mallory);
     Ok(())
 }
 
-/// The one place a balance is still read is the refund check, and it is bounded: only an hour
-/// after a trade got no output, only amount_in - refund_fee, only once, and it is taken back when
-/// the output arrives after all. This test plays the worst case: an attacker bounces the sold
-/// token to fake a refund on a trade 1Click is late on, then 1Click delivers.
+/// The relay cannot be tricked into counting tokens that are not there. Bouncing a transfer off
+/// the relay while asking it to forward that amount either fails (nothing moves) or moves the
+/// bouncer's own tokens to the fund for good: the bouncer loses them, the fund gains real tokens.
 #[tokio::test]
-async fn faked_refund_is_bounded_and_undone_when_output_arrives() -> anyhow::Result<()> {
+async fn bouncing_off_the_relay_can_only_cost_the_bouncer() -> anyhow::Result<()> {
     let s = trade_in_flight().await?;
     let toks = [&s.usdc, &s.wnear];
-    let sent = now_s(&s.worker).await?;
-    wait_until(&s.worker, sent + 3700).await?;
-    let mut faked = false;
-    for _ in 0..6 {
-        let bounce = push(&s.mallory, &s.usdc, &s.fund_id, 40_000_000, "");
-        let refund = s.eve.call(&s.fund_id, "settle_refund").args_json(json!({"trade_id": 0})).gas(Gas::from_tgas(100)).transact();
-        let (a, b) = tokio::join!(bounce, refund);
+    let relay = relay_of(&s.fund_id);
+    let before = balance(&s.usdc, s.mallory.id()).await?;
+    for attempt in 0..6 {
+        let bounce = push(&s.mallory, &s.usdc, &relay, 20_000_000, "");
+        let fwd = s.eve.call(&relay, "relay_forward").args_json(json!({"token": s.usdc.id(), "amount": "20000000"})).gas(Gas::from_tgas(150)).transact();
+        let (a, b) = tokio::join!(bounce, fwd);
+        let (_a, b) = (a?, b?);
+        let held = num(&fund_view(&s.worker, &s.fund_id).await?["held"][0][1]);
+        let (fund_bal, mallory_bal) = (balance(&s.usdc, &s.fund_id).await?, balance(&s.usdc, s.mallory.id()).await?);
+        println!("attempt {attempt}: forward ok={}; fund counts {held}, really holds {fund_bal}; mallory {mallory_bal}", b.is_success());
+        invariant(&s.worker, &s.fund_id, &toks, "after a bounce off the relay").await?;
+        assert_eq!(held, fund_bal, "the fund counts exactly what it really holds");
+        assert!(mallory_bal <= before, "bouncing never pays");
+        assert_eq!(held - 90_000_000, before - mallory_bal, "whatever the fund gained, the bouncer lost");
+    }
+    Ok(())
+}
+
+/// The exploit an independent review built against an earlier draft of 0.3, which still read one
+/// balance to count refunds: a sole holder faked a refund by bouncing the sold token, redeemed, and
+/// was paid out of another person's basket. With no balance read left there is nothing to fake.
+#[tokio::test]
+async fn regression_a_basket_cannot_be_drained_through_a_faked_refund() -> anyhow::Result<()> {
+    let s = trade_in_flight().await?; // Alice holds every share: 100 USDC in, 10 of it sent out in trade 0.
+    let toks = [&s.usdc, &s.wnear];
+    // Mallory is waiting to join: her basket sits in the fund's token balance.
+    s.mallory.call(&s.fund_id, "open_basket").deposit(NearToken::from_millinear(5)).transact().await?.into_result()?;
+    push(&s.mallory, &s.usdc, &s.fund_id, 50_000_000, "basket").await?.into_result()?;
+    assert_eq!(balance(&s.usdc, &s.fund_id).await?, 140_000_000);
+    // The holder bounces the sold token off the fund and tries everything that could count it.
+    mint(&s.root, &s.usdc, s.alice.id(), 30_000_000).await?;
+    for _ in 0..4 {
+        let bounce = push(&s.alice, &s.usdc, &s.fund_id, 30_000_000, "");
+        let a1 = s.alice.call(&s.fund_id, "settle_refund").args_json(json!({"trade_id": 0})).gas(Gas::from_tgas(100)).transact();
+        let a2 = s.alice.call(&relay_of(&s.fund_id), "relay_forward").args_json(json!({"token": s.usdc.id(), "amount": "9995500"})).gas(Gas::from_tgas(150)).transact();
+        let (a, b, c) = tokio::join!(bounce, a1, a2);
         a?.into_result()?;
-        let st: Value = b?.json().unwrap_or(Value::Null);
-        if st == "Refunded" { faked = true; break; }
+        assert!(b?.is_failure() && c?.is_failure());
+        assert_eq!(num(&fund_view(&s.worker, &s.fund_id).await?["held"][0][1]), 90_000_000);
     }
-    let v = fund_view(&s.worker, &s.fund_id).await?;
-    println!("faked refund landed: {faked}; held USDC {} / real {}", v["held"][0][1], balance(&s.usdc, &s.fund_id).await?);
-    if faked {
-        assert_eq!(num(&v["held"][0][1]), 90_000_000 + REFUND, "at most amount_in - refund_fee, whatever was bounced");
-    }
-    // 1Click delivers late. The trade becomes Settled and the faked refund is taken back.
-    push(&s.solver, &s.wnear, &s.fund_id, MIN_OUT, "trade:0").await?.into_result()?;
-    let v = fund_view(&s.worker, &s.fund_id).await?;
-    let trades: Value = s.worker.view(&s.fund_id, "get_trades").args_json(json!({"from": 0, "limit": 5})).await?.json()?;
-    assert_eq!(trades[0]["status"], "Settled", "{trades}");
-    assert_eq!(num(&v["held"][0][1]), 90_000_000);
-    assert_eq!(num(&v["held"][1][1]), MIN_OUT);
-    assert!(v["pending"].is_null());
-    invariant(&s.worker, &s.fund_id, &toks, "after the late delivery").await?;
+    // After the 10-minute wait she redeems everything: exactly the fund's own 90 USDC, no more.
+    let sent = now_s(&s.worker).await?;
+    wait_until(&s.worker, sent + 620).await?;
+    let before = balance(&s.usdc, s.alice.id()).await?;
+    s.alice.call(&s.fund_id, "redeem").args_json(json!({"shares": "100000000"})).gas(Gas::from_tgas(200)).transact().await?.into_result()?;
+    assert_eq!(balance(&s.usdc, s.alice.id()).await? - before, 90_000_000);
+    // The basket is untouched and comes back whole.
+    let before = balance(&s.usdc, s.mallory.id()).await?;
+    s.mallory.call(&s.fund_id, "withdraw_basket").gas(Gas::from_tgas(150)).transact().await?.into_result()?;
+    assert_eq!(balance(&s.usdc, s.mallory.id()).await? - before, 50_000_000);
+    invariant(&s.worker, &s.fund_id, &toks, "at the end").await?;
     Ok(())
 }
 
@@ -381,7 +442,7 @@ async fn randomized_steps_keep_the_books_exact() -> anyhow::Result<()> {
     let close = now_s(&worker).await? + 25;
     create(&worker, &root, &fund_id, vec![usdc.id().to_string(), wnear.id().to_string()], operator.id(), close).await?;
     let seed: u64 = std::env::var("PLINTH_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0x9E3779B97F4A7C15);
-    let steps: u64 = std::env::var("PLINTH_STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(24);
+    let steps: u64 = std::env::var("PLINTH_STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
     let mut rng = Rng(seed);
     for h in holders {
         push(h, &usdc, &fund_id, 20_000_000 + rng.below(80_000_000) as u128, "").await?.into_result()?;
@@ -390,8 +451,6 @@ async fn randomized_steps_keep_the_books_exact() -> anyhow::Result<()> {
     push(solver, &wnear, &fund_id, 7_000_000_000_000_000_000_000_000 + rng.below(1_000_000_000) as u128, "donate").await?.into_result()?;
     let mut last_trade = 0u64;
     let mut next_trade_id = 0u64;
-    // A refunded trade waits an hour of chain time, which is slow on a local node: at most two per run.
-    let mut refunds_done = 0u32;
     for step in 0..steps {
         let op = rng.below(6);
         let v = fund_view(&worker, &fund_id).await?;
@@ -410,7 +469,7 @@ async fn randomized_steps_keep_the_books_exact() -> anyhow::Result<()> {
                 let i = rng.below(2) as usize;
                 let before = balance(toks[i], mallory.id()).await?;
                 let bounce = push(mallory, toks[i], &fund_id, 500_000_000_000, "");
-                let refund = people[0].call(&fund_id, "settle_refund").args_json(json!({"trade_id": next_trade_id.saturating_sub(1)})).gas(Gas::from_tgas(100)).transact();
+                let refund = people[0].call(&relay_of(&fund_id), "relay_forward").args_json(json!({"token": toks[i].id(), "amount": "500000000000"})).gas(Gas::from_tgas(150)).transact();
                 let (a, b) = tokio::join!(bounce, refund);
                 a?.into_result()?;
                 let _ = b?;
@@ -484,7 +543,7 @@ async fn randomized_steps_keep_the_books_exact() -> anyhow::Result<()> {
                         last_trade = now;
                     }
                     let id = next_trade_id;
-                    if !ok { "trade (daily cap reached)" } else if op == 4 || refunds_done >= 2 {
+                    if !ok { "trade (daily cap reached)" } else if op == 4 {
                         last_trade = now_s(&worker).await?;
                         next_trade_id += 1;
                         push(solver, toks[buy], &fund_id, out, &format!("trade:{id}")).await?.into_result()?;
@@ -496,20 +555,15 @@ async fn randomized_steps_keep_the_books_exact() -> anyhow::Result<()> {
                     } else {
                         last_trade = now_s(&worker).await?;
                         next_trade_id += 1;
-                        refunds_done += 1;
-                        // 1Click refunds instead: a plain transfer, counted an hour later.
+                        // 1Click refunds instead: a plain transfer to the relay, handed over by anyone.
                         let refund = amount.saturating_sub(4500);
-                        solver.call(toks[sell].id(), "ft_transfer").args_json(json!({"receiver_id": fund_id, "amount": refund.to_string()})).deposit(NearToken::from_yoctonear(1)).transact().await?.into_result()?;
-                        wait_until(&worker, last_trade + 3700).await?;
-                        let r = people[1].call(&fund_id, "settle_refund").args_json(json!({"trade_id": id})).gas(Gas::from_tgas(100)).transact().await?;
-                        let v2 = fund_view(&worker, &fund_id).await?;
                         if refund > 0 {
-                            assert_eq!(r.json::<Value>()?, "Refunded");
+                            refund_via_relay(solver, &people[1], toks[sell], &fund_id, refund).await?.into_result()?;
+                            let v2 = fund_view(&worker, &fund_id).await?;
+                            assert!(v2["pending"].is_null(), "step {step}: the refund closed the trade");
                             assert_eq!(num(&v2["held"][sell][1]), held[sell] - amount + refund);
                         } else {
-                            // Too small to refund anything: it stays in flight; write the books as they are.
-                            assert_eq!(v2["pending"]["status"], "Sent");
-                            // Deliver so the run can go on.
+                            // Too small for a refund: deliver so the run can go on.
                             push(solver, toks[buy], &fund_id, out, &format!("trade:{id}")).await?.into_result()?;
                         }
                         "trade, refunded"

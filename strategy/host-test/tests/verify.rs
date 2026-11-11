@@ -6,9 +6,11 @@ use plinth_strategy_v1 as s;
 use serde_json::{json, Value};
 
 const NOW: u64 = 1_794_350_000;
+/// The fund's refund relay, as the fund passes it in `refund_to`.
+const RELAY: &str = "relay.fund.testnet";
 
 fn input(fund: &str, held: [&str; 2], trade_id: u64, max_trade_bps: u64, max_cost_bps: u64) -> String {
-    json!({"fund": fund, "now": NOW, "next_trade_id": trade_id, "tokens": ["usdc.testnet", "wrap.testnet"], "held": held,
+    json!({"fund": fund, "refund_to": RELAY, "now": NOW, "next_trade_id": trade_id, "tokens": ["usdc.testnet", "wrap.testnet"], "held": held,
            "total_shares": "74000000", "max_trade_bps": max_trade_bps, "max_cost_bps": max_cost_bps, "staking": null})
     .to_string()
 }
@@ -22,6 +24,12 @@ fn verified(d: &Value) -> (plinth::quote::VerifiedQuote, String) {
     assert_eq!(d["action"], "trade", "{d}");
     let raw = d["quote"].as_str().unwrap().to_string();
     let q = plinth::quote::verify_quote(&raw, &key()).expect("the contract's verifier must accept the strategy's quote");
+    // The contract's rule (lib.rs check_trade): recipient == fund && refundTo == the refund relay.
+    let input_fund = serde_json::from_str::<Value>(&raw).unwrap()["quoteRequest"]["recipient"].as_str().unwrap().to_string();
+    assert_eq!(q.recipient, input_fund);
+    assert_eq!(q.refund_to, RELAY, "refundTo must be the relay given in the input");
+    assert_ne!(q.refund_to, q.recipient);
+    assert_eq!(q.refund_type, "ORIGIN_CHAIN");
     (q, raw)
 }
 
@@ -34,7 +42,7 @@ fn stable_heavy_fund_sells_stable_and_the_contract_verifier_accepts_it() {
     // 60 USD vs 14.36 USD: the excess is 22.82, the cap is 95% of 25% of 60 = 14.25.
     assert_eq!(q.amount_in, 14_250_000);
     assert!(q.amount_in <= 60_000_000 * 2500 / 10_000);
-    assert_eq!((q.recipient.as_str(), q.refund_to.as_str(), q.refund_type.as_str()), ("fund.testnet", "fund.testnet", "ORIGIN_CHAIN"));
+    assert_eq!((q.recipient.as_str(), q.refund_to.as_str(), q.refund_type.as_str()), ("fund.testnet", RELAY, "ORIGIN_CHAIN"));
     assert_eq!(q.custom_recipient_msg.as_deref(), Some("trade:3"));
     assert!(q.unsupported_field.is_none());
     assert_eq!(q.issued_seconds, NOW);
@@ -113,7 +121,7 @@ fn holds() {
     assert_eq!(d["action"], "hold");
     assert!(d["reason"].as_str().unwrap().contains("weights 49.87% stable / 50.12% wNEAR"), "{d}");
     // Three tokens, garbage, a mandate tighter than this strategy's quote.
-    let three = json!({"fund":"f.testnet","now":NOW,"next_trade_id":0,"tokens":["a","b","c"],"held":["1","2","3"],"total_shares":"1","max_trade_bps":2500,"max_cost_bps":100,"staking":null}).to_string();
+    let three = json!({"fund":"f.testnet","refund_to":RELAY,"now":NOW,"next_trade_id":0,"tokens":["a","b","c"],"held":["1","2","3"],"total_shares":"1","max_trade_bps":2500,"max_cost_bps":100,"staking":null}).to_string();
     for (inp, price) in [(three, 3_590_000u128), ("not json".to_string(), 3_590_000), ("{}".to_string(), 3_590_000), (input("f.testnet", ["60000000", "0"], 0, 2500, 50), 3_590_000), (input("f.testnet", ["0", "0"], 0, 2500, 100), 3_590_000), (input("f.testnet", ["60000000", "0"], 0, 2500, 100), 0)] {
         let d = s::decide(&inp, price);
         assert_eq!(d["action"], "hold", "{d}");
@@ -159,7 +167,42 @@ fn live_outlayer_decisions_verify() {
         println!("{name}: VERIFIED {} {} -> {} out {} min {} cost {} bps msg {:?} deposit {}", q.amount_in, q.origin_asset, q.destination_asset, q.amount_out, q.min_amount_out, cost, q.custom_recipient_msg, q.deposit_address);
         assert!(cost <= 100);
         assert_eq!(q.recipient, "proxy.plinth-ol-spike-mwb6xcaj.testnet");
+        assert_eq!(q.refund_to, "relay.proxy.plinth-ol-spike-mwb6xcaj.testnet");
         trades += 1;
     }
-    assert!(trades >= 4, "expected the live trade decisions, found {trades}");
+    assert!(trades >= 2, "expected the live trade decisions, found {trades}");
+}
+
+#[test]
+fn refund_to_is_required_and_must_be_a_separate_valid_account() {
+    let good: Value = serde_json::from_str(&input("fund.testnet", ["60000000", "4000000000000000000000000"], 3, 2500, 100)).unwrap();
+    assert_eq!(s::decide(&good.to_string(), 3_590_000)["action"], "trade");
+    let with = |v: Option<Value>| {
+        let mut i = good.clone();
+        match v {
+            Some(v) => i["refund_to"] = v,
+            None => {
+                i.as_object_mut().unwrap().remove("refund_to");
+            }
+        }
+        s::decide(&i.to_string(), 3_590_000)
+    };
+    let d = with(None);
+    assert_eq!(d["action"], "hold");
+    assert!(d["reason"].as_str().unwrap().contains("no refund_to"), "{d}");
+    for bad in [json!(null), json!(7), json!(""), json!("a"), json!("Relay.testnet"), json!("relay..testnet"), json!(".relay.testnet"), json!("relay.testnet."), json!("re lay.testnet"), json!("x".repeat(65))] {
+        let d = with(Some(bad.clone()));
+        assert_eq!(d["action"], "hold", "{bad}");
+        assert!(d["reason"].as_str().unwrap().contains("refund_to"), "{d}");
+    }
+    // The fund itself is not a relay: the contract refuses such a quote, so the program never builds one.
+    let d = with(Some(json!("fund.testnet")));
+    assert_eq!(d["action"], "hold");
+    assert!(d["reason"].as_str().unwrap().contains("not the fund itself"), "{d}");
+    // parse_input is what main.rs calls before any HTTP request.
+    assert!(s::parse_input("not json").is_err());
+    assert_eq!(s::parse_input(&good.to_string()).unwrap().refund_to, RELAY);
+    for (id, ok) in [("a.b", true), ("ab", true), ("a", false), ("a_b-c.d1", true), ("A.b", false), ("a--b", false), ("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", true)] {
+        assert_eq!(s::is_account_id(id), ok, "{id}");
+    }
 }

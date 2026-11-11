@@ -22,6 +22,7 @@ fn config(tokens: Vec<String>, op: &AccountId, close: u64) -> Value {
         "operator": op,
         "quote_signer": "ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc",
         "storage_deposit": STORAGE.to_string(),
+        "refund_relay": "someone-else.near",
     })
 }
 
@@ -77,15 +78,33 @@ async fn factory_creates_keyless_funds_from_the_published_hash() -> anyhow::Resu
     let funds: Value = worker.view(&factory_id, "get_funds").args_json(json!({"from": 0, "limit": 10})).await?.json()?;
     assert_eq!(funds[0]["account_id"], fund_id.as_str());
     assert_eq!(funds[0]["creator"], alice.id().as_str());
+    // Its refund relay was made in the same call: keyless, the same published hash, serving this fund.
+    let relay_id: AccountId = format!("alpha-r.{factory_id}").parse()?;
+    assert_eq!(funds[0]["relay"], relay_id.as_str());
+    assert!(worker.view_access_keys(&relay_id).await?.is_empty(), "the relay has no keys");
+    assert_eq!(worker.view_account(&relay_id).await?.contract_state, near_workspaces::ContractState::GlobalHash(near_workspaces::CryptoHash(hash)));
+    assert_eq!(worker.view(&relay_id, "relay_fund").await?.json::<AccountId>()?, fund_id);
+    assert!(worker.view(&relay_id, "get_fund").await.is_err(), "a relay is not a fund");
 
     // It is a working fund: subscribe and leave.
     let v: Value = worker.view(&fund_id, "get_fund").await?.json()?;
     assert_eq!(v["version"], "0.3.0");
+    assert_eq!(v["config"]["refund_relay"], relay_id.as_str(), "the factory, not the caller, names the relay");
     assert_eq!(v["registered"][0], true);
     alice.call(usdc.id(), "ft_transfer_call").args_json(json!({"receiver_id": fund_id, "amount": "50000000", "msg": ""}))
         .deposit(NearToken::from_yoctonear(1)).gas(Gas::from_tgas(150)).transact().await?.into_result()?;
     alice.call(&fund_id, "redeem").args_json(json!({"shares": "20000000"})).gas(Gas::from_tgas(200)).transact().await?.into_result()?;
     assert_eq!(balance(&usdc, alice.id()).await?, 20_000_000);
+    // The relay is registered on the fund's token, and hands what it receives to the fund.
+    alice.call(usdc.id(), "ft_transfer").args_json(json!({"receiver_id": relay_id, "amount": "5000000"})).deposit(NearToken::from_yoctonear(1)).transact().await?.into_result()?;
+    let r = alice.call(&relay_id, "relay_forward").args_json(json!({"token": usdc.id(), "amount": "5000000"})).gas(Gas::from_tgas(150)).transact().await?;
+    assert!(r.is_success(), "{:?}", r.failures());
+    let v: Value = worker.view(&fund_id, "get_fund").await?.json()?;
+    assert_eq!(v["held"][0][1], "35000000");
+    // A relay cannot be turned into a fund, or set up twice.
+    assert!(alice.call(&relay_id, "relay_init").args_json(json!({"fund": alice.id(), "tokens": [usdc.id()], "storage_deposit": STORAGE.to_string()})).deposit(NearToken::from_millinear(5)).gas(Gas::from_tgas(60)).transact().await?.is_failure());
+    assert!(alice.call(&relay_id, "new").args_json(json!({"config": config(vec![usdc.id().to_string()], alice.id(), close)})).deposit(NearToken::from_millinear(5)).gas(Gas::from_tgas(100)).transact().await?.is_failure());
+    assert!(alice.call(&fund_id, "relay_init").args_json(json!({"fund": alice.id(), "tokens": [usdc.id()], "storage_deposit": STORAGE.to_string()})).deposit(NearToken::from_millinear(5)).gas(Gas::from_tgas(60)).transact().await?.is_failure());
 
     // A taken name, and a config the fund refuses: nothing is created and the NEAR comes back.
     for (name, cfg) in [("alpha", config(vec![usdc.id().to_string()], alice.id(), close)), ("beta", config(vec![usdc.id().to_string()], alice.id(), 1))] {
