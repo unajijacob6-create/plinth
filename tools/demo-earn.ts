@@ -17,7 +17,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { KeyPair, actions } from "near-api-js";
 process.env.NEAR_NETWORK = "testnet";
-const { signer, view, rpc, call: sendCall, returned, TGAS, NEAR, explorer, txHash, log } = await import("./lib/near.ts");
+const { signer, view, rpc, call: sendCall, returned, NEAR, explorer, txHash, log } = await import("./lib/near.ts");
 const { testQuote, testSigner } = await import("./lib/testsigner.ts");
 const { ROOT, factoryFor, createFund, fundState, tradeById, waitForChainTime } = await import("./lib/fund.ts");
 const { deliver } = await import("./lib/solver.ts");

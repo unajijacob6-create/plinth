@@ -7,7 +7,13 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "resolveJsonModule": true
   },
-  "include": ["tools/**/*.ts"]
+  "include": [
+    "tools/**/*.ts",
+    "api/**/*.ts"
+  ]
 }

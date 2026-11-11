@@ -14,10 +14,11 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import bs58 from "bs58";
 import { actions } from "near-api-js";
-import { parseArgs, withUsage, UsageError } from "./lib/args.ts";
+import { parseArgs, plainErrors, withUsage, UsageError } from "./lib/args.ts";
 import { hashToBase58 } from "./lib/classify.ts";
 import { isAccountId, parseNear } from "./lib/config.ts";
 
+plainErrors();
 const USAGE = "usage: npm run factory:deploy -- --parent <account> --name <sub> (--code-hash <base58 or hex sha256> | --fund-wasm <file>) [--wasm <factory wasm>] [--near <NEAR>] [--network testnet|mainnet] [--send]";
 const a = withUsage(USAGE, () => {
   const p = parseArgs(process.argv.slice(2), { values: ["--parent", "--name", "--code-hash", "--fund-wasm", "--wasm", "--near", "--network"], switches: ["--send"] });

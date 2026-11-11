@@ -21,9 +21,10 @@
 //
 // The operator can only propose. It holds no key to the fund and cannot move funds anywhere else.
 // Mainnet signing needs PLINTH_MAINNET=yes.
-import { parseArgs, withUsage, UsageError } from "./lib/args.ts";
+import { parseArgs, plainErrors, withUsage, UsageError } from "./lib/args.ts";
 import { parseNear } from "./lib/config.ts";
 
+plainErrors();
 const USAGE = "usage: npm run operator -- status|quote|propose|settle-refund <id>|deliver|rebalance --fund <fund> [--network testnet|mainnet] ...   (see the top of tools/operator.ts)";
 const COMMANDS: Record<string, { values: string[]; switches: string[]; args: number }> = {
   status: { values: [], switches: [], args: 0 },
@@ -88,8 +89,10 @@ if (cmd === "status") {
   const t = await tradeById(fund, id);
   if (!t) throw new Error(`${fund} has no trade ${id} (it has ${state.trades})`);
   if (t.stake || !["Sent", "Abandoned"].includes(t.status) || BigInt(t.received_refund) > 0n) throw new Error(`trade ${id} is not waiting for a refund (status ${t.status})`);
-  const wait = t.sent_at + 3600 - (await chainSeconds());
-  if (wait > 0) throw new Error(`a refund can be counted an hour after the trade was sent: ${wait} s from now`);
+  const now = await chainSeconds();
+  if (now < t.sent_at + 3600) throw new Error(`a refund can be counted an hour after the trade was sent: ${t.sent_at + 3600 - now} s from now`);
+  // lib.rs REFUND_CLOSES_SECONDS: refunds are counted for 14 days after the quote's deadline.
+  if (now > Math.max(t.deposit_deadline, t.sent_at) + 14 * 86_400) throw new Error(`too late: refunds are counted for 14 days after the quote's deadline (${new Date(t.deposit_deadline * 1000).toISOString()})`);
   const r = await call(a.values["--as"] ?? state.config.operator, fund, "settle_refund", { trade_id: id });
   const status = returned<string>(r);
   log(`settle_refund ${id} -> ${status}${status === "Refunded" ? "" : " (no refund of amount_in - refund_fee has arrived; nothing was counted)"}`, explorer(txHash(r)));

@@ -8,13 +8,14 @@
 // data/open-fund.json. Without --send the config is checked and printed, and nothing is signed.
 import fs from "node:fs";
 import path from "node:path";
-import { parseArgs, withUsage, UsageError } from "./lib/args.ts";
+import { parseArgs, plainErrors, withUsage, UsageError } from "./lib/args.ts";
 import { DEFAULT_STORAGE_DEPOSIT, parseCloses, parseNear, validateConfig, validateFundName, type Config } from "./lib/config.ts";
 process.env.NEAR_NETWORK = "testnet";
 const { chainSeconds, explorer, log } = await import("./lib/near.ts");
 const { ROOT, factoryFor, createFund } = await import("./lib/fund.ts");
 const { testSigner } = await import("./lib/testsigner.ts");
 
+plainErrors();
 const USAGE = "usage: npm run deploy:open -- [--name open3] [--closes <ISO date | +seconds>] [--factory <account>] [--send]";
 const now = await chainSeconds();
 const { a, closes } = withUsage(USAGE, () => {

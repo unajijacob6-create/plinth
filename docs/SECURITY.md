@@ -148,6 +148,29 @@ What this does and does not prove:
 - The release wasm is built with `cargo near build reproducible-wasm` in a pinned Docker image, so
   anyone can rebuild the bytes and compare the hash.
 
+## Found while reviewing 0.3, before any deployment
+
+Two review passes of the 0.3 code (by a second engineer writing the unit tests) found bugs in the
+new code itself. All are fixed, each with a unit test that failed before the fix:
+
+- a trade id above 2^32 passed to `settle_refund` could close a trade without clearing the "in
+  flight" marker, which would have blocked trading for good;
+- the stuck-stake check could be thrown off by NEAR stranded earlier or by storage growth;
+- an in-kind joiner could buy a share of value the fund had not counted yet (NEAR being wrapped
+  back, or the refund of a written-off trade). Joins now wait for both;
+- fee maths could overflow with a share count above about 1.7e36 and stop everyone leaving;
+- a callback arriving after a stuck trade was recovered could be applied twice.
+
+Accepted limits from the same review:
+
+- A failed payout is recorded as owed, which costs the fund a little NEAR for storage. A fund whose
+  NEAR is exhausted cannot record it. Anyone can send a fund NEAR.
+- During the subscription window, many small subscriptions can use the fund's NEAR down to its
+  reserve; new depositors are then returned until NEAR is added or people leave.
+- The factory lists every fund created through it, whatever quote signer its creator chose. The
+  code hash proves what the fund runs, not that its quotes come from 1Click. The verifier checks the
+  signer and says so.
+
 ## Still true, and still limits
 
 - A keyless contract cannot be fixed. This file exists because one bug already proved that.

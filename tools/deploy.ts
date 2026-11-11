@@ -9,9 +9,10 @@
 // Without --send nothing is signed: the config is built, checked against the contract's own rules
 // and printed. Mainnet also needs PLINTH_MAINNET=yes. Afterwards: `npm run verify -- <fund>`.
 import fs from "node:fs";
-import { parseArgs, withUsage, UsageError } from "./lib/args.ts";
+import { parseArgs, plainErrors, withUsage, UsageError } from "./lib/args.ts";
 import { CONFIG_FLAGS_HELP, CONFIG_SWITCH_FLAGS, CONFIG_VALUE_FLAGS, configFromFlags, creationDeposit, normaliseConfig, parseNear, validateConfig, validateFundName, type Config } from "./lib/config.ts";
 
+plainErrors();
 const USAGE = `usage: npm run deploy -- --from <account> --name <name> (<mandate flags> | --config <config.json>) [--near 1] [--factory <account>] [--network testnet|mainnet] [--send]
 
   --from <account>           pays for the fund and signs (credentials in ~/.near-credentials)

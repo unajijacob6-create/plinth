@@ -1,0 +1,373 @@
+// "Launch a fund": a form that builds a fund's rules, checks them the way the contract will, and
+// asks the factory to create the fund from the connected wallet.
+import { view, account, factoryOf, isAccountId, shortAccount, explorer, ONECLICK_KEY } from "./chain.ts";
+import { currentAccount, onAccount, signIn, send, isCancel } from "./wallet.ts";
+import { loadMeta, readMeta, symbol, dec, units, parseUnits, pctOf, hasMeta } from "./tokens.ts";
+
+const NET = "testnet" as const;
+const MIN_FUND_NEAR = 5n * 10n ** 23n; // 0.5 NEAR, fixed by the factory
+const DEFAULT_STORAGE = 1_250_000_000_000_000_000_000n; // 0.00125 NEAR
+const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+/** Testnet tokens offered by name. Each one was read from the chain; the hint says what it is. */
+const KNOWN: { id: string; hint: string }[] = [
+  { id: "pusd.plinthfund.testnet", hint: "test dollar, free from the faucet above" },
+  { id: "wrap.testnet", hint: "wrapped NEAR" },
+  { id: "meta-v2.pool.testnet", hint: "staked NEAR from Meta Pool" },
+  { id: "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af", hint: "testnet USDC" },
+];
+
+interface Values {
+  name: string;
+  base: string;
+  others: string[];
+  custom: string;
+  trade: string;
+  cost: string;
+  perDay: string;
+  gap: string;
+  closes: string;
+  min: string;
+  max: string;
+  fee: string;
+  openEnded: boolean;
+  manager: "me" | "other";
+  operator: string;
+}
+type Field = "name" | "tokens" | "custom" | "trade" | "cost" | "perDay" | "gap" | "closes" | "min" | "max" | "fee" | "operator";
+
+/** "1.5" percent to hundredths of a percent; null if it is not a number with at most two decimals. */
+function hundredths(text: string): number | null {
+  const v = parseUnits(text, 2);
+  return v === null || v > 1_000_000n ? null : Number(v);
+}
+const whole = (text: string): number | null => (/^\d{1,10}$/.test(text.trim()) ? Number(text.trim()) : null);
+
+export interface Built {
+  errors: Partial<Record<Field, string>>;
+  tokens: string[];
+  config: any | null;
+  fundId: string | null;
+}
+
+/** Everything the contract and the factory check before creating a fund, checked here first. */
+export function build(v: Values, me: string, factory: string | null, customOk: boolean | null, storage: bigint, nowSeconds: number): Built {
+  const errors: Built["errors"] = {};
+  const name = v.name.trim();
+  if (!/^[a-z0-9-]{2,32}$/.test(name) || name.startsWith("-") || name.endsWith("-")) errors.name = "Use 2 to 32 lowercase letters, digits or dashes. It cannot start or end with a dash.";
+  const fundId = factory && !errors.name ? `${name}.${factory}` : null;
+  if (fundId && fundId.length > 64) errors.name = "That name is too long for an account under the factory.";
+  const custom = v.custom.trim().toLowerCase();
+  const tokens = [v.base, ...v.others.filter((t) => t !== v.base), ...(custom ? [custom] : [])];
+  if (tokens.length > 4) errors.tokens = "A fund holds at most 4 tokens, the base token included.";
+  if (custom) {
+    if (!isAccountId(custom)) errors.custom = "That is not a valid account name.";
+    else if (tokens.indexOf(custom) !== tokens.length - 1) errors.custom = "That token is already selected.";
+    else if (fundId && custom === fundId) errors.custom = "A fund cannot hold itself.";
+    else if (customOk === false) errors.custom = "That account does not answer like a token, so the fund could not hold it.";
+  }
+  const trade = hundredths(v.trade);
+  if (trade === null || trade < 1 || trade > 10_000) errors.trade = "Enter a percent from 0.01 to 100, with at most two decimals.";
+  const cost = hundredths(v.cost);
+  if (cost === null || cost > 10_000) errors.cost = "Enter a percent from 0 to 100, with at most two decimals.";
+  const perDay = whole(v.perDay);
+  if (perDay === null || perDay < 1 || perDay > 4_294_967_295) errors.perDay = "Enter a whole number, 1 or more.";
+  const gap = whole(v.gap);
+  if (gap === null || gap < 11 || gap > 525_600) errors.gap = "Enter whole minutes, 11 or more. Exits need a quiet moment between trades.";
+  const closes = v.closes ? Math.floor(new Date(v.closes).getTime() / 1000) : NaN;
+  if (!Number.isFinite(closes)) errors.closes = "Pick a date and time.";
+  else if (closes < nowSeconds + 300) errors.closes = "The join window must end at least 5 minutes from now.";
+  const d = dec(v.base);
+  const min = parseUnits(v.min, d);
+  const max = parseUnits(v.max, d);
+  const cap = 2n ** 128n - 1n;
+  if (min === null || min === 0n || min > cap) errors.min = `Enter an amount above zero, with at most ${d} decimal places.`;
+  if (max === null || max === 0n || max > cap) errors.max = `Enter an amount above zero, with at most ${d} decimal places.`;
+  else if (min !== null && min > max) errors.max = "This cannot be less than the smallest deposit.";
+  const fee = hundredths(v.fee);
+  if (fee === null || fee > 200) errors.fee = "Enter a percent from 0 to 2, with at most two decimals.";
+  const operator = v.manager === "me" ? me : v.operator.trim().toLowerCase();
+  if (v.manager === "other") {
+    if (!operator || !isAccountId(operator)) errors.operator = "Enter the manager's account name.";
+    else if (fundId && operator === fundId) errors.operator = "The fund cannot manage itself.";
+  }
+  const ok = Object.keys(errors).length === 0 && !!operator && customOk !== false && (!custom || customOk === true);
+  const config = ok
+    ? {
+        mandate: {
+          tokens,
+          max_trade_bps: trade,
+          max_cost_bps: cost,
+          min_seconds_between_trades: gap! * 60,
+          max_trades_per_day: perDay,
+          max_quote_age_seconds: 300,
+          min_deadline_margin_seconds: 600,
+          subscription_closes_at: closes,
+          min_subscription: min!.toString(),
+          max_total_subscriptions: max!.toString(),
+          management_fee_bps: fee,
+          open_ended: v.openEnded,
+        },
+        operator,
+        quote_signer: ONECLICK_KEY,
+        storage_deposit: storage.toString(),
+      }
+    : null;
+  return { errors, tokens, config, fundId };
+}
+
+const localStamp = (ms: number) => {
+  const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60_000);
+  return d.toISOString().slice(0, 16);
+};
+
+export function mountLaunch(onCreated: (id: string) => void) {
+  const root = document.getElementById("launch-form") as HTMLFormElement | null;
+  if (!root) return;
+  const factory = factoryOf(NET);
+  const base0 = KNOWN[0].id;
+  const tokenLabel = (t: string) => symbol(t);
+  root.innerHTML = `
+    <div class="form-grid">
+      <fieldset>
+        <legend>Name and tokens</legend>
+        <div class="field"><label for="l-name">Fund name</label><input id="l-name" name="name" autocomplete="off" spellcheck="false" autocapitalize="none" maxlength="32" placeholder="my-fund" aria-describedby="l-name-h l-name-e" /><p class="hint" id="l-name-h">Becomes the fund's account. Lowercase letters, digits and dashes.</p><p class="err" id="l-name-e" role="alert"></p></div>
+        <div class="field"><label for="l-base">Base token</label><select id="l-base" name="base" aria-describedby="l-base-h">${KNOWN.map((t) => `<option value="${t.id}">${esc(tokenLabel(t.id))}: ${esc(t.hint)}</option>`).join("")}</select><p class="hint" id="l-base-h">People join with this token during the join window.</p></div>
+        <div class="field" role="group" aria-labelledby="l-others-l"><span class="label" id="l-others-l">Other tokens the fund may hold (up to 3)</span><div class="checks" id="l-others"></div>
+          <label for="l-custom" class="sub-label">Another token, by account name (optional)</label><input id="l-custom" name="custom" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="token.testnet" aria-describedby="l-custom-e l-tokens-e" /><p class="hint" id="l-custom-ok"></p><p class="err" id="l-custom-e" role="alert"></p><p class="err" id="l-tokens-e" role="alert"></p></div>
+      </fieldset>
+      <fieldset>
+        <legend>Trading rules</legend>
+        <div class="pair">
+          <div class="field"><label for="l-trade">Largest trade</label><div class="with-unit"><input id="l-trade" name="trade" inputmode="decimal" value="25" aria-describedby="l-trade-h l-trade-e" /><span>%</span></div><p class="hint" id="l-trade-h">Of the fund's holding of the token sold.</p><p class="err" id="l-trade-e" role="alert"></p></div>
+          <div class="field"><label for="l-cost">Cost cap per trade</label><div class="with-unit"><input id="l-cost" name="cost" inputmode="decimal" value="1" aria-describedby="l-cost-h l-cost-e" /><span>%</span></div><p class="hint" id="l-cost-h">The most a trade may lose to fees and price.</p><p class="err" id="l-cost-e" role="alert"></p></div>
+          <div class="field"><label for="l-perday">Trades per day</label><input id="l-perday" name="perDay" inputmode="numeric" value="6" aria-describedby="l-perday-e" /><p class="err" id="l-perday-e" role="alert"></p></div>
+          <div class="field"><label for="l-gap">Minutes between trades</label><input id="l-gap" name="gap" inputmode="numeric" value="11" aria-describedby="l-gap-h l-gap-e" /><p class="hint" id="l-gap-h">At least 11.</p><p class="err" id="l-gap-e" role="alert"></p></div>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Joining</legend>
+        <div class="field"><label for="l-closes">Join window ends</label><input id="l-closes" name="closes" type="datetime-local" aria-describedby="l-closes-h l-closes-e" /><p class="hint" id="l-closes-h">Your local time. Trading starts when the window ends.</p><p class="err" id="l-closes-e" role="alert"></p></div>
+        <div class="pair">
+          <div class="field"><label for="l-min">Smallest deposit</label><div class="with-unit"><input id="l-min" name="min" inputmode="decimal" value="1" aria-describedby="l-min-e" /><span data-base></span></div><p class="err" id="l-min-e" role="alert"></p></div>
+          <div class="field"><label for="l-max">Most the fund accepts in total</label><div class="with-unit"><input id="l-max" name="max" inputmode="decimal" value="10000" aria-describedby="l-max-e" /><span data-base></span></div><p class="err" id="l-max-e" role="alert"></p></div>
+        </div>
+        <label class="check"><input type="checkbox" id="l-open" name="openEnded" checked /><span>Open to in-kind joins after the window<small>Later joiners add every token the fund holds, in its proportions. No price is used.</small></span></label>
+      </fieldset>
+      <fieldset>
+        <legend>Manager and pay</legend>
+        <div class="radios" role="radiogroup" aria-label="Who proposes trades">
+          <label class="check"><input type="radio" name="manager" value="me" checked /><span>I manage it<small id="l-me">The connected account proposes trades. It can do nothing else.</small></span></label>
+          <label class="check"><input type="radio" name="manager" value="other" /><span>Another account manages it</span></label>
+          <div class="field" id="l-op-wrap" hidden><label for="l-operator" class="sub-label">Manager's account</label><input id="l-operator" name="operator" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="manager.testnet" aria-describedby="l-operator-e" /><p class="err" id="l-operator-e" role="alert"></p></div>
+          <label class="check off"><input type="radio" name="manager" value="none" disabled aria-describedby="l-none-h" /><span>No manager: run a strategy<small id="l-none-h">Not available here yet. The program a manager-less fund runs is not published for this form, and a fund's program can never be changed after launch.</small></span></label>
+        </div>
+        <div class="field"><label for="l-fee">Yearly fee</label><div class="with-unit"><input id="l-fee" name="fee" inputmode="decimal" value="1" aria-describedby="l-fee-h l-fee-e" /><span>%</span></div><p class="hint" id="l-fee-h">From 0 to 2. Paid to the manager in new shares. There is no other fee.</p><p class="err" id="l-fee-e" role="alert"></p></div>
+      </fieldset>
+    </div>
+    <aside class="summary" aria-live="polite">
+      <p class="eyebrow">What you are about to create</p>
+      <div id="l-summary"></div>
+      <div class="actions"><button class="btn primary" type="submit" id="l-submit"></button></div>
+      <p class="status small" id="l-status" role="status"></p>
+    </aside>`;
+
+  const $ = <T extends HTMLElement = HTMLInputElement>(id: string) => root.querySelector(`#${id}`) as T;
+  const touched = new Set<Field>();
+  let submitted = false;
+  let busy = false;
+  /** null: not checked yet (or no custom token); true/false: what the chain said. */
+  let customOk: boolean | null = null;
+  let customChecked = "";
+  let storage = DEFAULT_STORAGE;
+  $("l-closes").value = localStamp(Date.now() + 7 * 86_400_000);
+
+  const read = (): Values => {
+    const fd = new FormData(root);
+    return {
+      name: String(fd.get("name") ?? ""),
+      base: String(fd.get("base") ?? base0),
+      others: fd.getAll("others").map(String),
+      custom: String(fd.get("custom") ?? ""),
+      trade: String(fd.get("trade") ?? ""),
+      cost: String(fd.get("cost") ?? ""),
+      perDay: String(fd.get("perDay") ?? ""),
+      gap: String(fd.get("gap") ?? ""),
+      closes: String(fd.get("closes") ?? ""),
+      min: String(fd.get("min") ?? ""),
+      max: String(fd.get("max") ?? ""),
+      fee: String(fd.get("fee") ?? ""),
+      openEnded: fd.get("openEnded") === "on",
+      manager: fd.get("manager") === "other" ? "other" : "me",
+      operator: String(fd.get("operator") ?? ""),
+    };
+  };
+
+  const paintOthers = () => {
+    const v = read();
+    $<HTMLElement>("l-others").innerHTML = KNOWN.filter((t) => t.id !== v.base)
+      .map((t) => `<label class="check"><input type="checkbox" name="others" value="${t.id}" ${v.others.includes(t.id) ? "checked" : ""} /><span>${esc(tokenLabel(t.id))}<small>${esc(t.hint)}</small></span></label>`)
+      .join("");
+    root.querySelectorAll("[data-base]").forEach((e) => (e.textContent = symbol(v.base)));
+  };
+
+  const ERR_IDS: Record<Field, [string, string]> = { name: ["l-name", "l-name-e"], tokens: ["l-custom", "l-tokens-e"], custom: ["l-custom", "l-custom-e"], trade: ["l-trade", "l-trade-e"], cost: ["l-cost", "l-cost-e"], perDay: ["l-perday", "l-perday-e"], gap: ["l-gap", "l-gap-e"], closes: ["l-closes", "l-closes-e"], min: ["l-min", "l-min-e"], max: ["l-max", "l-max-e"], fee: ["l-fee", "l-fee-e"], operator: ["l-operator", "l-operator-e"] };
+
+  function paint(): Built {
+    const v = read();
+    const me = currentAccount();
+    const b = build(v, me, factory, customOk, storage, Math.floor(Date.now() / 1000));
+    for (const [field, [inputId, errId]] of Object.entries(ERR_IDS) as [Field, [string, string]][]) {
+      const show = (submitted || touched.has(field)) && b.errors[field];
+      $<HTMLElement>(errId).textContent = show ? b.errors[field]! : "";
+      if (field !== "tokens") $(inputId).setAttribute("aria-invalid", show ? "true" : "false");
+    }
+    $<HTMLElement>("l-op-wrap").hidden = v.manager !== "other";
+    $<HTMLElement>("l-me").textContent = me ? `${shortAccount(me)} proposes trades. It can do nothing else.` : "The account you connect proposes trades. It can do nothing else.";
+    const custom = v.custom.trim().toLowerCase();
+    $<HTMLElement>("l-custom-ok").textContent = custom && customOk === true && customChecked === custom ? `Found on chain: ${symbol(custom)}, ${dec(custom)} decimal places.` : custom && customOk === null && isAccountId(custom) ? "Checking this token on chain…" : "";
+
+    // ---- plain-language summary, from the same numbers that will be sent
+    const n = b.tokens.length;
+    const cost = MIN_FUND_NEAR + storage * BigInt(n);
+    const trade = hundredths(v.trade), costCap = hundredths(v.cost), perDay = whole(v.perDay), gap = whole(v.gap), fee = hundredths(v.fee);
+    const closes = v.closes ? new Date(v.closes) : null;
+    const d = dec(v.base);
+    const min = parseUnits(v.min, d), max = parseUnits(v.max, d);
+    const worst = trade !== null && costCap !== null && perDay !== null ? Math.min(10_000, Math.floor((trade * costCap * perDay) / 10_000)) : null;
+    const operator = v.manager === "me" ? me : v.operator.trim().toLowerCase();
+    const names = b.tokens.map((t) => (hasMeta(t) ? symbol(t) : shortAccount(t)));
+    const lines = [
+      `<li><b>${b.fundId ? esc(shortAccount(b.fundId)) : v.name.trim() && !b.errors.name ? esc(v.name.trim()) : "Your fund"}</b> holds and trades only ${esc(names.join(", "))}.</li>`,
+      closes && !b.errors.closes ? `<li>People join with ${esc(symbol(v.base))} until ${esc(closes.toLocaleString("en", { dateStyle: "medium", timeStyle: "short" }))}, your time. ${v.openEnded ? "After that, new people can still join by adding every token the fund holds, in its proportions." : "After that the fund takes no new joiners."}</li>` : "",
+      min !== null && max !== null && !b.errors.min && !b.errors.max ? `<li>Deposits start at ${esc(units(min, d, 6))} ${esc(symbol(v.base))}. The fund accepts ${esc(units(max, d, 6))} ${esc(symbol(v.base))} in total.</li>` : "",
+      trade !== null && costCap !== null && perDay !== null && gap !== null && !b.errors.trade && !b.errors.cost && !b.errors.perDay && !b.errors.gap
+        ? `<li>One trade moves at most ${pctOf(trade)} of a holding and costs at most ${pctOf(costCap)}. At most ${perDay} ${perDay === 1 ? "trade" : "trades"} a day, ${gap} minutes apart. The most trading can cost a holding in one day: ${pctOf(worst!)}.</li>`
+        : "",
+      `<li>${operator && isAccountId(operator) ? esc(shortAccount(operator)) : "The manager"} can only propose trades. ${fee !== null && !b.errors.fee ? (fee > 0 ? `Pay: ${pctOf(fee)} of the fund a year, in new shares.` : "No fee.") : ""}</li>`,
+      `<li>Trades need a quote signed by NEAR Intents 1Click. 1Click does not run on testnet, so a fund launched here can take joins and exits but cannot trade.</li>`,
+      `<li>Everyone can exit at any time with their slice of every token. Nobody, including you, holds a key to the fund, and none of these rules can be changed later.</li>`,
+    ].filter(Boolean);
+    $<HTMLElement>("l-summary").innerHTML = `<ul class="plain">${lines.join("")}</ul><p class="cost">Cost: <b>${esc(units(cost, 24, 5))} NEAR</b> from your wallet, plus a small network fee.</p><p class="small muted">All of it goes to the fund: 0.5 NEAR for its storage and running costs, and ${esc(units(storage, 24, 5))} NEAR to set it up on each of its ${n} ${n === 1 ? "token" : "tokens"}. If the fund cannot be created, the NEAR comes back.</p>`;
+    const btn = $<HTMLButtonElement>("l-submit");
+    btn.disabled = busy || !factory;
+    btn.textContent = !factory ? "Launching is not open yet" : busy ? "Working…" : me ? `Launch fund for ${units(cost, 24, 5)} NEAR` : "Connect a wallet to launch";
+    if (!factory && !busy) $<HTMLElement>("l-status").textContent = "The release 0.3 factory is not live on testnet yet, so nothing can be sent. You can still fill in the form: every rule is checked as you type.";
+    return b;
+  }
+
+  /** Ask the chain whether the custom account is a token, and what each token charges to hold it. */
+  async function checkChain(): Promise<void> {
+    const v = read();
+    const custom = v.custom.trim().toLowerCase();
+    if (custom && isAccountId(custom) && customChecked !== custom) {
+      customOk = null;
+      paint();
+      const m = await readMeta(NET, custom).catch(() => null);
+      if (read().custom.trim().toLowerCase() !== custom) return;
+      if (m) await loadMeta(NET, [custom]);
+      customChecked = custom;
+      customOk = !!m;
+    } else if (!custom) {
+      customOk = null;
+      customChecked = "";
+    }
+    const tokens = [v.base, ...v.others, ...(custom && customOk ? [custom] : [])];
+    const mins = await Promise.all(tokens.map((t) => view<any>(NET, t, "storage_balance_bounds").then((b) => (typeof b?.min === "string" ? BigInt(b.min) : 0n), () => 0n)));
+    storage = mins.reduce((a, b) => (b > a ? b : a), DEFAULT_STORAGE);
+    paint();
+  }
+
+  const fieldOf = (name: string): Field | null => (name === "others" || name === "base" ? "tokens" : name in ERR_IDS ? (name as Field) : null);
+  let timer = 0;
+  const onEdit = (e: Event) => {
+    const t = e.target as HTMLInputElement;
+    const f = fieldOf(t.name);
+    if (f) touched.add(f);
+    if (t.name === "custom") {
+      touched.add("tokens");
+      if (t.value.trim().toLowerCase() !== customChecked) {
+        customOk = null;
+        customChecked = "";
+      }
+    }
+    if (t.name === "base") {
+      paintOthers();
+      void loadMeta(NET, [t.value]).then(paint);
+    }
+    paint();
+    if (t.name === "custom" || t.name === "base" || t.name === "others") {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => void checkChain(), t.name === "custom" ? 500 : 0);
+    }
+  };
+  root.addEventListener("input", onEdit);
+  root.addEventListener("change", onEdit);
+
+  const say = (msg: string, html = "") => {
+    const st = $<HTMLElement>("l-status");
+    st.textContent = msg;
+    if (html) st.insertAdjacentHTML("beforeend", ` ${html}`);
+  };
+
+  root.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (busy || !factory) return;
+    submitted = true;
+    let me = currentAccount();
+    if (!me) {
+      say("Connect a testnet wallet to launch.");
+      me = await signIn().catch(() => "");
+      if (!me) return;
+    }
+    busy = true;
+    try {
+      say("Checking the rules against the chain…");
+      await checkChain();
+      const b = paint();
+      if (!b.config || !b.fundId) {
+        const firstBad = (Object.keys(ERR_IDS) as Field[]).find((f) => b.errors[f]);
+        if (firstBad) $(ERR_IDS[firstBad][0]).focus();
+        throw new Error("fix the fields marked above first");
+      }
+      // The same things the contract would refuse, asked before any NEAR moves.
+      const [taken, op, mine] = await Promise.all([account(NET, b.fundId), account(NET, b.config.operator), account(NET, me)]);
+      if (taken) throw new Error(`the name ${read().name.trim()} is already taken; pick another`);
+      if (!op) throw new Error("the manager's account does not exist on testnet");
+      const cost = MIN_FUND_NEAR + storage * BigInt(b.tokens.length);
+      if (!mine || BigInt(mine.amount) < cost + 10n ** 23n) throw new Error(`your wallet holds ${mine ? units(mine.amount, 24, 3) : "0"} NEAR; this needs ${units(cost, 24, 5)} NEAR plus a little for the network fee`);
+      if (b.config.mandate.subscription_closes_at < Math.floor(Date.now() / 1000) + 300) throw new Error("the join window must end at least 5 minutes from now");
+      say("Waiting for your wallet…");
+      const r = await send([{ receiverId: factory, methodName: "create_fund", args: { name: read().name.trim(), config: b.config }, deposit: cost.toString(), gas: "300000000000000" }]);
+      const made = await account(NET, b.fundId);
+      if (!made) throw new Error("the fund was not created and your NEAR was sent back; the chain refused one of the rules");
+      say(`Created ${shortAccount(b.fundId)}. It has no keys. Checking it now.`, r.hashes[0] ? `<a href="${explorer(NET, r.hashes[0])}" target="_blank" rel="noopener">View transaction ↗</a>` : "");
+      onCreated(b.fundId);
+      root.reset();
+      $("l-closes").value = localStamp(Date.now() + 7 * 86_400_000);
+      submitted = false;
+      touched.clear();
+      paintOthers();
+    } catch (err) {
+      const raw = String((err as Error)?.message ?? err);
+      say(isCancel(err) ? "Cancelled. Nothing was sent." : `Did not go through: ${/[{}_()"]/.test(raw) || raw.length > 160 ? "the chain refused the request" : raw}.`);
+    } finally {
+      busy = false;
+      paint();
+    }
+  });
+
+  onAccount(() => paint());
+  paintOthers();
+  paint();
+  void loadMeta(NET, KNOWN.map((t) => t.id)).then(() => {
+    // Token names read from the chain replace the built-in ones.
+    const sel = $<HTMLSelectElement>("l-base");
+    const keep = sel.value;
+    sel.innerHTML = KNOWN.map((t) => `<option value="${t.id}">${esc(tokenLabel(t.id))}: ${esc(t.hint)}</option>`).join("");
+    sel.value = keep;
+    paintOthers();
+    paint();
+    void checkChain();
+  });
+}

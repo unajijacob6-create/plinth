@@ -8,16 +8,19 @@
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='20' width='22' height='6' rx='1.5' fill='%233d8bff'/%3E%3Crect x='9' y='12' width='14' height='6' rx='1.5' fill='%2322d3ee'/%3E%3Crect x='13' y='4' width='6' height='6' rx='1.5' fill='%23e2e8f0'/%3E%3C/svg%3E" />
   </head>
   <body>
-    <a class="skip" href="#verify">Skip to the verifier</a>
+    <a class="skip" href="#try">Skip to the funds</a>
+    <div class="glow-wrap" aria-hidden="true"><div class="glow"></div></div>
     <header class="nav">
       <a class="brand" href="#top" aria-label="Plinth home">
         <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="20" width="22" height="6" rx="1.5" class="b1" /><rect x="9" y="12" width="14" height="6" rx="1.5" class="b2" /><rect x="13" y="4" width="6" height="6" rx="1.5" class="b3" /></svg>
         <span>Plinth</span>
       </a>
-      <nav aria-label="Sections">
+      <button class="menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav"><span class="bars" aria-hidden="true"></span><span class="sr">Menu</span></button>
+      <nav id="site-nav" aria-label="Sections">
         <a href="#how">How it works</a>
-        <a href="#try">Try it</a>
         <a href="#verify">Verify</a>
+        <a href="#try">Try it</a>
+        <a href="#launch">Launch</a>
         <a href="#run">Live run</a>
         <a href="#limits">Limits</a>
         <a class="gh" href="https://github.com/unajijacob6-create/plinth">GitHub</a>
@@ -26,17 +29,22 @@
 
     <main id="top">
       <section class="hero">
-        <div class="glow" aria-hidden="true"></div>
-        <p class="eyebrow">Keyless funds on NEAR</p>
+        <p class="eyebrow">Keyless funds on NEAR · testnet only</p>
         <h1>A fund nobody can change.<br /><span class="grad">An exit nobody can block.</span></h1>
-        <p class="lede">Plinth funds have no keys. The rules are fixed at launch, the manager can only propose swaps that the contract checks against a signed NEAR Intents quote, and every depositor can take their share of every token out, at any time, in kind.</p>
+        <p class="lede">Plinth funds have no keys. The rules are fixed at launch. The manager can only propose swaps, and the contract checks each one against a signed NEAR Intents quote. Every depositor can take their share of every token out, at any time.</p>
         <div class="cta">
-          <a class="btn primary" href="#verify">Verify a fund</a>
-          <a class="btn ghost" href="#run">See the live run</a>
+          <a class="btn primary" href="#try">Try it on testnet</a>
+          <a class="btn ghost" href="#verify">Verify a fund</a>
         </div>
       </section>
 
-      <section class="stats" id="stats" aria-label="The recorded testnet run"></section>
+      <section class="stats" id="stats" aria-label="Live numbers from NEAR testnet" aria-busy="true">
+        <div class="stat"><b class="sk sk-num"></b><span class="sk sk-l"></span></div>
+        <div class="stat"><b class="sk sk-num"></b><span class="sk sk-l"></span></div>
+        <div class="stat"><b class="sk sk-num"></b><span class="sk sk-l"></span></div>
+        <div class="stat"><b class="sk sk-num"></b><span class="sk sk-l"></span></div>
+      </section>
+      <p class="stats-note small muted" id="stats-note">Reading these numbers from NEAR testnet…</p>
 
       <section class="block" id="how">
         <p class="eyebrow">How it works</p>
@@ -48,14 +56,14 @@
       <section class="block" id="compare">
         <p class="eyebrow">Trust model</p>
         <h2>What you have to trust</h2>
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Comparison of fund designs">
           <table class="compare">
             <thead><tr><th scope="col"></th><th scope="col">Upgradeable fund</th><th scope="col">Enclave-guarded fund</th><th scope="col" class="us">Plinth</th></tr></thead>
             <tbody>
               <tr><th scope="row">Keys on the fund account</th><td>Admin or deployer key</td><td>Often still a deployer key</td><td class="us">None, from creation</td></tr>
               <tr><th scope="row">Who enforces the rules</th><td>Code that can be replaced</td><td>An off-chain enclave</td><td class="us">The contract, on every trade</td></tr>
               <tr><th scope="row">How you exit</th><td>When the admin allows it</td><td>When the guardian runs</td><td class="us">Any time, in kind, by yourself</td></tr>
-              <tr><th scope="row">How you check it</th><td>Read docs, trust a team</td><td>Verify an attestation</td><td class="us">Three RPC calls, below</td></tr>
+              <tr><th scope="row">How you check it</th><td>Read docs, trust a team</td><td>Verify an attestation</td><td class="us">From the chain, in your browser</td></tr>
             </tbody>
           </table>
         </div>
@@ -64,12 +72,12 @@
       <section class="block" id="verify">
         <p class="eyebrow">Verify from the chain</p>
         <h2>Check any fund yourself</h2>
-        <p class="sub">Runs in your browser against public NEAR RPC. No server, no wallet.</p>
+        <p class="sub">Runs in your browser against a public NEAR node. No server, no wallet. It checks the keys, the code and the rules, and says so plainly when a fund runs a release with a known problem.</p>
         <form class="console" id="verify-form" autocomplete="off">
           <div class="console-bar"><span>Fund verifier</span></div>
           <div class="console-input">
             <label for="fund-id" class="sr">Fund account</label>
-            <input id="fund-id" name="fund" spellcheck="false" />
+            <input id="fund-id" name="fund" spellcheck="false" autocapitalize="none" />
             <select id="fund-net" aria-label="Network"><option value="testnet">testnet</option><option value="mainnet">mainnet</option></select>
             <button class="btn primary" type="submit">Verify</button>
           </div>
@@ -80,9 +88,22 @@
       <section class="block" id="try">
         <p class="eyebrow">Try it on testnet</p>
         <h2>Join a fund. Leave it. Nobody can stop you.</h2>
-        <p class="sub">Live from the chain. Connect a testnet wallet, take 100 test pUSD, join the open fund and exit with your share of every token. The demo fund below is the one the recorded run and the AI operator traded.</p>
-        <div class="wallet-bar" id="wallet-bar"></div>
-        <div class="funds" id="funds"></div>
+        <p class="sub">Everything below is read from the chain as you look at it. Connect a testnet wallet, take 100 test pUSD, join a fund and exit with your slice of every token. Test tokens only.</p>
+        <div class="wallet-bar" id="wallet-bar"><span class="sk sk-btn"></span></div>
+        <p class="notice small" id="funds-note" hidden></p>
+        <div class="funds" id="funds-new"></div>
+        <div class="more-wrap"><button class="btn ghost sm" id="funds-more" type="button" hidden>Show more funds</button></div>
+        <details class="group" id="funds-legacy-wrap">
+          <summary><span>Earlier funds (old release)</span><small>Releases 0.1 and 0.2 have a known accounting bug. Kept as history.</small></summary>
+          <div class="funds" id="funds-legacy"></div>
+        </details>
+      </section>
+
+      <section class="block" id="launch">
+        <p class="eyebrow">Launch a fund</p>
+        <h2>Set the rules once. Then nobody can change them.</h2>
+        <p class="sub">One call to the factory creates a fund with no keys, running the one published copy of the code. You pick the tokens and the limits; after launch they are fixed for good, for you too. Testnet only.</p>
+        <form class="launch" id="launch-form" autocomplete="off" novalidate></form>
       </section>
 
       <section class="block" id="agent">
@@ -111,17 +132,21 @@
       <section class="block" id="limits">
         <p class="eyebrow">Limits</p>
         <h2>Read these before you trust it</h2>
-        <p class="sub">Two reviews on 2026-11-10 found and fixed one critical and several high-severity issues. A third review the same day found one more critical bug that the first two missed. It is described first, because it affects every fund on this page.</p>
+        <p class="sub">Two reviews on 2026-11-10 found and fixed one critical and several high-severity issues. A third review the same day found one more critical bug that the first two missed. It comes first, because it affects every fund created before release 0.3. <span id="limits-status"></span></p>
         <ul class="limits">
-          <li class="known"><b>Known issue in the funds shown here.</b> The funds on this page run releases 0.1 and 0.2. Both count a token transfer that is about to bounce back as if the fund owned it. Anyone can use that to take more than their share, or to mark a trade settled before anything is delivered. A test in the repository proves both. These funds hold test tokens only and cannot be fixed, so treat them as history. The fix is in the next release.</li>
-          <li><b>No fixes, ever.</b> A keyless contract cannot be upgraded. A bug is permanent, so funds should start small.</li>
-          <li><b>1Click is trusted to deliver.</b> The contract checks the signed quote; it cannot force delivery. If 1Click refunds, the refund goes back to the fund.</li>
-          <li><b>Prices are 1Click's.</b> The cost cap uses the USD marks in the signed quote, so it bounds cost against the venue's own valuation, not against the whole market.</li>
-          <li><b>One signing key.</b> 1Click's key is fixed in the fund. If it rotates, the fund can no longer trade, but redemption still works.</li>
-          <li><b>Testnet stand-in.</b> 1Click has no testnet, so the recorded run uses a test signer and a solver account in 1Click's place. The verifier labels it.</li>
-          <li><b>App fees are bounded, not blocked.</b> 1Click does not sign its app-fee field, so an operator can take a fee inside a trade. The cost cap still bounds it: at most the cost cap of each trade, each trade capped, a fixed number of trades per day.</li>
-          <li><b>At most 4 tokens.</b> So one redemption can pay every token in a single transaction.</li>
-          <li><b>Exit waits for one trade.</b> While a trade is in flight, redemptions wait up to 10 minutes. After that you can leave without your share of that one trade.</li>
+          <li class="known" id="limit-known"><b>Known issue in releases 0.1 and 0.2.</b> Every fund created before release 0.3 has it, including the earlier funds on this page. Those releases count a token transfer that is about to bounce back as if the fund owned it. Anyone can use that to take more than their share, or to mark a trade settled before anything is delivered. A test in the repository proves both. These funds hold test tokens only and cannot be fixed, so treat them as history. Release 0.3 fixes it: a fund counts a token only when it sees the token arrive and keeps it.</li>
+          <li><b>No fixes, ever.</b> A keyless contract cannot be upgraded. A bug is permanent; the item above is the proof. Funds should start small.</li>
+          <li id="limit-refunds"><b>Refunds are the one balance the fund still reads.</b> When a trade fails, 1Click sends the tokens back with a plain transfer, which the fund cannot see arrive. So the fund looks at its balance, but only an hour after the trade was sent, only for the exact refund amount, and only once per trade. If the output arrives after all, the refund is taken back off the books. What is left: if 1Click never delivers and never refunds, someone can make the fund count a refund that did not come. That money is lost either way. With the trick, people who exit first are paid in full and the last to exit are short, by at most one trade.</li>
+          <li><b>Delivery with a message is untested on mainnet.</b> Release 0.3 needs 1Click to hand the output to the fund together with a short message. NEAR Intents documents this and marks it experimental. No Plinth fund has received a real 1Click delivery this way. If 1Click gave the hand-over too little gas, the output would go back to 1Click and the fund would not get it.</li>
+          <li id="limit-no-manager"><b>No manager does not mean nothing to trust.</b> A fund without a manager lets anyone ask a fixed program for a proposal. The program runs at OutLayer, and the fund cannot check on chain that it ran inside a secure enclave. A forged answer can do what a manager could and no more: propose a trade inside the rules. On testnet the program signs its own stand-in quotes with a key anyone can read. Exits never depend on any of this.</li>
+          <li><b>1Click is trusted to deliver or refund.</b> The contract checks the signed quote; it cannot force delivery.</li>
+          <li><b>Prices are 1Click's.</b> The cost cap uses the dollar values in the signed quote, so it bounds cost against 1Click's own valuation, not against the whole market.</li>
+          <li><b>One signing key.</b> 1Click's key is fixed in the fund. If it changes, the fund can no longer trade, but exits still work.</li>
+          <li><b>Testnet stand-in.</b> 1Click has no testnet, so the recorded runs use a test signer and a solver account in 1Click's place. The verifier labels it.</li>
+          <li><b>App fees are bounded, not blocked.</b> 1Click does not sign its app-fee field, so a manager can take a fee inside a trade. The cost cap still bounds it. Each fund card shows the most this can cost in one day.</li>
+          <li><b>Only test tokens so far.</b> The tests use a test token. No test here runs the real wNEAR or stNEAR code from mainnet, and Plinth has only run on testnet.</li>
+          <li><b>At most 4 tokens.</b> So one exit can pay every token in a single transaction.</li>
+          <li><b>Exit waits for one trade.</b> While a trade is in flight, exits wait up to 10 minutes. After that you can leave without your share of that one trade.</li>
         </ul>
       </section>
     </main>

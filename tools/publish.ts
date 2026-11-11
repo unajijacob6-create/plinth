@@ -11,8 +11,9 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import bs58 from "bs58";
 import { actions } from "near-api-js";
-import { parseArgs, withUsage, UsageError } from "./lib/args.ts";
+import { parseArgs, plainErrors, withUsage, UsageError } from "./lib/args.ts";
 
+plainErrors();
 const USAGE = "usage: npm run publish:code -- --wasm <file> [--network testnet|mainnet] [--from <account> --send]";
 const a = withUsage(USAGE, () => {
   const p = parseArgs(process.argv.slice(2), { values: ["--wasm", "--network", "--from"], switches: ["--send"] });

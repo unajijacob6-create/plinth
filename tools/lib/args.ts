@@ -46,3 +46,14 @@ export function withUsage<T>(usageText: string, fn: () => T): T {
     process.exit(2);
   }
 }
+
+/** Print an uncaught error as one line (`error: ...`) and exit 1, instead of a stack trace.
+ *  PLINTH_DEBUG=1 keeps the stack. */
+export function plainErrors(): void {
+  const die = (e: unknown) => {
+    console.error(process.env.PLINTH_DEBUG ? e : `error: ${(e as Error)?.message ?? e}`);
+    process.exit(1);
+  };
+  process.on("uncaughtException", die);
+  process.on("unhandledRejection", die);
+}

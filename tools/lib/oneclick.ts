@@ -205,8 +205,8 @@ export function preflightStake(amount: string, s: FundState & { config: any }, n
   const why: string[] = noManager(s);
   const m: any = s.config.mandate;
   const r = m.staking;
-  if (!r) return ["this fund has no staking route"];
-  if (!/^\d+$/.test(amount)) return [`amount ${amount} is not in base units`];
+  if (!r) return [...why, "this fund has no staking route"];
+  if (!/^\d+$/.test(amount)) return [...why, `amount ${amount} is not in base units`];
   const a = BigInt(amount);
   if (nowS < m.subscription_closes_at) why.push("subscription window still open");
   if (s.pending) why.push("a trade is in flight");

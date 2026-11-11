@@ -42,5 +42,6 @@ export function testFill(p: TestPrices, sell: string, buy: string, amount: bigin
 
 /** The table as one line of text for the AI operator's prompt, for the fund's tokens. */
 export function describeTestPrices(p: TestPrices, tokens: string[]): string {
-  return `TEST PRICES (testnet, not market data): ${tokens.map((t) => `1 ${t} (${entry(p, t) && p.tokens[t].decimals} decimals) = $${p.tokens[t].usd}`).join("; ")}`;
+  for (const t of tokens) entry(p, t); // every token must have a usable price
+  return `TEST PRICES (testnet, not market data): ${tokens.map((t) => `1 ${t} (${p.tokens[t].decimals} decimals) = $${p.tokens[t].usd}`).join("; ")}`;
 }

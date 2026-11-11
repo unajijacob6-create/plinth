@@ -17,6 +17,9 @@ use near_sdk::{env, near, require, AccountId, CryptoHash, Gas, NearToken, PanicO
 /// NEAR a new fund must start with, besides its token registrations: its own state storage and the
 /// registrations of 1Click deposit addresses (0.00125 NEAR per trade).
 pub const MIN_FUND_NEAR: u128 = 500_000_000_000_000_000_000_000; // 0.5 NEAR
+/// Kept by the factory from each creation to pay for the fund's line in its list (the factory has
+/// no keys, so nobody can top it up on its behalf later except by sending it NEAR).
+pub const LIST_FEE: u128 = 3_000_000_000_000_000_000_000; // 0.003 NEAR
 const GAS_NEW: Gas = Gas::from_tgas(150);
 const GAS_ON_CREATED: Gas = Gas::from_tgas(20);
 
@@ -44,7 +47,8 @@ impl Factory {
     }
 
     /// Create the keyless fund `<name>.<this factory>` with `config` (the fund's `new` argument).
-    /// Attach at least 0.5 NEAR plus `storage_deposit` for each token; all of it goes to the fund.
+    /// Attach at least 0.503 NEAR plus `storage_deposit` for each token; all of it goes to the fund
+    /// except 0.003 NEAR the factory keeps for the fund's line in its list.
     /// If the fund cannot be created (name taken, config refused) the NEAR is sent back.
     #[payable]
     pub fn create_fund(&mut self, name: String, config: Value) -> Promise {
@@ -58,11 +62,11 @@ impl Factory {
         let registrations = per.checked_mul(tokens).unwrap_or_else(|| env::panic_str("overflow"));
         let deposit = env::attached_deposit().as_yoctonear();
         require!(tokens > 0, "config.mandate.tokens is missing");
-        require!(deposit >= MIN_FUND_NEAR.saturating_add(registrations), "attach at least 0.5 NEAR plus storage_deposit for each token");
+        require!(deposit >= MIN_FUND_NEAR.saturating_add(registrations).saturating_add(LIST_FEE), "attach at least 0.503 NEAR plus storage_deposit for each token");
         let creator = env::predecessor_account_id();
         Promise::new(fund.clone())
             .create_account()
-            .transfer(NearToken::from_yoctonear(deposit - registrations))
+            .transfer(NearToken::from_yoctonear(deposit - registrations - LIST_FEE))
             .use_global_contract(CryptoHash::from(self.code_hash))
             .function_call("new".to_string(), json!({ "config": config }).to_string().into_bytes(), NearToken::from_yoctonear(registrations), GAS_NEW)
             .then(Self::ext(env::current_account_id()).with_static_gas(GAS_ON_CREATED).on_created(fund, creator, U128(deposit)))

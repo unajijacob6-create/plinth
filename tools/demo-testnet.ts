@@ -102,7 +102,7 @@ await mintTo(ALICE, 60_000_000n);
 await mintTo(BOB, 40_000_000n);
 
 // ---------------------------------------------------------------- keyless fund, through the factory
-const close = (await chainSeconds()) + 90;
+const close = (await chainSeconds()) + 120; // room for the creation and two subscriptions
 const config: Config = {
   mandate: {
     tokens: [TOKEN, WRAP],
@@ -212,6 +212,7 @@ log("attack", "holdings unchanged, trade 0 still in flight; settle and absorb do
 // ---------------------------------------------------------------- the solver delivers: the push settles the trade
 const d = await deliver({ solver: SOLVER, fund, token: WRAP, amount: OUT, tradeId: 0 });
 run.tx.solver_delivers = d.tx;
+run.solver_prepared_tx = d.prepared; // the solver wrapping NEAR for the delivery, if it had to
 // Release 0.3 has no settle step: the delivery transaction is the settlement. The key is kept
 // because the website links it.
 run.tx.settle = d.tx;

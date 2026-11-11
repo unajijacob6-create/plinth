@@ -133,7 +133,7 @@ export const tooMany = (retryAfterSeconds: number) => fail(429, "rate_limited", 
 export const escapeHtml = (s: unknown): string => String(s).replace(/[&<>"'`]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;" })[c]!);
 
 /** A value for an inline <script>: JSON with every character that could end the script or start markup escaped. */
-export const scriptJson = (v: unknown): string => JSON.stringify(v).replace(/[<>&  ]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+export const scriptJson = (v: unknown): string => JSON.stringify(v).replace(/[<>&\u2028\u2029]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
 
 /** Run `fn` over `items`, at most `limit` at a time, keeping order. */
 export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {

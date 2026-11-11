@@ -1,4 +1,4 @@
-import releases from "../../data/releases.json";
+import releasesJson from "../../data/releases.json";
 // Read-only NEAR RPC from the browser, and the same checks as tools/verify.ts.
 import bs58 from "bs58";
 
@@ -7,16 +7,65 @@ const RPC: Record<Net, string> = { testnet: "https://rpc.testnet.fastnear.com", 
 export const ONECLICK_KEY = "ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc";
 export const explorer = (net: Net, tx: string) => `https://${net === "mainnet" ? "" : "testnet."}nearblocks.io/txns/${tx}`;
 export const accountLink = (net: Net, id: string) => `https://${net === "mainnet" ? "" : "testnet."}nearblocks.io/address/${id}`;
+/** Long account names and fingerprints are never shown whole: "abcdef…wxyz". */
+export const short = (s: string, head = 6, tail = 4) => (s.length > head + tail + 3 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s);
+/** A fund's own name without the parent it was created under, when that keeps it readable. */
+export const shortAccount = (id: string) => (id.length > 28 ? short(id, 14, 10) : id);
+
+export interface Release {
+  version: string;
+  commit: string;
+  known_issue?: string;
+  global?: boolean;
+}
+export const RELEASES = ((releasesJson as any).releases ?? {}) as Record<string, Release>;
+const FACTORIES = ((releasesJson as any).factories ?? {}) as Partial<Record<Net, string>>;
+/** The factory that creates release 0.3 funds, when one is recorded for this network. */
+export const factoryOf = (net: Net): string | null => (typeof FACTORIES[net] === "string" && FACTORIES[net] ? FACTORIES[net]! : null);
+
+/** What the RPC node calls a problem, in plain words. */
+const RPC_WORDS: Record<string, string> = {
+  UNKNOWN_ACCOUNT: "this account does not exist",
+  INVALID_ACCOUNT: "this is not a valid account name",
+  NO_CONTRACT_CODE: "this account has no contract",
+  NO_GLOBAL_CONTRACT_CODE: "the published code was not found on chain",
+  CONTRACT_EXECUTION_ERROR: "the contract could not answer",
+  UNKNOWN_BLOCK: "the network node is behind; try again",
+  TIMEOUT_ERROR: "the network node timed out; try again",
+  PARSE_ERROR: "this is not a valid account name",
+};
+export class RpcError extends Error {
+  constructor(
+    public code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 export async function rpc<T = any>(net: Net, method: string, params: unknown): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(RPC[net], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
-    if (res.status === 429 && attempt < 4) {
+    let res: Response;
+    try {
+      res = await fetch(RPC[net], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+    } catch {
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 600 * 2 ** attempt));
+        continue;
+      }
+      throw new RpcError("NETWORK", "the network could not be reached");
+    }
+    if ((res.status === 429 || res.status >= 500) && attempt < 4) {
       await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
       continue;
     }
-    const j = await res.json();
-    if (j.error) throw new Error(j.error?.cause?.name ?? j.error?.data ?? JSON.stringify(j.error).slice(0, 160));
+    const j = await res.json().catch(() => ({ error: { cause: { name: "TIMEOUT_ERROR" } } }));
+    if (j.error) {
+      const code = String(j.error?.cause?.name ?? j.error?.name ?? "ERROR");
+      throw new RpcError(code, RPC_WORDS[code] ?? "the network node refused the request");
+    }
+    // A view call that fails inside the contract comes back as a result with an error text.
+    if (j.result && typeof j.result.error === "string") throw new RpcError("CONTRACT_EXECUTION_ERROR", /MethodNotFound/.test(j.result.error) ? "this account does not answer that question" : RPC_WORDS.CONTRACT_EXECUTION_ERROR);
     return j.result as T;
   }
 }
@@ -24,6 +73,58 @@ export async function rpc<T = any>(net: Net, method: string, params: unknown): P
 export async function view<T = any>(net: Net, account: string, method: string, args: object = {}): Promise<T> {
   const r = await rpc<{ result: number[] }>(net, "query", { request_type: "call_function", finality: "final", account_id: account, method_name: method, args_base64: btoa(JSON.stringify(args)) });
   return JSON.parse(new TextDecoder().decode(new Uint8Array(r.result)));
+}
+
+/** The account record, or null when the account does not exist. */
+export async function account(net: Net, id: string): Promise<any | null> {
+  try {
+    return await rpc<any>(net, "query", { request_type: "view_account", finality: "final", account_id: id });
+  } catch (e) {
+    if (e instanceof RpcError && e.code === "UNKNOWN_ACCOUNT") return null;
+    throw e;
+  }
+}
+export const isAccountId = (s: string) => s.length >= 2 && s.length <= 64 && /^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/.test(s);
+
+export interface FactoryEntry {
+  account_id: string;
+  creator: string;
+  created_at: number;
+}
+/** Funds a factory created, newest first: `skip` newest are passed over, then up to `limit`. */
+export async function factoryFunds(net: Net, factory: string, skip: number, limit: number): Promise<{ count: number; funds: FactoryEntry[] }> {
+  const count = Number(await view<number>(net, factory, "fund_count"));
+  const end = Math.max(0, count - skip);
+  const from = Math.max(0, end - limit);
+  const funds = end > from ? await view<FactoryEntry[]>(net, factory, "get_funds", { from, limit: end - from }) : [];
+  return { count, funds: funds.reverse() };
+}
+
+const NO_LOCAL_CODE = "11111111111111111111111111111111";
+export interface CodeInfo {
+  /** Fingerprint the chain reports for the code this account runs. */
+  hash: string;
+  /** How the code is attached: its own copy, a published copy fixed by fingerprint, or one another account can replace. */
+  how: "own" | "published" | "replaceable";
+  /** For "replaceable": the account that can change the code. */
+  owner?: string;
+  release: Release | null;
+}
+export function codeInfo(acct: any): CodeInfo {
+  if (acct.global_contract_account_id) return { hash: "", how: "replaceable", owner: String(acct.global_contract_account_id), release: null };
+  if (acct.global_contract_hash) return { hash: acct.global_contract_hash, how: "published", release: RELEASES[acct.global_contract_hash] ?? null };
+  return { hash: acct.code_hash === NO_LOCAL_CODE ? "" : acct.code_hash, how: "own", release: RELEASES[acct.code_hash] ?? null };
+}
+const codeCache = new Map<string, Promise<CodeInfo | null>>();
+/** Which release an account runs (cached: the code of a keyless account cannot change). */
+export function releaseOf(net: Net, id: string): Promise<CodeInfo | null> {
+  const key = `${net}:${id}`;
+  if (!codeCache.has(key)) {
+    const p = account(net, id).then((a) => (a ? codeInfo(a) : null));
+    p.catch(() => codeCache.delete(key));
+    codeCache.set(key, p);
+  }
+  return codeCache.get(key)!;
 }
 
 /** Names of the functions a wasm module imports (import section only; enough for this check). */
@@ -84,6 +185,8 @@ export const FORBIDDEN = /deploy|use_global_contract|add_key|delete_key|delete_a
 
 export interface Check {
   ok: boolean;
+  /** A check that passes but carries a warning the reader must see. */
+  warn?: boolean;
   label: string;
   detail: string;
 }
@@ -94,38 +197,85 @@ export interface Verification {
   checks: Check[];
   state: any | null;
   codeHash: string;
+  release: Release | null;
+  /** clean: everything holds. known-issue: keys and code check out, on a release with a known bug. failed: a check failed. */
+  status: "clean" | "known-issue" | "failed";
   ok: boolean;
 }
+
+const b64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
 /** Everything a depositor needs, from the chain alone. */
 export async function verifyFund(net: Net, fund: string): Promise<Verification> {
   const checks: Check[] = [];
   const acct = await rpc<any>(net, "query", { request_type: "view_account", finality: "final", account_id: fund });
   const keys = await rpc<any>(net, "query", { request_type: "view_access_key_list", finality: "final", account_id: fund });
-  checks.push({ ok: keys.keys.length === 0, label: "No access keys", detail: keys.keys.length === 0 ? "Nobody can sign for this account: no redeploy, no withdrawal, no new key." : `${keys.keys.length} key(s): ${keys.keys.map((k: any) => (k.access_key.permission === "FullAccess" ? "full access" : "limited")).join(", ")}` });
-  const code = await rpc<any>(net, "query", { request_type: "view_code", finality: "final", account_id: fund });
-  const bytes = Uint8Array.from(atob(code.code_base64), (c) => c.charCodeAt(0));
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  const hash = bs58.encode(digest);
-  // The fingerprint must be one of Plinth's own releases: any other keyless contract could answer
-  // like a fund and still have no exit.
-  const rel = (releases.releases as Record<string, { version: string; commit: string }>)[acct.code_hash];
-  checks.push({
-    ok: hash === acct.code_hash && !!rel,
-    label: rel ? `Code is Plinth release ${rel.version}` : "Code is not a known Plinth release",
-    detail: rel ? `The ${Math.round(bytes.length / 1000).toLocaleString("en")} KB of code on chain has the fingerprint of the release built from commit ${rel.commit} of this repository.` : "Its fingerprint matches no release published in this repository, so nothing here can vouch for what it does.",
-  });
-  const bad = importNames(bytes).filter((n) => FORBIDDEN.test(n));
-  checks.push({ ok: bad.length === 0, label: "Code cannot change itself", detail: bad.length === 0 ? "The code has no instruction that can deploy new code, add or remove keys, stake, or delete the account." : `It can call functions that change code or keys (${bad.length}).` });
+  const n = keys.keys.length;
+  checks.push({ ok: n === 0, label: "No access keys", detail: n === 0 ? "Nobody can sign for this account: no redeploy, no withdrawal, no new key." : `${n} ${n === 1 ? "key" : "keys"}: ${keys.keys.map((k: any) => (k.access_key.permission === "FullAccess" ? "full access" : "limited")).join(", ")}. Whoever holds one can act for this account.` });
+  const info = codeInfo(acct);
+  let rel: Release | null = info.release;
+  if (info.how === "replaceable") {
+    // Published under an account, not under a fingerprint: that account can swap the code.
+    checks.push({ ok: false, label: "Code can be replaced", detail: `This account runs code published by ${shortAccount(info.owner!)}, and that account can change it at any time. Nothing here can vouch for what it will do.` });
+  } else {
+    let bytes: Uint8Array | null = null;
+    try {
+      const code = info.how === "published" ? await rpc<any>(net, "query", { request_type: "view_global_contract_code", finality: "final", code_hash: info.hash }) : await rpc<any>(net, "query", { request_type: "view_code", finality: "final", account_id: fund });
+      bytes = b64(code.code_base64);
+    } catch (e) {
+      checks.push({ ok: false, label: "Code could not be read", detail: `The chain did not return this account's code: ${(e as Error).message}.` });
+    }
+    if (bytes) {
+      const hash = bs58.encode(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as BufferSource)));
+      const same = hash === info.hash;
+      // The fingerprint must be one of Plinth's own releases: any other keyless contract could answer
+      // like a fund and still have no exit.
+      const kb = Math.round(bytes.length / 1000).toLocaleString("en");
+      // A release that is published once for every fund must be used that way, fixed by fingerprint.
+      const attached = !rel?.global || info.how === "published";
+      checks.push({
+        ok: same && !!rel && attached,
+        label: rel ? `Code is Plinth release ${rel.version}` : "Code is not a known Plinth release",
+        detail: !same
+          ? "The code the chain returned does not match the fingerprint the account reports."
+          : !rel
+            ? "Its fingerprint matches no release published in this repository, so nothing here can vouch for what it does."
+            : !attached
+              ? `The code matches release ${rel.version}, but this account carries its own copy instead of the published one.`
+              : info.how === "published"
+                ? `The fund runs the one published copy of the code (${kb} KB), fixed by its fingerprint: no account can change what it runs. It matches the release built from commit ${rel.commit} of this repository.`
+                : `The ${kb} KB of code on chain has the fingerprint of the release built from commit ${rel.commit} of this repository.`,
+      });
+      let bad: string[] | null = null;
+      try {
+        bad = importNames(bytes).filter((x) => FORBIDDEN.test(x));
+      } catch {
+        bad = null;
+      }
+      checks.push({
+        ok: !!bad && bad.length === 0,
+        label: "Code cannot change itself",
+        detail: !bad ? "The code could not be read as a program, so this cannot be checked." : bad.length === 0 ? "The code has no instruction that can deploy new code, add or remove keys, stake, or delete the account." : `It can call ${bad.length} ${bad.length === 1 ? "function" : "functions"} that change code or keys.`,
+      });
+    }
+  }
   let state: any = null;
   try {
     state = await view(net, fund, "get_fund");
     const real = state.config.quote_signer === ONECLICK_KEY;
     const m = state?.config?.mandate;
-    const sane = !!m && Array.isArray(m.tokens) && m.tokens.length >= 1 && m.tokens.length <= 4 && m.max_trade_bps > 0 && m.max_trade_bps <= 10_000;
-    checks.push({ ok: sane, label: "Rules reported by the contract", detail: `Operator ${state.config.operator} can only propose trades. Quotes must be signed by ${real ? "NEAR Intents 1Click" : "a test signer, not 1Click"}.` });
+    const sane = !!m && Array.isArray(m.tokens) && m.tokens.length >= 1 && m.tokens.length <= 4 && m.max_trade_bps > 0 && m.max_trade_bps <= 10_000 && m.max_cost_bps <= 10_000 && m.max_trades_per_day > 0;
+    const noManager = !!m?.strategy?.exclusive;
+    checks.push({
+      ok: sane,
+      label: "Rules reported by the contract",
+      detail: `${noManager ? "No manager: only the fund's fixed program can propose trades." : `The manager, ${shortAccount(String(state.config.operator))}, can only propose trades.`} Quotes must be signed by ${real ? "NEAR Intents 1Click" : "a test signer, not 1Click"}.`,
+    });
   } catch {
     checks.push({ ok: false, label: "Not a Plinth fund", detail: "This account does not answer like a Plinth fund." });
   }
-  return { fund, net, checks, state, codeHash: acct.code_hash, ok: checks.every((c) => c.ok) };
+  const allOk = checks.every((c) => c.ok);
+  if (rel?.known_issue) checks.push({ ok: true, warn: true, label: `Known issue in release ${rel.version}`, detail: "This release can count tokens that are about to bounce back as if the fund owned them. A keyless fund cannot be fixed, so treat it as history, not as safe." });
+  const status = !allOk ? "failed" : rel?.known_issue ? "known-issue" : "clean";
+  return { fund, net, checks, state, codeHash: info.hash, release: rel, status, ok: status === "clean" };
 }
