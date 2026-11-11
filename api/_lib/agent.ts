@@ -17,7 +17,7 @@ import { RpcError, isAccountId, near, parseNetwork, type Network } from "./near.
 
 export const NEARAI_API = "https://cloud-api.near.ai/v1";
 /** Hard cap on what one call may spend; a client cannot raise it. */
-export const AGENT_MAX_TOKENS = 1200;
+export const AGENT_MAX_TOKENS = 6000;
 export const NOTE_MAX_CHARS = 1000;
 const BODY_MAX_BYTES = 4 * 1024;
 const DEFAULT_NOTE = "No news. Keep the fund within its mandate.";
