@@ -4,8 +4,11 @@ node_modules/
 .env
 web/dist/
 
-# local key material (testnet stand-in signer seed for the strategy build)
-.keys/
+# .keys/strategy-signer.seed is committed on purpose: it is the TESTNET stand-in quote signer the
+# strategy program carries (anyone can extract it from the published wasm), kept so the build
+# reproduces byte for byte. Never put a mainnet key here.
+.keys/*
+!.keys/strategy-signer.seed
 strategy/target/
 strategy/host-test/target/
 .vercel
