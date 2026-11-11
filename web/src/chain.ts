@@ -282,8 +282,8 @@ export async function verifyFund(net: Net, fund: string): Promise<Verification> 
             : !attached
               ? `The code matches release ${rel.version}, but this account carries its own copy instead of the published one.`
               : info.how === "published"
-                ? `The fund runs the one published copy of the code (${kb} KB), fixed by its fingerprint: no account can change what it runs. It matches the release built from commit ${rel.commit} of this repository.`
-                : `The ${kb} KB of code on chain has the fingerprint of the release built from commit ${rel.commit} of this repository.`,
+                ? `The fund runs the one published copy of the code (${kb} KB), fixed by its fingerprint: no account can change what it runs. It matches the release built from commit ${rel.commit.slice(0, 7)} of this repository.`
+                : `The ${kb} KB of code on chain has the fingerprint of the release built from commit ${rel.commit.slice(0, 7)} of this repository.`,
       });
       let bad: string[] | null = null;
       try {
