@@ -24,6 +24,8 @@ const iso = (s: number) => new Date(s * 1000).toISOString();
 
 export interface TestQuote {
   fund: string;
+  /** The fund's refund relay (`get_fund().config.refund_relay`): the quote's refundTo. */
+  refundRelay: string;
   /** The fund's `get_fund().trades` when the quote is made: the id of the trade it will become. */
   tradeId: number;
   sell: string;
@@ -35,6 +37,7 @@ export interface TestQuote {
   outUsd: string;
   /** Default: the fund. Anything else is refused by the contract (used to show exactly that). */
   recipient?: string;
+  /** Default: the fund's relay. Anything else is refused by the contract. */
   refundTo?: string;
   /** Leave the delivery message out or change it, to show the contract refusing it. Default `trade:<tradeId>`. */
   customRecipientMsg?: string | null;
@@ -51,7 +54,7 @@ export function testQuote(o: TestQuote): string {
   const msg = o.customRecipientMsg === undefined ? tradeMsg(o.tradeId) : o.customRecipientMsg;
   const req: any = {
     dry: false, depositMode: "SIMPLE", swapType: "EXACT_INPUT", slippageTolerance: 50, originAsset: `nep141:${o.sell}`, depositType: "ORIGIN_CHAIN",
-    destinationAsset: `nep141:${o.buy}`, amount: String(o.amount), refundTo: o.refundTo ?? o.fund, refundType: "ORIGIN_CHAIN", recipient: o.recipient ?? o.fund,
+    destinationAsset: `nep141:${o.buy}`, amount: String(o.amount), refundTo: o.refundTo ?? o.refundRelay, refundType: "ORIGIN_CHAIN", recipient: o.recipient ?? o.fund,
     recipientType: "DESTINATION_CHAIN", deadline: iso(now + 600), quoteWaitingTimeMs: 0,
     ...(msg === null ? {} : { customRecipientMsg: msg }),
   };

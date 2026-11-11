@@ -13,7 +13,6 @@ const BASKET_DEPOSIT = "5000000000000000000000"; // 0.005 NEAR, fixed by the con
 const REBALANCE_DEPOSIT = "10000000000000000000000"; // 0.01 NEAR
 const TGAS = (n: number) => `${n}000000000000`;
 const REDEEM_WAIT_SECONDS = 600;
-const REFUND_WAIT_SECONDS = 3600;
 const STRATEGY_TIMEOUT_SECONDS = 600;
 const PAGE = 6;
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -45,7 +44,7 @@ export function humanReason(r: string): string {
     [/^stake of \d+ is below the minimum \d+$/, () => "Stake is below the fund's minimum"],
     [/^all-in cost (\d+) bps is over the mandate's (\d+) bps$/, (_, c, m) => `Trade would cost ${Number(c) / 100}%; the limit is ${Number(m) / 100}%`],
     [/^quote is (\d+) s old; the mandate allows (\d+) s$/, (_, a, m) => `Quote is ${a} seconds old; the limit is ${m}`],
-    [/^quote must deliver to and refund to this fund on NEAR$/, () => "The trade would pay someone other than the fund"],
+    [/^quote must deliver to/, () => "The trade would pay someone other than the fund"],
     [/^quote must set customRecipientMsg/, () => "The quote does not tell 1Click to hand the output to the fund with this trade's tag"],
     [/^(.+) -> (.+) is not allowed by the mandate$/, () => "That pair of tokens is not allowed by the fund's rules"],
     [/^the quote's deposit address closes too soon$/, () => "The quote expires too soon"],
@@ -83,10 +82,9 @@ function humanFailure(e: unknown): string {
     [/does not take in-kind joins/, "this fund does not take new joiners after its window"],
     [/subscription window is open/, "the join window is still open; join with the base token"],
     [/failed stake is being wrapped back/, "in-kind joins are paused while NEAR from a failed stake is wrapped back into the fund"],
-    [/written-off trade can still be refunded/, "in-kind joins are paused while a written-off trade can still be refunded"],
+    [/written-off trade can still be/, "in-kind joins are paused while a written-off trade can still be refunded or delivered"],
     [/no shares to price a join|holds nothing to join/, "the fund is empty, so there is nothing to join in proportion to"],
-    [/refund can be counted an hour/, "a refund can only be checked an hour after the trade was sent"],
-    [/not waiting for a refund/, "this trade is not waiting for a refund"],
+    [/The account doesn't have enough balance|not enough balance to transfer/i, "the refund account does not hold that amount any more"],
     [/another trade is being sent/, "another trade is being sent; try again shortly"],
     [/strategy run is in flight/, "a run is already in progress; try again in a few minutes"],
     [/trading starts when/, "trading starts when the join window closes"],
@@ -131,6 +129,8 @@ interface FundCard {
   trades: any[];
   rejections: any[];
   mine: Mine | null;
+  /** What the fund's refund account holds of each token (refunds waiting to be handed over). */
+  relay: bigint[] | null;
   /** The connected account's balance of each of the fund's tokens (read while the in-kind panel is open). */
   balances: bigint[] | null;
   /** Kept across re-renders so a result message and typed amounts are never wiped. */
@@ -286,7 +286,7 @@ function strategyBlock(f: FundCard, s: any, me: string | null): string {
       <p class="small">Program fingerprint <a href="${esc(st.wasm_url)}" target="_blank" rel="noopener" title="Where the program is fetched from">${esc(short(String(st.wasm_hash), 8, 6))} ↗</a> <span class="muted">fetched from ${esc(host)}</span></p>
       <div class="actions">${
         me
-          ? `<button class="btn ghost sm" data-act="rebalance" ${f.busy || running ? "disabled" : ""}>${running ? "A run is in progress" : "Rebalance now"}</button><span class="small muted">Costs up to 0.01 NEAR; OutLayer sends back what the run does not use.</span>`
+          ? `<button class="btn ghost sm" data-act="rebalance" ${f.busy || running ? "disabled" : ""}>${running ? "A run is in progress" : "Rebalance now"}</button><span class="small muted">Costs up to 0.01 NEAR; OutLayer sends back what the run does not use. If OutLayer refuses the run, that NEAR stays with the fund.</span>`
           : `<span class="small muted">Connect a testnet wallet to press Rebalance.</span>`
       }</div>
     </div>`;
@@ -317,7 +317,7 @@ function kindNeedHtml(f: FundCard): string {
 function joinsPaused(s: any): string {
   if (big(s.stranded_near) > 0n) return "In-kind joins are paused while NEAR from a failed stake is wrapped back into the fund.";
   const until = Number(s.joins_blocked_until ?? 0);
-  if (until >= now()) return `In-kind joins are paused until ${new Date((until + 1) * 1000).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" })}: a written-off trade can still be refunded until then, and joins reopen when that closes.`;
+  if (until >= now()) return `In-kind joins are paused until ${new Date((until + 1) * 1000).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" })}: a written-off trade can still be refunded or delivered until then, and joins reopen when that closes.`;
   return "";
 }
 
@@ -382,7 +382,11 @@ function render(f: FundCard) {
   const shownT = [...f.trades].reverse();
   const shownR = [...f.rejections].reverse();
   const canSettle = !v03 && s.pending?.status === "Sent";
-  const canRefund = v03 && s.pending?.status === "Sent" && !s.pending.stake && now() >= Number(s.pending.sent_at) + REFUND_WAIT_SECONDS;
+  // Refunds from 1Click wait in the fund's refund account until someone hands them over.
+  const waiting = tokens.map((t, i) => [t, f.relay?.[i] ?? 0n] as [string, bigint]).filter(([, v]) => v > 0n);
+  const relayNote = waiting
+    .map(([t, v]) => `<div class="notice"><p class="small"><b>A refund of ${esc(fmt(t, v, 6))} is waiting.</b> It sits in this fund's refund account, which can only pass tokens on to the fund. Anyone can hand it over; the fund counts it when it arrives.</p><div class="actions">${me ? `<button class="btn primary sm" data-act="relay-${tokens.indexOf(t)}" ${f.busy ? "disabled" : ""}>Hand it to the fund</button>` : `<span class="small muted">Connect a testnet wallet to hand it over.</span>`}</div></div>`)
+    .join("");
   const k = esc(f.id);
   const dis = f.busy ? "disabled" : "";
 
@@ -437,7 +441,6 @@ function render(f: FundCard) {
     const extra = [
       hasOwed ? `<button class="btn ghost sm" data-act="claim" ${dis}>Claim what is owed</button>` : "",
       canSettle ? `<button class="btn ghost sm" data-act="settle" ${dis}>Settle trade</button>` : "",
-      canRefund ? `<button class="btn ghost sm" data-act="refund" ${dis}>Check for a refund</button>` : "",
     ].join("");
     you = `${position}${owedLine}${join}${exit}${extra ? `<div class="actions">${extra}</div>` : ""}`;
   }
@@ -464,6 +467,7 @@ function render(f: FundCard) {
     </div>
     ${history("Recent trades", shownT.map((t) => tradeRow(t, tokens)).join(""), shownT.length, nTrades, "trades", 4)}
     ${history("Refused on chain", shownR.map((r) => `<div class="row"><span class="tag no">refused</span><span class="small">${esc(humanReason(String(r.reason)))}</span><span class="muted small">${ago(Number(r.at))}</span></div>`).join(""), shownR.length, nRef, "refusals", 3)}
+    ${relayNote}
     ${strategyBlock(f, s, me)}
     <div class="you">
       ${you}
@@ -488,7 +492,8 @@ async function load(f: FundCard) {
   const nT = Number(state.trades);
   const nR = Number(state.rejections);
   // Read only the newest entries: the contract pages from the start.
-  const [keys, trades, rejections, mine, balances] = await Promise.all([
+  const relayId: string | null = isV03(state) && typeof state.config.refund_relay === "string" ? state.config.refund_relay : null;
+  const [keys, trades, rejections, mine, balances, relay] = await Promise.all([
     rpc(NET, "query", { request_type: "view_access_key_list", finality: "final", account_id: f.id }),
     nT ? view<any[]>(NET, f.id, "get_trades", tail(nT, Math.max(4, f.ui.tradesShown))) : Promise.resolve([]),
     nR ? view<any[]>(NET, f.id, "get_rejections", tail(nR, Math.max(3, f.ui.refusalsShown))) : Promise.resolve([]),
@@ -500,6 +505,7 @@ async function load(f: FundCard) {
         ])
       : Promise.resolve(null),
     me && inKind && f.ui.kindOpen ? Promise.all(tokens.map((t) => view<string>(NET, t, "ft_balance_of", { account_id: me }).then(big, () => 0n))) : Promise.resolve(null),
+    relayId ? Promise.all(tokens.map((t) => view<string>(NET, t, "ft_balance_of", { account_id: relayId }).then(big, () => 0n))) : Promise.resolve(null),
   ]);
   // The wallet changed while this was loading: these numbers belong to someone else.
   if (currentAccount() !== me) return;
@@ -510,6 +516,7 @@ async function load(f: FundCard) {
   f.rejections = rejections;
   f.mine = mine ? { shares: big(mine[0]), owed: mine[1], basket: mine[2] ? mine[2].map(big) : null } : null;
   f.balances = balances;
+  f.relay = relay;
   render(f);
 }
 
@@ -669,13 +676,16 @@ async function act(f: FundCard, kind: string) {
       const r = await send([{ receiverId: f.id, methodName: "settle", args: {}, gas: TGAS(100) }]);
       const after = await view<any>(NET, f.id, "get_fund");
       setMsg(f, after.pending ? "Not settled yet: the output has not arrived. Try again in a minute." : "Settled.", r.hashes[0]);
-    } else if (kind === "refund") {
-      const p = s.pending;
-      if (!p || p.status !== "Sent" || p.stake) throw new Error("no trade is waiting for a refund");
-      if (now() < Number(p.sent_at) + REFUND_WAIT_SECONDS) throw new Error("a refund can only be checked an hour after the trade was sent");
-      const r = await send([{ receiverId: f.id, methodName: "settle_refund", args: { trade_id: Number(p.id) }, gas: TGAS(100) }]);
+    } else if (kind.startsWith("relay-")) {
+      const i = Number(kind.slice(6));
+      const relayId: string | undefined = s.config.refund_relay;
+      if (!relayId || !tokens[i]) throw new Error("this fund has no refund account");
+      const amount = big(await view<string>(NET, tokens[i], "ft_balance_of", { account_id: relayId }));
+      if (amount === 0n) throw new Error("no refund is waiting any more; someone may have handed it over already");
+      const before = big(s.held[i][1]);
+      const r = await send([{ receiverId: relayId, methodName: "relay_forward", args: { token: tokens[i], amount: amount.toString() }, gas: TGAS(150) }]);
       const after = await view<any>(NET, f.id, "get_fund");
-      setMsg(f, after.pending ? "No refund has arrived yet. The trade is still waiting." : "The refund was counted and the trade is closed.", r.hashes[0]);
+      setMsg(f, big(after.held[i][1]) > before ? `Handed over: the fund now counts ${fmt(tokens[i], amount, 6)} more.` : "Sent. The fund will count the refund when it arrives.", r.hashes[0]);
     } else if (kind === "rebalance") {
       const st = m.strategy;
       if (!st) throw new Error("this fund has no program to run");
@@ -789,7 +799,7 @@ export async function mountApp(opt: AppOptions): Promise<App> {
     const root = group === "legacy" ? rootLegacy : rootNew;
     if (where === "start") root.prepend(el);
     else root.appendChild(el);
-    const c: FundCard = { ...def, group, el, trades: [], rejections: [], mine: null, balances: null, msg: "", msgTx: "", busy: false, ui: { joinAmt: "10", exitAmt: "", kindAmt: "", kindMode: "base", kindOpen: false, tradesShown: 0, refusalsShown: 0, steps: [] } };
+    const c: FundCard = { ...def, group, el, trades: [], rejections: [], mine: null, balances: null, relay: null, msg: "", msgTx: "", busy: false, ui: { joinAmt: "10", exitAmt: "", kindAmt: "", kindMode: "base", kindOpen: false, tradesShown: 0, refusalsShown: 0, steps: [] } };
     cards.push(c);
     el.addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;

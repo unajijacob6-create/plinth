@@ -47,6 +47,9 @@ export interface Config {
   mandate: Mandate;
   operator: string;
   quote_signer: string;
+  /** The fund's refund relay. Leave it out: the factory creates the relay (`<name>-r.<factory>`)
+   *  with the fund and writes it here, whatever the caller put. */
+  refund_relay?: string;
   /** yoctoNEAR attached to each NEP-145 storage_deposit. */
   storage_deposit: string;
 }
@@ -55,6 +58,8 @@ export interface Config {
 export const DEFAULT_STORAGE_DEPOSIT = 1_250_000_000_000_000_000_000n;
 /** factory `MIN_FUND_NEAR`: what a new fund must start with besides its token registrations. */
 export const MIN_FUND_NEAR = 500_000_000_000_000_000_000_000n;
+/** factory `RELAY_NEAR`: what the fund's refund relay starts with. */
+export const RELAY_NEAR = 30_000_000_000_000_000_000_000n;
 /** factory `LIST_FEE`: 0.003 NEAR the factory keeps from each creation for the fund's line in its list. */
 export const LIST_FEE = 3_000_000_000_000_000_000_000n;
 export const MAX_TOKENS = 4;
@@ -84,7 +89,11 @@ export function validateConfig(c: unknown, fund: string, nowS: number): string[]
   const why: string[] = [];
   const cfg = c as Config;
   if (!cfg || typeof cfg !== "object" || !cfg.mandate || typeof cfg.mandate !== "object") return ["config must be {mandate, operator, quote_signer, storage_deposit}"];
-  unknownKeys(cfg, ["mandate", "operator", "quote_signer", "storage_deposit"], "config", why);
+  unknownKeys(cfg, ["mandate", "operator", "quote_signer", "refund_relay", "storage_deposit"], "config", why);
+  if (cfg.refund_relay !== undefined) {
+    if (!isAccountId(cfg.refund_relay)) why.push(`refund_relay ${JSON.stringify(cfg.refund_relay)} is not a NEAR account id`);
+    else if (cfg.refund_relay === fund) why.push("the refund relay must be a separate account");
+  }
   const m = cfg.mandate;
   unknownKeys(m, MANDATE_KEYS, "mandate", why);
 
@@ -146,11 +155,15 @@ export function validateConfig(c: unknown, fund: string, nowS: number): string[]
   return why;
 }
 
-/** Fund names the factory accepts: 2 to 32 of a-z, 0-9 and -, not starting or ending with -. */
+/** The refund relay the factory creates with fund `<name>.<factory>`. */
+export const relayAccount = (name: string, factory: string) => `${name}-r.${factory}`;
+
+/** Fund names the factory accepts: 2 to 30 of a-z, 0-9 and -, not starting or ending with -. The
+ *  relay `<name>-r.<factory>` must be a valid account id too. */
 export function validateFundName(name: string, factory: string): string[] {
   const why: string[] = [];
-  if (!/^[a-z0-9-]{2,32}$/.test(name) || name.startsWith("-") || name.endsWith("-")) why.push("name: 2 to 32 of a-z, 0-9 and -, not starting or ending with -");
-  else if (!isAccountId(`${name}.${factory}`)) why.push(`${name}.${factory} is not a valid account id (64 characters at most, no "--")`);
+  if (!/^[a-z0-9-]{2,30}$/.test(name) || name.startsWith("-") || name.endsWith("-")) why.push("name: 2 to 30 of a-z, 0-9 and -, not starting or ending with -");
+  else if (!isAccountId(relayAccount(name, factory))) why.push(`${name}.${factory} and its relay ${relayAccount(name, factory)} must be valid account ids (64 characters at most, no "--")`);
   return why;
 }
 
@@ -170,12 +183,13 @@ export function parseNear(v: string, flag = "--near"): bigint {
   return BigInt(m[1]) * 10n ** 24n + BigInt((m[2] ?? "").padEnd(24, "0"));
 }
 
-/** What `factory.create_fund` needs attached: `near` for the fund, one registration per token, and
- *  the factory's list fee. */
-export function creationDeposit(c: Config, near: bigint): { registrations: bigint; listFee: bigint; total: bigint } {
-  if (near < MIN_FUND_NEAR) throw new UsageError("the factory needs at least 0.5 NEAR for the fund (besides its token registrations and the 0.003 NEAR list fee)");
-  const registrations = BigInt(c.storage_deposit) * BigInt(c.mandate.tokens.length);
-  return { registrations, listFee: LIST_FEE, total: near + registrations + LIST_FEE };
+/** What `factory.create_fund` needs attached: `near` for the fund (at least 0.5), 0.03 NEAR for its
+ *  refund relay, the factory's 0.003 NEAR list fee, and one registration per token for each of the
+ *  two accounts. */
+export function creationDeposit(c: Config, near: bigint): { registrations: bigint; relay: bigint; listFee: bigint; total: bigint } {
+  if (near < MIN_FUND_NEAR) throw new UsageError("the factory needs at least 0.5 NEAR for the fund itself (the relay, list fee and token registrations come on top)");
+  const registrations = BigInt(c.storage_deposit) * BigInt(c.mandate.tokens.length) * 2n;
+  return { registrations, relay: RELAY_NEAR, listFee: LIST_FEE, total: near + RELAY_NEAR + LIST_FEE + registrations };
 }
 
 const intFlag = (a: Args, flag: string, dflt?: number): number => {

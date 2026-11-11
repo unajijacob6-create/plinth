@@ -375,3 +375,6 @@ p.notice { margin: 0 0 16px; max-width: 78ch; }
   .btn.primary:hover { transform: none; }
 }
 [hidden] { display: none !important; }
+.breakdown { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.breakdown li { display: flex; justify-content: space-between; gap: 16px; border-top: 1px dashed var(--line); padding-top: 6px; }
+.breakdown b { color: var(--ink-2); white-space: nowrap; font-weight: 600; }

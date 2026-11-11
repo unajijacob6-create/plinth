@@ -1,11 +1,12 @@
 // npm run deploy -- --from <account> --name <name> (<mandate flags> | --config <config.json>)
 //                   [--near 1] [--factory <account>] [--network testnet|mainnet] [--send]
 //
-// Create the keyless fund `<name>.<factory>` through the factory contract (`create_fund`): one
-// receipt with CreateAccount, Transfer, UseGlobalContract(hash) and new(config), and no AddKey. The
-// factory is read from data/releases.json (`factories.<network>`) unless --factory is given.
-// --from pays: --near NEAR for the fund (default 1, at least 0.5), storage_deposit per token and
-// the factory's 0.003 NEAR list fee.
+// Create the keyless fund `<name>.<factory>` and its refund relay `<name>-r.<factory>` through the
+// factory contract (`create_fund`): each account in one receipt with CreateAccount, Transfer,
+// UseGlobalContract(hash) and its init call, and no AddKey. The factory is read from
+// data/releases.json (`factories.<network>`) unless --factory is given.
+// --from pays: --near NEAR for the fund (default 1, at least 0.5), 0.03 NEAR for the relay, the
+// factory's 0.003 NEAR list fee and storage_deposit per token for each of the two accounts.
 //
 // Without --send nothing is signed: the config is built, checked against the contract's own rules
 // and printed. Mainnet also needs PLINTH_MAINNET=yes. Afterwards: `npm run verify -- <fund>`.
@@ -17,7 +18,7 @@ plainErrors();
 const USAGE = `usage: npm run deploy -- --from <account> --name <name> (<mandate flags> | --config <config.json>) [--near 1] [--factory <account>] [--network testnet|mainnet] [--send]
 
   --from <account>           pays for the fund and signs (credentials in ~/.near-credentials)
-  --name <name>              the fund becomes <name>.<factory>: 2 to 32 of a-z, 0-9 and -
+  --name <name>              the fund becomes <name>.<factory> (relay <name>-r.<factory>): 2 to 30 of a-z, 0-9 and -
   --near <NEAR>              NEAR the fund starts with, besides its token registrations (default 1)
   --config <file>            a complete config as JSON, instead of the mandate flags below
 ${CONFIG_FLAGS_HELP}`;
@@ -55,7 +56,7 @@ console.log(`fund ${fund} on ${NETWORK}, created by factory ${factory}, paid by 
 console.log(JSON.stringify(config, null, 1));
 console.log(`subscription window closes ${new Date(config.mandate.subscription_closes_at * 1000).toISOString()} (in ${config.mandate.subscription_closes_at - now} s)`);
 console.log(`quote signer: ${oneclick ? "NEAR Intents 1Click" : "NOT the 1Click key (a test signer)"}`);
-console.log(`attached: ${formatNear(deposit.total)} NEAR = ${formatNear(near)} for the fund + ${formatNear(deposit.registrations)} for ${config.mandate.tokens.length} token registration(s) + ${formatNear(deposit.listFee)} the factory keeps for its list`);
+console.log(`attached: ${formatNear(deposit.total)} NEAR = ${formatNear(near)} for the fund + ${formatNear(deposit.relay)} for its refund relay + ${formatNear(deposit.registrations)} for ${config.mandate.tokens.length} token registration(s) of each + ${formatNear(deposit.listFee)} the factory keeps for its list`);
 if (problems.length) {
   console.error(`\nthe contract would refuse this fund:\n  - ${problems.join("\n  - ")}`);
   process.exit(1);
@@ -70,5 +71,6 @@ if (!a.switches.has("--send")) {
 }
 const c = await createFund({ from: a.values["--from"], factory, name, config, near });
 console.log(`created ${c.fund}: ${explorer(c.tx)}`);
+console.log(`refund relay ${c.relay} (0 access keys, same code, serves only this fund)`);
 console.log(`access keys ${c.access_keys}; code ${c.code_hash} (global, by hash); version ${c.version}; registered on tokens: ${c.registered.join(", ")}`);
 console.log(`next: npm run verify -- ${c.fund} --network ${NETWORK}`);

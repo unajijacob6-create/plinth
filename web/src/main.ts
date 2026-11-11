@@ -76,12 +76,12 @@ const steps = [
   },
   {
     t: "Contract checks",
-    body: `<p>The contract verifies 1Click's signature over the quote, then the rules:</p><ul><li>output and refunds go to the fund, nowhere else</li><li>both tokens allowed; size within the limit; all-in cost within the cap, from the signed dollar values</li><li>quote fresh, deposit address open long enough and never used before</li></ul>`,
+    body: `<p>The contract verifies 1Click's signature over the quote, then the rules:</p><ul><li>output goes to the fund and refunds to the fund's own refund account, nowhere else</li><li>both tokens allowed; size within the limit; all-in cost within the cap, from the signed dollar values</li><li>quote fresh, deposit address open long enough and never used before</li></ul>`,
     proof: `Refused: output to the manager ${tx("refused_wrong_recipient")}<br/>Refused: 30% in one trade ${tx("refused_too_large")}`,
   },
   {
     t: "Send and settle",
-    body: `<p>The contract registers the 1Click deposit address on the token and transfers the input in one step. 1Click hands the output to the fund, which settles the trade on the spot.</p><p>The fund counts a token only when it sees it arrive. It never trusts a balance it reads for trade output.</p>`,
+    body: `<p>The contract registers the 1Click deposit address on the token and transfers the input in one step. 1Click hands the output to the fund, which settles the trade on the spot.</p><p>If the trade fails, 1Click's refund goes to the fund's refund account: a second keyless account that holds nothing else and can only pass tokens on to its fund. Anyone can press the button that hands it over.</p><p>The fund counts a token only when it is handed it. It reads no balance anywhere.</p>`,
     proof: `Deposit address received ${esc(fmt(TOK, R.deposit_address_pusd))}<br/>Delivered ${tx("solver_delivers")}<br/>Settled ${tx("settle")}<br/><span class="muted">In this older run the trade was settled by a separate call that read the fund's balance. Release 0.3 removed that step; it is where the known issue was.</span>`,
   },
   {

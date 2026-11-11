@@ -1464,7 +1464,7 @@ fn relay_args() -> near_sdk::serde_json::Value {
     near_sdk::serde_json::from_slice(&env::input().unwrap_or_default()).unwrap_or_else(|_| env::panic_str("arguments are not JSON"))
 }
 
-#[no_mangle]
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub extern "C" fn relay_init() {
     env::setup_panic_hook();
     require!(!env::storage_has_key(b"STATE") && !env::storage_has_key(RELAY_KEY), "this account is already set up");
@@ -1487,7 +1487,7 @@ fn relay_fund_id() -> AccountId {
     String::from_utf8(raw).ok().and_then(|f| f.parse().ok()).unwrap_or_else(|| env::panic_str("corrupt relay state"))
 }
 
-#[no_mangle]
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub extern "C" fn relay_forward() {
     env::setup_panic_hook();
     let fund = relay_fund_id();
@@ -1499,7 +1499,7 @@ pub extern "C" fn relay_forward() {
 }
 
 /// View: the fund this relay serves.
-#[no_mangle]
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub extern "C" fn relay_fund() {
     env::setup_panic_hook();
     env::value_return(json!(relay_fund_id()).to_string().as_bytes());

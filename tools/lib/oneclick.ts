@@ -75,6 +75,8 @@ export interface QuoteParams {
   fund: string;
   sellToken: string;
   buyToken: string;
+  /** The fund's `get_fund().config.refund_relay`. */
+  refundRelay: string;
   amount: string; // base units of sellToken
   /** The fund's current `get_fund().trades` (the next trade id); signed into the quote as customRecipientMsg. */
   tradeId: number;
@@ -83,7 +85,9 @@ export interface QuoteParams {
   deadlineMinutes?: number;
 }
 
-/** POST /v0/quote. recipient and refundTo are the fund; origin and destination are NEAR NEP-141. */
+/** POST /v0/quote. The recipient is the fund and refundTo its refund relay (1Click refunds with a
+ *  plain transfer, which only the relay can hand to the fund as a push); origin and destination are
+ *  NEAR NEP-141. */
 export async function requestQuote(p: QuoteParams): Promise<QuoteResponse> {
   const body = {
     dry: p.dry,
@@ -93,7 +97,7 @@ export async function requestQuote(p: QuoteParams): Promise<QuoteResponse> {
     depositType: "ORIGIN_CHAIN",
     destinationAsset: `nep141:${p.buyToken}`,
     amount: p.amount,
-    refundTo: p.fund,
+    refundTo: p.refundRelay,
     refundType: "ORIGIN_CHAIN",
     recipient: p.fund,
     recipientType: "DESTINATION_CHAIN",
@@ -158,6 +162,8 @@ export interface FundState {
   config: {
     operator: string;
     quote_signer: string;
+    /** The account every quote must name as refundTo; it hands refunds to the fund as a push. */
+    refund_relay?: string;
     mandate: {
       tokens: string[];
       max_trade_bps: number;
@@ -234,7 +240,9 @@ export function preflight(r: QuoteResponse, fund: string, s: FundState, nowS = M
   if (!verifySignature(r, s.config.quote_signer)) why.push("signature does not verify against the fund's quote signer");
   if (req.dry !== false) why.push("dry quote");
   if (req.swapType !== "EXACT_INPUT" || req.depositType !== "ORIGIN_CHAIN" || req.recipientType !== "DESTINATION_CHAIN") why.push("unsupported quote shape");
-  if (req.recipient !== fund || req.refundTo !== fund || req.refundType !== "ORIGIN_CHAIN") why.push("must deliver to and refund to the fund");
+  const relay = s.config.refund_relay;
+  if (!relay) why.push("the fund reports no refund relay");
+  else if (req.recipient !== fund || req.refundTo !== relay || req.refundType !== "ORIGIN_CHAIN") why.push(`must deliver to the fund and refund to its relay ${relay}`);
   // Release 0.3: the output must be pushed with ft_transfer_call and the id of the trade it pays.
   if (!Number.isInteger(s.trades) || s.trades < 0) why.push("the fund reports no trade count, so the trade id cannot be checked");
   else if (req.customRecipientMsg !== tradeMsg(s.trades)) why.push(`quote must set customRecipientMsg to "${tradeMsg(s.trades)}"`);

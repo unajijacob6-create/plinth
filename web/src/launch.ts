@@ -6,6 +6,7 @@ import { loadMeta, readMeta, symbol, dec, units, parseUnits, pctOf, hasMeta } fr
 
 const NET = "testnet" as const;
 const MIN_FUND_NEAR = 5n * 10n ** 23n; // 0.5 NEAR, fixed by the factory
+const RELAY_NEAR = 3n * 10n ** 22n; // 0.03 NEAR, what the fund's refund account starts with
 const LIST_FEE = 3n * 10n ** 21n; // 0.003 NEAR, kept by the factory for its list of funds
 const WNEAR = "wrap.testnet";
 const DEFAULT_STORAGE = 1_250_000_000_000_000_000_000n; // 0.00125 NEAR
@@ -92,9 +93,9 @@ export interface Built {
 export function build(v: Values, me: string, factory: string | null, customOk: boolean | null, storage: bigint, nowSeconds: number): Built {
   const errors: Built["errors"] = {};
   const name = v.name.trim();
-  if (!/^[a-z0-9-]{2,32}$/.test(name) || name.startsWith("-") || name.endsWith("-")) errors.name = "Use 2 to 32 lowercase letters, digits or dashes. It cannot start or end with a dash.";
+  if (!/^[a-z0-9-]{2,30}$/.test(name) || name.startsWith("-") || name.endsWith("-")) errors.name = "Use 2 to 30 lowercase letters, digits or dashes. It cannot start or end with a dash.";
   const fundId = factory && !errors.name ? `${name}.${factory}` : null;
-  if (fundId && fundId.length > 64) errors.name = "That name is too long for an account under the factory.";
+  if (fundId && fundId.length + 2 > 64) errors.name = "That name is too long for an account under the factory.";
   const custom = v.custom.trim().toLowerCase();
   const tokens = [v.base, ...v.others.filter((t) => t !== v.base), ...(custom ? [custom] : [])];
   if (tokens.length > 4) errors.tokens = "A fund holds at most 4 tokens, the base token included.";
@@ -178,7 +179,7 @@ export function mountLaunch(onCreated: (id: string) => void) {
     <div class="form-grid">
       <fieldset>
         <legend>Name and tokens</legend>
-        <div class="field"><label for="l-name">Fund name</label><input id="l-name" name="name" autocomplete="off" spellcheck="false" autocapitalize="none" maxlength="32" placeholder="my-fund" aria-describedby="l-name-h l-name-e" /><p class="hint" id="l-name-h">Becomes the fund's account. Lowercase letters, digits and dashes.</p><p class="err" id="l-name-e" role="alert"></p></div>
+        <div class="field"><label for="l-name">Fund name</label><input id="l-name" name="name" autocomplete="off" spellcheck="false" autocapitalize="none" maxlength="30" placeholder="my-fund" aria-describedby="l-name-h l-name-e" /><p class="hint" id="l-name-h">Becomes the fund's account. Lowercase letters, digits and dashes.</p><p class="err" id="l-name-e" role="alert"></p></div>
         <div class="field"><label for="l-base">Base token</label><select id="l-base" name="base" aria-describedby="l-base-h">${KNOWN.map((t) => `<option value="${t.id}">${esc(tokenLabel(t.id))}: ${esc(t.hint)}</option>`).join("")}</select><p class="hint" id="l-base-h">People join with this token during the join window.</p></div>
         <div class="field" role="group" aria-labelledby="l-others-l"><span class="label" id="l-others-l">Other tokens the fund may hold (up to 3)</span><div class="checks" id="l-others"></div>
           <label for="l-custom" class="sub-label">Another token, by account name (optional)</label><input id="l-custom" name="custom" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="token.testnet" aria-describedby="l-custom-e l-tokens-e" /><p class="hint" id="l-custom-ok"></p><p class="err" id="l-custom-e" role="alert"></p><p class="err" id="l-tokens-e" role="alert"></p></div>
@@ -256,6 +257,8 @@ export function mountLaunch(onCreated: (id: string) => void) {
     };
   };
 
+  /** What the factory asks for: the fund, its refund account, the list fee, and both accounts' token set-up. */
+  const totalCost = (n: number) => MIN_FUND_NEAR + RELAY_NEAR + LIST_FEE + storage * BigInt(2 * n);
   const paintOthers = () => {
     const v = read();
     $<HTMLElement>("l-others").innerHTML = KNOWN.filter((t) => t.id !== v.base)
@@ -283,7 +286,7 @@ export function mountLaunch(onCreated: (id: string) => void) {
 
     // ---- plain-language summary, from the same numbers that will be sent
     const n = b.tokens.length;
-    const cost = MIN_FUND_NEAR + LIST_FEE + storage * BigInt(n);
+    const cost = totalCost(n);
     const trade = hundredths(v.trade), costCap = hundredths(v.cost), perDay = whole(v.perDay), gap = whole(v.gap), fee = hundredths(v.fee);
     const closes = v.closes ? new Date(v.closes) : null;
     const d = dec(v.base);
@@ -310,7 +313,7 @@ export function mountLaunch(onCreated: (id: string) => void) {
           : `<li>Trades need a quote signed by NEAR Intents 1Click. 1Click does not run on testnet, so this fund can take joins and exits but cannot trade here.</li>`,
       `<li>Everyone can exit at any time with their slice of every token. Nobody, including you, holds a key to the fund, and none of these rules can be changed later.</li>`,
     ].filter(Boolean);
-    $<HTMLElement>("l-summary").innerHTML = `<ul class="plain">${lines.join("")}</ul><p class="cost">Cost: <b>${esc(units(cost, 24, 5))} NEAR</b> from your wallet, plus a small network fee.</p><p class="small muted">0.5 NEAR goes to the fund for its storage and running costs, ${esc(units(storage, 24, 5))} NEAR sets it up on each of its ${n} ${n === 1 ? "token" : "tokens"}, and the factory keeps 0.003 NEAR for its list of funds. If the fund cannot be created, the NEAR comes back.</p>`;
+    $<HTMLElement>("l-summary").innerHTML = `<ul class="plain">${lines.join("")}</ul><p class="cost">Cost: <b>${esc(units(cost, 24, 5))} NEAR</b> from your wallet, plus a small network fee.</p><ul class="breakdown small muted"><li><span>The fund, for storage and running costs</span><b>0.5 NEAR</b></li><li><span>Its refund account, a second keyless account that can only pass refunds on to the fund</span><b>0.03 NEAR</b></li><li><span>Setting both up on ${n} ${n === 1 ? "token" : "tokens"} (2 × ${n} × ${esc(units(storage, 24, 5))})</span><b>${esc(units(storage * BigInt(2 * n), 24, 5))} NEAR</b></li><li><span>The factory, for the fund's line in its list</span><b>0.003 NEAR</b></li></ul><p class="small muted">If the chain refuses the fund, the NEAR comes back, except what a refund account that was already created keeps.</p>`;
     const btn = $<HTMLButtonElement>("l-submit");
     btn.disabled = busy || !factory;
     btn.textContent = !factory ? "Launching is not open yet" : busy ? "Working…" : me ? `Launch fund for ${units(cost, 24, 5)} NEAR` : "Connect a wallet to launch";
@@ -393,10 +396,10 @@ export function mountLaunch(onCreated: (id: string) => void) {
         throw new Error("fix the fields marked above first");
       }
       // The same things the contract would refuse, asked before any NEAR moves.
-      const [taken, op, mine] = await Promise.all([account(NET, b.fundId), account(NET, b.config.operator), account(NET, me)]);
-      if (taken) throw new Error(`the name ${read().name.trim()} is already taken; pick another`);
+      const [taken, relayTaken, op, mine] = await Promise.all([account(NET, b.fundId), account(NET, b.fundId.replace(".", "-r.")), account(NET, b.config.operator), account(NET, me)]);
+      if (taken || relayTaken) throw new Error(`the name ${read().name.trim()} is already taken; pick another`);
       if (!op) throw new Error("the manager's account does not exist on testnet");
-      const cost = MIN_FUND_NEAR + LIST_FEE + storage * BigInt(b.tokens.length);
+      const cost = totalCost(b.tokens.length);
       if (!mine || BigInt(mine.amount) < cost + 10n ** 23n) throw new Error(`your wallet holds ${mine ? units(mine.amount, 24, 3) : "0"} NEAR; this needs ${units(cost, 24, 5)} NEAR plus a little for the network fee`);
       if (b.config.mandate.subscription_closes_at < Math.floor(Date.now() / 1000) + 300) throw new Error("the join window must end at least 5 minutes from now");
       say("Waiting for your wallet…");

@@ -101,6 +101,8 @@ export const isAccountId = (s: string) => s.length >= 2 && s.length <= 64 && /^(
 
 export interface FactoryEntry {
   account_id: string;
+  /** The fund's refund account, created with it. */
+  relay?: string;
   creator: string;
   created_at: number;
 }
@@ -220,6 +222,26 @@ export interface Verification {
   ok: boolean;
 }
 
+/** The refund account must be keyless, run the fund's own published code, and serve this fund only. */
+async function relayCheck(net: Net, fund: string, relay: unknown, fundCode: CodeInfo): Promise<Check> {
+  const label = "Refunds can only go to this fund";
+  const fail = (detail: string): Check => ({ ok: false, label: "Refund account does not check out", detail });
+  if (typeof relay !== "string" || !relay) return fail("The fund names no refund account.");
+  try {
+    const acct = await account(net, relay);
+    if (!acct) return fail(`The refund account the fund names, ${shortAccount(relay)}, does not exist.`);
+    const keys = await rpc<any>(net, "query", { request_type: "view_access_key_list", finality: "final", account_id: relay });
+    if (keys.keys.length !== 0) return fail(`The refund account ${shortAccount(relay)} has ${keys.keys.length} ${keys.keys.length === 1 ? "key" : "keys"}: whoever holds one can take refunds.`);
+    const code = codeInfo(acct);
+    if (code.how !== "published" || fundCode.how !== "published" || code.hash !== fundCode.hash) return fail(`The refund account ${shortAccount(relay)} does not run the same published code as the fund, so nothing here can vouch for where refunds go.`);
+    const serves = await view<string>(net, relay, "relay_fund").catch(() => null);
+    if (serves !== fund) return fail(`The refund account ${shortAccount(relay)} does not report this fund as the one it serves.`);
+    return { ok: true, label, detail: `Refunds from 1Click go to ${shortAccount(relay)}. It has no keys, runs the same published code as the fund, and can only pass tokens on to this fund.` };
+  } catch (e) {
+    return fail(`The refund account could not be read: ${(e as Error).message}.`);
+  }
+}
+
 const b64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
 /** Everything a depositor needs, from the chain alone. */
@@ -288,6 +310,8 @@ export async function verifyFund(net: Net, fund: string): Promise<Verification> 
       label: "Rules reported by the contract",
       detail: noManager ? "No manager: only the fund's fixed program can propose trades, and each proposal is checked against the rules." : `The manager, ${shortAccount(String(state.config.operator))}, can only propose trades, and each one is checked against the rules.`,
     });
+    // Release 0.3 funds send refunds through a second keyless account that can only pass tokens on.
+    if (typeof state.version === "string") checks.push(await relayCheck(net, fund, state.config.refund_relay, info));
     if (isOneClick(state.config.quote_signer)) checks.push({ ok: true, label: "Quotes signed by NEAR Intents 1Click", detail: "A trade needs a quote signed by 1Click's own key." });
     else if (net === "mainnet") checks.push({ ok: false, label: "Quotes are not signed by NEAR Intents", detail: "This fund accepts quotes signed by a key its creator chose, not by NEAR Intents 1Click. Whoever holds that key can make up prices." });
     else {

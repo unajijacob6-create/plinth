@@ -128,7 +128,7 @@ for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   check((await page.textContent("#l-fee-e")).length > 10, `${name}: a fee above 2% is refused`);
   await page.fill("#l-fee", "1");
   const summary = await page.textContent("#l-summary");
-  check(/Cost: 0\.50\d+ NEAR/.test(summary) && summary.includes("my-fund"), `${name}: the summary shows the exact NEAR cost`);
+  check(summary.includes("refund account") && /Cost: 0\.5\d+ NEAR/.test(summary) && summary.includes("my-fund"), `${name}: the summary shows the exact NEAR cost`);
   check((await page.locator("#l-submit").isDisabled()) === !factory, `${name}: launching is ${factory ? "open" : "closed until the factory is live"}`);
 
   // ---- recorded runs
