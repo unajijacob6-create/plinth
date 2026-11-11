@@ -147,6 +147,8 @@ interface FundCard {
     kindOpen: boolean;
     tradesShown: number;
     refusalsShown: number;
+    /** Whether the reader opened the card's details; kept across refreshes. */
+    details: boolean;
     steps: Step[];
   };
 }
@@ -412,12 +414,14 @@ function render(f: FundCard) {
 
   const history = (title: string, rows: string, shown: number, all: number, kind: "trades" | "refusals", collapsedCount: number) =>
     all
-      ? `<div class="mini"><p class="eyebrow">${title}</p>${rows}${
+      ? `<div class="mini"><h4 class="group-h">${title}</h4><div class="rows">${rows}</div>${
           all > collapsedCount
             ? `<div class="more">${shown < all ? `<button class="link" data-act="more-${kind}" ${dis}>${shown <= collapsedCount ? `Show all ${all}` : `Show older (${all - shown} more)`}</button>` : ""}${shown > collapsedCount ? `<button class="link" data-act="less-${kind}" ${dis}>Show fewer</button>` : ""}</div>`
             : ""
         }</div>`
       : "";
+  const lastAt = Number(s.last_trade_at) || 0;
+  const summaryBits = [`${nTrades} ${nTrades === 1 ? "trade" : "trades"}`, `${nRef} refused`, lastAt ? `last trade ${ago(lastAt)}` : ""].filter(Boolean).join(" · ");
 
   // ---- the connected account's part
   let you = `<p class="small muted">Connect a testnet wallet above to join or exit.</p>`;
@@ -446,33 +450,45 @@ function render(f: FundCard) {
   }
 
   f.el.classList.remove("loading");
+  const holdsLabel = total > 0n ? `${unitLabel} ${unit === 1n ? "share holds" : "shares hold"}` : "Shares";
+  const holdsValue = total > 0n ? unitParts.filter(([, v]) => v > 0n).map(([t, v]) => `<span>${esc(fmt(t, v))}</span>`).join("") || "<span>nothing yet</span>" : "<span>none issued yet</span>";
   f.el.innerHTML = `
     <header class="fund-h">
-      <div><h3><a href="${accountLink(NET, f.id)}" target="_blank" rel="noopener" title="${k}">${esc(f.title)}</a></h3><p class="muted small id">${esc(shortAccount(f.id))}</p></div>
+      <div class="fund-title"><h3><a href="${accountLink(NET, f.id)}" target="_blank" rel="noopener" title="${k}">${esc(f.title)}</a></h3><p class="id">${esc(shortAccount(f.id))}</p></div>
       <div class="chips">${chips}</div>
     </header>
     ${known}
-    <p class="muted small">${esc(f.blurb)}${isOneClick(s.config.quote_signer) ? "" : ` ${esc(TEST_SIGNER_WORDS)}`}</p>
-    <div class="fund-grid">
-      <div class="kv"><span>The fund holds</span><b>${s.held.map(([t, v]: [string, string]) => esc(fmt(t, v))).join("<br/>")}</b></div>
-      <div class="kv"><span>${total > 0n ? `${unitLabel} ${unit === 1n ? "share holds" : "shares hold"}` : "Shares"}</span><b>${total > 0n ? unitParts.filter(([, v]) => v > 0n).map(([t, v]) => esc(fmt(t, v))).join("<br/>") || "nothing yet" : "none issued yet"}</b></div>
-      <div class="kv"><span>Shares issued</span><b>${esc(units(total, sd, 6))}</b><em>A share is a claim on a slice of everything the fund holds. One was issued per ${esc(baseSym)} paid in at launch.</em></div>
-      <div class="kv"><span>Trades · refused</span><b>${nTrades} · ${nRef}</b><em>Trades the fund sent, and proposals it refused.</em></div>
-    </div>
-    ${usdLine}
-    <div class="facts">
-      <p class="small"><b>Rules, fixed at launch.</b> ${esc(rulesText(s))}</p>
-      <p class="small">The most trading can cost a holding in one day: <b>${esc(pctOf(worstDay(s)))}</b>.</p>
-      <p class="small">Running costs: ${tradesLeft > 0n ? `about <b>${esc(tradesLeft.toLocaleString("en"))}</b> more trades' worth of NEAR.` : `<b>no NEAR left</b> for new trades. Exits still work.`}</p>
-    </div>
-    ${history("Recent trades", shownT.map((t) => tradeRow(t, tokens)).join(""), shownT.length, nTrades, "trades", 4)}
-    ${history("Refused on chain", shownR.map((r) => `<div class="row"><span class="tag no">refused</span><span class="small">${esc(humanReason(String(r.reason)))}</span><span class="muted small">${ago(Number(r.at))}</span></div>`).join(""), shownR.length, nRef, "refusals", 3)}
+    <p class="blurb">${esc(f.blurb)}${isOneClick(s.config.quote_signer) ? "" : ` ${esc(TEST_SIGNER_WORDS)}`}</p>
+    <section class="fund-sec" aria-label="What the fund holds">
+      <div class="fund-grid">
+        <div class="kv big"><span>The fund holds</span><b>${s.held.map(([t, v]: [string, string]) => `<span>${esc(fmt(t, v))}</span>`).join("")}</b></div>
+        <div class="kv big"><span>${esc(holdsLabel)}</span><b>${holdsValue}</b></div>
+      </div>
+      ${usdLine}
+    </section>
     ${relayNote}
     ${strategyBlock(f, s, me)}
-    <div class="you">
+    <section class="you fund-sec" aria-label="Your part">
       ${you}
       <p class="status small" role="status">${esc(f.msg)}${f.msgTx ? ` <a href="${explorer(NET, f.msgTx)}" target="_blank" rel="noopener">View transaction ↗</a>` : ""}</p>
-    </div>
+    </section>
+    <details class="fund-more" ${f.ui.details ? "open" : ""}>
+      <summary><span class="sum-t">Details</span><span class="sum-d">Rules, costs and history · ${esc(summaryBits)}</span></summary>
+      <div class="fund-more-in">
+        <div class="fund-grid">
+          <div class="kv"><span>Shares issued</span><b>${esc(units(total, sd, 6))}</b><em>A share is a claim on a slice of everything the fund holds. One was issued per ${esc(baseSym)} paid in at launch.</em></div>
+          <div class="kv"><span>Trades · refused</span><b>${nTrades} · ${nRef}</b><em>Trades the fund sent, and proposals it refused.</em></div>
+        </div>
+        <div class="facts">
+          <h4 class="group-h">Rules, fixed at launch</h4>
+          <p>${esc(rulesText(s))}</p>
+          <p>The most trading can cost a holding in one day: <b>${esc(pctOf(worstDay(s)))}</b>.</p>
+          <p>Running costs: ${tradesLeft > 0n ? `about <b>${esc(tradesLeft.toLocaleString("en"))}</b> more trades' worth of NEAR.` : `<b>no NEAR left</b> for new trades. Exits still work.`}</p>
+        </div>
+        ${history("Recent trades", shownT.map((t) => tradeRow(t, tokens)).join(""), shownT.length, nTrades, "trades", 4)}
+        ${history("Refused on chain", shownR.map((r) => `<div class="row"><span class="tag no">refused</span><span>${esc(humanReason(String(r.reason)))}</span><span class="muted small">${ago(Number(r.at))}</span></div>`).join(""), shownR.length, nRef, "refusals", 3)}
+      </div>
+    </details>
     <footer class="fund-f"><a class="link" href="${esc(shareUrl(f.id))}" data-act="share">Share this fund</a><a class="link" href="#verify" data-act="verify">Verify it</a></footer>`;
 }
 
@@ -815,7 +831,7 @@ export async function mountApp(opt: AppOptions): Promise<App> {
     const root = group === "legacy" ? rootLegacy : rootNew;
     if (where === "start") root.prepend(el);
     else root.appendChild(el);
-    const c: FundCard = { ...def, group, el, trades: [], rejections: [], mine: null, balances: null, relay: null, msg: "", msgTx: "", busy: false, ui: { joinAmt: "10", exitAmt: "", kindAmt: "", kindMode: "base", kindOpen: false, tradesShown: 0, refusalsShown: 0, steps: [] } };
+    const c: FundCard = { ...def, group, el, trades: [], rejections: [], mine: null, balances: null, relay: null, msg: "", msgTx: "", busy: false, ui: { joinAmt: "10", exitAmt: "", kindAmt: "", kindMode: "base", kindOpen: false, tradesShown: 0, refusalsShown: 0, details: false, steps: [] } };
     cards.push(c);
     el.addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
@@ -857,6 +873,10 @@ export async function mountApp(opt: AppOptions): Promise<App> {
       }
     };
     el.addEventListener("input", onInput);
+    // "toggle" does not bubble: listen while it travels down to the details element.
+    el.addEventListener("toggle", (e) => {
+      if ((e.target as HTMLElement).classList?.contains("fund-more")) c.ui.details = (e.target as HTMLDetailsElement).open;
+    }, true);
     el.addEventListener("change", onInput);
     return c;
   }
