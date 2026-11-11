@@ -32,14 +32,31 @@ const codeLike = () =>
     .filter((e) => e.children.length === 0 && !["SCRIPT", "STYLE", "OPTION"].includes(e.tagName))
     .filter((e) => /[{}]|"action"|\d{8,}|0x[0-9a-f]{10}|\bbps\b|\b[a-z]+_[a-z_]+\b|[a-z_]+\(\)|\b[1-9A-HJ-NP-Za-km-z]{30,}\b|\b[0-9a-f]{40,}\b|TGas|yocto/.test(e.textContent || ""))
     .map((e) => (e.textContent || "").slice(0, 60));
+// A rate-limited RPC node answers 429 without CORS headers; the browser logs that as a failed fetch
+// and the page retries it. That is the node's weather, not a bug in the page: everything else fails.
+const RPC_HOST = /rpc\.(testnet|mainnet)\.fastnear\.com/;
+const rpcWeather = (text) => RPC_HOST.test(text) && /fetch|CORS|Access-Control|429|Too Many Requests|ERR_FAILED|Failed to load resource/i.test(text);
 const watch = (page) => {
   const errors = [];
   page.on("console", (m) => {
-    if (m.type() === "error") errors.push(m.text());
+    if (m.type() === "error" && !rpcWeather(m.text())) errors.push(m.text());
   });
-  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("pageerror", (e) => {
+    if (!rpcWeather(e.message)) errors.push(e.message);
+  });
   return errors;
 };
+/** Poll a condition for up to `ms`, so a slow runner gets the same answer as a fast one. */
+async function settle(fn, ms = 10000) {
+  const until = Date.now() + ms;
+  let last;
+  while (Date.now() < until) {
+    last = await fn();
+    if (last.ok) return last;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return last;
+}
 const overflow = (page) => page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
 
 for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
@@ -184,9 +201,12 @@ for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   check((await deep.inputValue("#fund-id")) === target, `${name}: ?fund= prefills the verifier`);
   check((await deep.locator(".fund.focus h3 a").getAttribute("title").catch(() => "")) === target, `${name}: ?fund= highlights that fund's card`);
   check(await deep.locator("#funds-legacy-wrap").evaluate((d) => d.open), `${name}: ?fund= opens the earlier group the fund is in`);
-  await deep.waitForTimeout(400);
-  const top = await deep.locator(".fund.focus").evaluate((e) => e.getBoundingClientRect().top).catch(() => 9999);
-  check(top > -50 && top < h, `${name}: ?fund= scrolls to the card (top at ${Math.round(top)}px)`);
+  // Cards above the linked one keep growing as the chain answers, so the page re-scrolls for a while.
+  const scrolled = await settle(async () => {
+    const top = await deep.locator(".fund.focus").evaluate((e) => e.getBoundingClientRect().top).catch(() => 9999);
+    return { ok: top > -50 && top < h, top };
+  });
+  check(scrolled.ok, `${name}: ?fund= scrolls to the card (top at ${Math.round(scrolled.top)}px)`);
   const href = await deep.locator(".fund.focus [data-act=share]").getAttribute("href").catch(() => "");
   check(href.endsWith(`?fund=${target}`) || href.endsWith(`/f/${target}`), `${name}: the Share link points back to this fund`);
   check((await overflow(deep)) <= 0, `${name}: no horizontal overflow on the deep link`);

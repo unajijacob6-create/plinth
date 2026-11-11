@@ -62,8 +62,10 @@ export async function rpc<T = any>(net: Net, method: string, params: unknown): P
     try {
       res = await fetch(RPC[net], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
     } catch {
-      if (attempt < 2) {
-        await new Promise((r) => setTimeout(r, 600 * 2 ** attempt));
+      // A rate-limited node answers 429 without CORS headers, which the browser reports as a failed
+      // fetch (a TypeError), not as a status: back off and retry it like a 429.
+      if (attempt < 4) {
+        await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
         continue;
       }
       throw new RpcError("NETWORK", "the network could not be reached");

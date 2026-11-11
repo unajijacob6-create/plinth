@@ -881,10 +881,21 @@ export async function mountApp(opt: AppOptions): Promise<App> {
     return added;
   }
 
+  // Scrolling to a card once is not enough: cards above it keep growing as the chain answers.
+  // Keep it in view for a few seconds, unless the reader has started scrolling themselves.
+  let userScrolled = false;
+  for (const ev of ["wheel", "touchstart", "keydown"]) window.addEventListener(ev, () => (userScrolled = true), { passive: true });
   function focusCard(c: FundCard) {
     if (c.group === "legacy") legacyWrap.open = true;
     cards.forEach((x) => x.el.classList.toggle("focus", x === c));
-    c.el.scrollIntoView({ block: "start", behavior: "auto" });
+    userScrolled = false;
+    const start = Date.now();
+    const keep = () => {
+      if (userScrolled || Date.now() - start > 10_000) return;
+      c.el.scrollIntoView({ block: "start", behavior: "auto" });
+      setTimeout(keep, 400);
+    };
+    keep();
   }
 
   // ---- first paint: skeletons for everything we know about, then the chain fills them in
