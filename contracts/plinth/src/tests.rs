@@ -3797,19 +3797,19 @@ fn v3_a_second_abandon_never_shortens_the_join_block() {
 }
 
 #[test]
-fn v3_rewrapping_is_tracked_from_dispatch_to_callback_on_every_path() {
+fn v3_a_rewrap_is_tracked_from_dispatch_to_callback_on_every_path() {
     // on_staked failure -> rewrap -> on_rewrapped (ok).
     let mut f = staking_fund(0);
     assert!(stake(&mut f, FIVE, CLOSE + 20));
-    assert_eq!(f.rewrapping, 0);
+    assert_eq!(f.rewrap_started, 0);
     unwrapped(&mut f, 0, CLOSE + 21);
     staked(&mut f, 0, None, CLOSE + 22);
-    assert_eq!((f.rewrapping, f.near_in_flight), (FIVE, 0));
+    assert_eq!((f.rewrap_started, f.near_in_flight), (CLOSE + 22, 0));
     assert_eq!(f.get_fund().pending.unwrap().status, TradeStatus::Sending, "the legitimate chain is not a late callback");
     set_with_results(CLOSE + 23, vec![PromiseResult::Successful(vec![])]);
     f.on_rewrapped(0, U128(FIVE));
     assert!(!get_logs().iter().any(|l| l.contains("late callback")));
-    assert_eq!((f.rewrapping, held(&f, 1), trade(&f, 0).status), (0, WNEAR_20, TradeStatus::Failed));
+    assert_eq!((f.rewrap_started, held(&f, 1), trade(&f, 0).status), (0, WNEAR_20, TradeStatus::Failed));
     assert!(f.get_fund().pending.is_none());
     // on_unwrapped without a price -> rewrap -> on_rewrapped (fails) -> stranded -> rewrap_stranded.
     let mut g = staking_fund(0);
@@ -3817,29 +3817,29 @@ fn v3_rewrapping_is_tracked_from_dispatch_to_callback_on_every_path() {
     set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
     g.on_unwrapped(0);
     assert!(!get_logs().iter().any(|l| l.contains("late callback")));
-    assert_eq!((g.rewrapping, g.near_in_flight), (FIVE, 0));
+    assert_eq!((g.rewrap_started, g.near_in_flight), (CLOSE + 21, 0));
     set_with_results(CLOSE + 22, vec![PromiseResult::Failed]);
     g.on_rewrapped(0, U128(FIVE));
     assert!(!get_logs().iter().any(|l| l.contains("late callback")));
-    assert_eq!((g.rewrapping, g.get_fund().stranded_near.0, trade(&g, 0).status), (0, FIVE, TradeStatus::Failed));
+    assert_eq!((g.rewrap_started, g.get_fund().stranded_near.0, trade(&g, 0).status), (0, FIVE, TradeStatus::Failed));
     with_balance(ANYONE, CLOSE + 30, 20_000);
     g.rewrap_stranded();
-    assert_eq!((g.rewrapping, g.get_fund().stranded_near.0), (FIVE, 0));
+    assert_eq!((g.rewrap_started, g.get_fund().stranded_near.0), (CLOSE + 30, 0));
     // The retry fails: stranded again, nothing in flight.
     set_with_results(CLOSE + 31, vec![PromiseResult::Failed]);
     g.on_rewrapped(u64::MAX, U128(FIVE));
-    assert_eq!((g.rewrapping, g.get_fund().stranded_near.0, held(&g, 1)), (0, FIVE, 15 * 10u128.pow(24)));
+    assert_eq!((g.rewrap_started, g.get_fund().stranded_near.0, held(&g, 1)), (0, FIVE, 15 * 10u128.pow(24)));
     with_balance(ANYONE, CLOSE + 32, 20_000);
     g.rewrap_stranded();
     set_with_results(CLOSE + 33, vec![PromiseResult::Successful(vec![])]);
     g.on_rewrapped(u64::MAX, U128(FIVE));
-    assert_eq!((g.rewrapping, g.get_fund().stranded_near.0, held(&g, 1)), (0, 0, WNEAR_20));
+    assert_eq!((g.rewrap_started, g.get_fund().stranded_near.0, held(&g, 1)), (0, 0, WNEAR_20));
     // A failed unwrap never starts a re-wrap.
     let mut h = staking_fund(0);
     assert!(stake(&mut h, FIVE, CLOSE + 20));
     set_with_results(CLOSE + 21, vec![PromiseResult::Failed, PromiseResult::Failed]);
     h.on_unwrapped(0);
-    assert_eq!(h.rewrapping, 0);
+    assert_eq!(h.rewrap_started, 0);
 }
 
 #[test]
@@ -3861,14 +3861,14 @@ fn v3_settle_refund_waits_while_near_is_being_wrapped_back() {
     assert!(panics(|| f.settle_refund(0)).contains("another trade is being sent"));
     set_with_results(at + 4, vec![PromiseResult::Failed]);
     f.on_rewrapped(1, U128(three));
-    assert_eq!((f.rewrapping, f.get_fund().stranded_near.0), (0, three));
+    assert_eq!((f.rewrap_started, f.get_fund().stranded_near.0), (0, three));
     assert!(f.get_fund().pending.is_none());
     // Stranded but nothing moving: the refund check may run.
     let stale = request_refund(&mut f, 0, at + 5);
     // Someone starts the retry: the wNEAR balance is about to grow by 3, which is not a refund.
     with_balance(ANYONE, at + 6, 20_000);
     f.rewrap_stranded();
-    assert_eq!(f.rewrapping, three);
+    assert_eq!(f.rewrap_started, at + 6);
     set(ANYONE, at + 7);
     assert!(panics(|| f.settle_refund(0)).contains("another trade is being sent"));
     // 12 wNEAR held; the read saw 12 + 3 re-wrapped. Neither the stale nor a current flux counts it.
@@ -3879,16 +3879,16 @@ fn v3_settle_refund_waits_while_near_is_being_wrapped_back() {
     // The re-wrap lands: 15 wNEAR held, and the check works again against the honest balance.
     set_with_results(at + 8, vec![PromiseResult::Successful(vec![])]);
     f.on_rewrapped(u64::MAX, U128(three));
-    assert_eq!((f.rewrapping, held(&f, 1)), (0, 15 * 10u128.pow(24)));
+    assert_eq!((f.rewrap_started, held(&f, 1)), (0, 15 * 10u128.pow(24)));
     let flux = request_refund(&mut f, 0, at + 9);
     assert_eq!(refund_cb(&mut f, 0, flux, 15 * 10u128.pow(24), at + 10), TradeStatus::Abandoned, "no refund there");
     assert_eq!(refund_cb(&mut f, 0, flux, 15 * 10u128.pow(24) + FIVE - 4_500, at + 10), TradeStatus::Refunded);
 }
 
 /// Everything a late callback could disturb.
-fn snapshot(f: &Plinth) -> (Vec<u128>, Option<u64>, Vec<Trade>, u128, u128, u128, u64, u128) {
+fn snapshot(f: &Plinth) -> (Vec<u128>, Option<u64>, Vec<Trade>, u128, u128, u64, u64, u128) {
     let v = f.get_fund();
-    (v.held.iter().map(|h| h.1 .0).collect(), v.pending.map(|t| t.id), f.get_trades(0, u64::MAX), f.near_in_flight, v.stranded_near.0, f.rewrapping, v.last_trade_at, v.total_shares.0)
+    (v.held.iter().map(|h| h.1 .0).collect(), v.pending.map(|t| t.id), f.get_trades(0, u64::MAX), f.near_in_flight, v.stranded_near.0, f.rewrap_started, v.last_trade_at, v.total_shares.0)
 }
 
 #[test]
@@ -4063,36 +4063,109 @@ fn v3_fee_accrual_skips_instead_of_overflowing() {
     assert_eq!(g.get_fund().operator_shares.0, v.operator_shares.0);
 }
 
-// ------------------------------------------------------------------ v3: suspected contract bugs (pass 3)
+// ------------------------------------------------------------------ v3: a lost re-wrap callback
 
-/// BUG 9 (low probability, permanent). `rewrapping` is reduced only in `on_rewrapped`
-/// (lib.rs ~918). If that callback never completes (the case `recover_stuck_stake` exists for: a
-/// callback out of gas), nothing ever reduces it: `recover_stuck_stake` closes the stake but leaves
-/// `rewrapping` at the stake's amount. From then on `join_in_kind` (lib.rs ~651) and every
-/// `settle_refund` (`refundable`, lib.rs ~1265) are refused for good, with no permissionless exit.
-/// The same holds for a `rewrap_stranded` retry whose `on_rewrapped` is lost.
-///
-/// Scenario: a 5 NEAR stake, no price -> re-wrap dispatched, `on_rewrapped` never runs. A day
-/// later anyone calls `recover_stuck_stake`. Expected: `rewrapping` is back to 0 (the recovery
-/// already decides from the balance whether the NEAR is there), so refunds and joins work.
-/// Actual: `rewrapping` stays 5 NEAR; a later trade's refund can never be counted.
+/// Was BUG 9: a re-wrap whose `on_rewrapped` never ran blocked `settle_refund` and `join_in_kind`
+/// for good. Now a re-wrap counts as in flight for at most an hour (REWRAP_WAIT_SECONDS).
 #[test]
-#[ignore = "contract bug: rewrapping stays non-zero for ever when on_rewrapped is lost; blocks settle_refund and joins"]
 fn v3_bug_a_lost_on_rewrapped_must_not_block_refunds_and_joins_for_ever() {
     let mut f = staking_fund(0);
     with_balance(OPERATOR, CLOSE + 20, 20_000);
     assert!(f.stake_idle(U128(FIVE)));
     set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
     f.on_unwrapped(0); // re-wrap dispatched; its callback is lost
-    assert_eq!(f.rewrapping, FIVE);
+    assert_eq!(f.rewrap_started, CLOSE + 21);
     with_balance(ANYONE, DAY_AFTER_STAKE, 20_000);
     f.recover_stuck_stake();
     assert!(f.get_fund().pending.is_none());
-    // Trading goes on: a swap is sent and 1Click refunds it.
+    // Trading goes on: a swap is sent and 1Click refunds it. The refund is counted.
     let now = DAY_AFTER_STAKE + 10;
     assert!(propose(&mut f, &Q { issued: now - 5, deadline: now + 86_400, ..Default::default() }, now));
     ok_sent(&mut f, 1, now + 1);
-    set(ANYONE, now + REFUND_WAIT_SECONDS);
-    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.settle_refund(1))).is_err();
-    assert!(!refused && f.rewrapping == 0, "rewrapping is still {} a day after the stake was closed: no refund can ever be counted", f.rewrapping);
+    let flux = request_refund(&mut f, 1, now + REFUND_WAIT_SECONDS);
+    assert_eq!(refund_cb(&mut f, 1, flux, 90_000_000 + REFUND, now + REFUND_WAIT_SECONDS + 1), TradeStatus::Refunded);
+}
+
+#[test]
+fn v3_a_lost_rewrap_retry_delays_refunds_and_joins_by_an_hour_at_most() {
+    // Open-ended staking fund, 5 NEAR stranded, plus a written-off swap that can still be refunded
+    // would need a week; a join is enough to watch the guard.
+    let mut f = stranded_fund();
+    let start = CLOSE + 100;
+    fill_basket(&mut f, CAROL, 10_000_000, 2 * 10u128.pow(24), start);
+    with_balance(ANYONE, start, 20_000);
+    f.rewrap_stranded(); // its on_rewrapped never runs
+    assert_eq!((f.rewrap_started, f.get_fund().stranded_near.0), (start, 0));
+    for now in [start, start + 1, start + 3_600] {
+        set(CAROL, now);
+        assert!(panics(|| f.join_in_kind(U128(0))).contains("NEAR from a failed stake is being wrapped back"), "{now}");
+    }
+    // An hour and a second later the re-wrap is taken as lost and joins work again.
+    assert!(join(&mut f, CAROL, 0, start + 3_601) > 0);
+    // The same for the refund check, on a swap sent after the lost re-wrap started.
+    let mut g = staking_fund(0);
+    assert!(stake(&mut g, FIVE, CLOSE + 20));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
+    g.on_unwrapped(0);
+    set_with_results(CLOSE + 22, vec![PromiseResult::Failed]);
+    g.on_rewrapped(0, U128(FIVE)); // stranded
+    let now = CLOSE + 20 + 700;
+    let q = Q { issued: now - 5, deadline: now + 86_400, ..Default::default() };
+    // (20 NEAR in the account: the 5 stranded are not free NEAR.)
+    with_balance(OPERATOR, now, 20_000);
+    assert!(g.propose_trade(quote_json(&q, 1)));
+    ok_sent(&mut g, 1, now + 1);
+    let retry = now + REFUND_WAIT_SECONDS; // the swap may be checked from here on
+    with_balance(ANYONE, retry, 20_000);
+    g.rewrap_stranded(); // callback lost
+    for t in [retry, retry + 3_600] {
+        set(ANYONE, t);
+        assert!(panics(|| g.settle_refund(1)).contains("another trade is being sent"), "{t}");
+        assert_eq!(refund_now(&mut g, 1, 90_000_000 + REFUND, t), TradeStatus::Sent, "{t}");
+    }
+    let flux = request_refund(&mut g, 1, retry + 3_601);
+    assert_eq!(refund_cb(&mut g, 1, flux, 90_000_000 + REFUND, retry + 3_602), TradeStatus::Refunded);
+}
+
+// ------------------------------------------------------------------ v3: suspected contract bugs (pass 4)
+
+/// BUG 10 (low; narrow timing). There is ONE `rewrap_started` for two re-wraps that can be in
+/// flight together: a stake's own (`rewrap`, lib.rs ~911) and a `rewrap_stranded` retry of NEAR
+/// stranded earlier (lib.rs ~953). Whichever `on_rewrapped` lands first sets it to 0
+/// (lib.rs ~925 / ~932) while the other near_deposit is still on its way, so `rewrap_in_flight()`
+/// is false with wNEAR about to be added to holdings: the BUG 5 window again.
+///
+/// Scenario: 5 NEAR stranded from an earlier stake. A second stake (3 NEAR) fails and its re-wrap
+/// is dispatched. Mallory calls `rewrap_stranded` right then. The stake's `on_rewrapped` lands
+/// first: stake Failed, nothing pending, `rewrap_started = 0`, the retry's 5 wNEAR not yet
+/// counted. Mallory joins with 100 USDC + 15 wNEAR (half the fund); the retry lands (+5 wNEAR);
+/// she redeems 17.5 wNEAR. Expected: the join is refused until the retry has resolved.
+#[test]
+#[ignore = "contract bug: one rewrap_started for two overlapping re-wraps; the first callback clears the guard for the second"]
+fn v3_bug_overlapping_rewraps_must_both_keep_joins_closed() {
+    let mut f = stranded_fund(); // 100 USDC, 15 wNEAR, 5 NEAR stranded
+    let three = 3 * 10u128.pow(24);
+    let now = CLOSE + 20 + 700;
+    with_balance(OPERATOR, now, 20_000); // the 5 stranded NEAR are not free NEAR
+    assert!(f.stake_idle(U128(three)));
+    set_with_results(now + 1, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
+    f.on_unwrapped(1); // no price: the stake's 3 NEAR are being wrapped back
+    let wnear_in = 15 * 10u128.pow(24);
+    fill_basket(&mut f, "mallory.test.near", 100_000_000, wnear_in, now + 1);
+    with_balance("mallory.test.near", now + 2, 20_000);
+    f.rewrap_stranded(); // the earlier 5 NEAR are being wrapped too
+    set_with_results(now + 3, vec![PromiseResult::Successful(vec![])]);
+    f.on_rewrapped(1, U128(three)); // the stake's lands first: 15 wNEAR held, nothing pending
+    assert_eq!((held(&f, 1), f.get_fund().stranded_near.0), (wnear_in, 0));
+    set("mallory.test.near", now + 3);
+    let joined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.join_in_kind(U128(0)))).is_ok();
+    set_with_results(now + 4, vec![PromiseResult::Successful(vec![])]);
+    f.on_rewrapped(u64::MAX, U128(FIVE));
+    if joined {
+        let shares = f.get_shares(acct("mallory.test.near")).0;
+        set("mallory.test.near", now + 5);
+        f.redeem(U128(shares));
+        let out = f.get_fund().in_flight_payouts[1].0;
+        assert!(out <= wnear_in, "Mallory put in {wnear_in} wNEAR and took out {out}");
+    }
 }

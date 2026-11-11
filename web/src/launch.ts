@@ -30,7 +30,9 @@ export interface StrategyFile {
   quote_signer: string;
 }
 // Read only if the file exists: the page must build and work without it.
-const found = Object.values(import.meta.glob("../../data/strategy-testnet.json", { eager: true, import: "default" }))[0] as any;
+const file = Object.values(import.meta.glob("../../data/strategy-testnet.json", { eager: true, import: "default" }))[0] as any;
+// The file keeps the mandate's strategy object under `strategy`, with the stand-in signer beside it.
+const found = file && typeof file.strategy === "object" && file.strategy ? { ...file.strategy, quote_signer: file.quote_signer } : file;
 /** The same checks the contract makes on a strategy, so a bad file disables the option instead of failing a launch. */
 const strategyValid = (x: any): x is StrategyFile =>
   !!x &&

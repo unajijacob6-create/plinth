@@ -391,7 +391,7 @@ pub struct Plinth {
     basket_total: Vec<u128>,
     /// When the strategy run in flight was requested (0 = none).
     strategy_started: u64,
-    /// When NEAR was last sent back into wNEAR (`near_deposit`) with the result not in yet; 0 = none.
+    /// When `rewrap_stranded` last sent NEAR back into wNEAR with the result not in yet; 0 = none.
     /// A time, not an amount: if the callback is ever lost, the wait it causes ends by itself.
     rewrap_started: u64,
     /// In-kind joins wait until this time: an abandoned trade can still be refunded or delivered
@@ -908,7 +908,8 @@ impl Plinth {
         let wrap = self.config.mandate.tokens[t.sell as usize].clone();
         let p = call(&wrap, "near_deposit", json!({}), t.amount_in.0, GAS_WRAP);
         then_self(p, "on_rewrapped", json!({"trade_id": trade_id, "amount": t.amount_in}), GAS_CALLBACK);
-        self.rewrap_started = now_seconds();
+        // No re-wrap marker here: the stake stays pending and `Sending` until `on_rewrapped`, which
+        // already keeps joins and refund checks closed.
         self.near_in_flight = 0;
     }
 
@@ -922,7 +923,6 @@ impl Plinth {
             if !self.still_sending(&t) {
                 return;
             }
-            self.rewrap_started = 0;
             t.status = TradeStatus::Failed;
             t.closed_at = Some(now_seconds());
             self.pending = None;
@@ -946,6 +946,7 @@ impl Plinth {
     /// Anyone. Wrap NEAR left over from a failed stake back into wNEAR, as fund holdings.
     pub fn rewrap_stranded(&mut self) {
         require!(self.stranded_near > 0, "nothing stranded");
+        require!(!self.rewrap_in_flight(), "a re-wrap is already on its way; try again shortly");
         let amount = self.stranded_near;
         // free_near() already excludes the stranded NEAR: what is left must still cover the reserve.
         require!(self.free_near() >= NEAR_RESERVE, "the stranded NEAR is not in the account");
