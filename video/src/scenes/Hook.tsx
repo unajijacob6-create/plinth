@@ -118,7 +118,7 @@ export const NoKeys: React.FC = () => {
         {(() => {
           const y = L(560, 610);
           const xs = L([330, 960, 1590], [200, 540, 880]);
-          const w = L(440, 300);
+          const w = L(470, 310);
           return (
             <>
               <Edge a={[xs[0] + w / 2 - 10, y]} b={[xs[1] - w / 2 + 10, y]} at={tPub - 0.3} dur={0.5} color={C.cyan} particles={{ at: tPub, n: 3, every: 0.4, travel: 0.7 }} />
@@ -144,9 +144,9 @@ export const NoKeys: React.FC = () => {
               <Testnet at={tCheck + 0.35} out={dur - 0.3} />
             </div>
             <BrowserFrame
-              src="rec/verify-02.png" imgW={2128} at={tCheck} out={dur - 0.3} width={L(1400, 980)} viewH={L(700, 640)}
-              reveal={[tCheck + 0.3, tCheck + 1.4]} zoom={[tCheck + 0.8, dur, 1, 1.12]} scroll={[tCheck + 1.0, dur, 0, 220]} tilt={[-8, -2]}
-              style={{ marginTop: L(60, 40) }}
+              src="rec/verify-02.png" imgW={2128} at={tCheck} out={dur - 0.3} width={L(1400, 980)} viewH={L(600, 600)}
+              reveal={[tCheck + 0.3, tCheck + 1.4]} zoom={[tCheck + 0.9, dur, 1, 1.4]} scroll={[tCheck + 1.0, dur, 0, 160]} tilt={[-8, -2]}
+              style={{ marginTop: L(-40, -20) }}
             />
           </>
         ) : null}
@@ -161,9 +161,9 @@ export const NodeBox: React.FC<{ x: number; y: number; w: number; at: number; ti
   const { L } = useLayout();
   return (
     <div style={{ position: 'absolute', left: x, top: y, width: w, transform: `translate(-50%, -50%) scale(${0.75 + 0.25 * p})`, opacity: env }}>
-      <Panel glow={accent} style={{ padding: '22px 20px', textAlign: 'center' }}>
-        <div style={{ fontFamily: FONT, fontWeight: 800, fontSize: titleSize ?? L(36, 30), color: C.ink, lineHeight: 1.15 }}>{title}</div>
-        {sub ? <div style={{ fontFamily: FONT, fontWeight: 500, fontSize: L(24, 21), color: C.ink2, marginTop: 6 }}>{sub}</div> : null}
+      <Panel glow={accent} style={{ padding: '26px 22px', textAlign: 'center' }}>
+        <div style={{ fontFamily: FONT, fontWeight: 800, fontSize: titleSize ?? L(44, 34), color: C.ink, lineHeight: 1.15 }}>{title}</div>
+        {sub ? <div style={{ fontFamily: FONT, fontWeight: 500, fontSize: L(28, 23), color: C.ink2, marginTop: 6 }}>{sub}</div> : null}
       </Panel>
     </div>
   );

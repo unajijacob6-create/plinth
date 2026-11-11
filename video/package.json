@@ -5,9 +5,12 @@
   "description": "Plinth hackathon demo video, rendered from code with Remotion",
   "scripts": {
     "studio": "remotion studio",
-    "render": "remotion render PlinthX out/plinth-x.mp4",
-    "render:square": "remotion render PlinthSquare out/plinth-x-square.mp4",
-    "poster": "remotion still PlinthX out/poster.png --frame=2450"
+    "record": "node tools/record.cjs",
+    "draft": "remotion render PlinthX out/draft.mp4 --scale=0.5",
+    "render": "remotion render PlinthX out/render-x.mp4 && bash tools/finalize.sh out/render-x.mp4 out/plinth-x.mp4 && rm out/render-x.mp4",
+    "render:square": "remotion render PlinthSquare out/render-sq.mp4 && bash tools/finalize.sh out/render-sq.mp4 out/plinth-x-square.mp4 && rm out/render-sq.mp4",
+    "poster": "remotion still PlinthX out/poster.png --frame=2595",
+    "typecheck": "tsc -p ."
   },
   "dependencies": {
     "@remotion/cli": "4.0.543",

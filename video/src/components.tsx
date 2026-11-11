@@ -78,7 +78,8 @@ export const Words: React.FC<WordsProps> = ({
           {line.split(' ').map((w, wi) => {
             const idx = k++;
             const p = sprAt(frame, fps, at + idx * stagger, { damping: 20, stiffness: 140 });
-            const isGrad = grad === true || (Array.isArray(grad) && grad.includes(w.replace(/[.,]/g, '')));
+            const cw = w.replace(/[.,]/g, '');
+            const isGrad = grad === true || (Array.isArray(grad) && grad.some((x) => x.replace(/[.,]/g, '') === cw));
             return (
               <span key={wi} style={{ display: 'inline-block', overflow: 'hidden', verticalAlign: 'top', padding: '0.04em 0.02em 0.12em', margin: '-0.04em 0 -0.12em' }}>
                 <span
@@ -86,7 +87,7 @@ export const Words: React.FC<WordsProps> = ({
                     display: 'inline-block',
                     transform: `translateY(${(1 - p) * 105 - outP * 105}%)`,
                     opacity: Math.min(1, p * 1.4) * (1 - outP),
-                    ...(hi && hi.includes(w.replace(/[.,]/g, '')) ? { color: hiColor } : {}),
+                    ...(hi && hi.some((x) => x.replace(/[.,]/g, '') === cw) ? { color: hiColor } : {}),
                     ...(isGrad ? { background: GRAD, WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' } : {}),
                   }}
                 >
@@ -102,7 +103,7 @@ export const Words: React.FC<WordsProps> = ({
   );
 };
 
-export const Eyebrow: React.FC<{ text: string; at: number; out?: number; color?: string; style?: React.CSSProperties; size?: number }> = ({ text, at, out, color = C.cyan, style, size = 26 }) => {
+export const Eyebrow: React.FC<{ text: string; at: number; out?: number; color?: string; style?: React.CSSProperties; size?: number }> = ({ text, at, out, color = C.cyan, style, size = 30 }) => {
   const t = useT();
   const env = useEnv(at, out);
   const wipe = lerp(t, at, at + 0.6);
@@ -132,7 +133,7 @@ export const Chip: React.FC<{ children: React.ReactNode; at: number; out?: numbe
 
 /** The "testnet" marker shown wherever a result is on screen. */
 export const Testnet: React.FC<{ at: number; out?: number; style?: React.CSSProperties; label?: string }> = ({ at, out, style, label = 'NEAR testnet' }) => (
-  <Chip at={at} out={out} color={C.warn} size={22} style={style}>
+  <Chip at={at} out={out} color={C.warn} size={26} style={style}>
     <span style={{ width: 10, height: 10, borderRadius: 99, background: C.warn, display: 'inline-block' }} />
     {label}
   </Chip>
@@ -299,8 +300,8 @@ export const BrowserFrame: React.FC<{
   scroll?: [number, number, number, number]; // [t0, t1, y0, y1] in image px
   zoom?: [number, number, number, number]; // [t0, t1, z0, z1]
   tilt?: [number, number]; // rotateY from -> to over the shot
-  url?: string; style?: React.CSSProperties; children?: React.ReactNode; reveal?: [number, number];
-}> = ({ src, at, out, width, viewH, imgW, scroll, zoom, tilt = [-10, -3], url = 'unajijacob6-create.github.io/plinth', style, children, reveal }) => {
+  url?: string; style?: React.CSSProperties; children?: React.ReactNode; reveal?: [number, number]; origin?: string;
+}> = ({ origin = '0% 0%', src, at, out, width, viewH, imgW, scroll, zoom, tilt = [-10, -3], url = 'unajijacob6-create.github.io/plinth', style, children, reveal }) => {
   const t = useT();
   const p = useSpring(at, { damping: 20, stiffness: 90 });
   const env = useEnv(at, out, 0.3);
@@ -325,7 +326,7 @@ export const BrowserFrame: React.FC<{
           </div>
         </div>
         <div style={{ height: viewH, overflow: 'hidden', position: 'relative' }}>
-          <div style={{ transform: `scale(${z})`, transformOrigin: '30% 0%', clipPath: `inset(0 0 ${100 - rv}% 0)` }}>
+          <div style={{ transform: `scale(${z})`, transformOrigin: origin, clipPath: `inset(0 0 ${100 - rv}% 0)` }}>
             <Img src={staticFile(src)} style={{ width, display: 'block', transform: `translateY(${-y * k}px)` }} />
           </div>
           {children}

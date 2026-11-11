@@ -42,7 +42,7 @@ const SFX: [string, number, number][] = (() => {
   out.push(['stamp', at('Refunds') - 0.3 + 2.1, 0.8]);
   out.push(['tick', at('rebalance'), 0.9]);
   out.push(['stamp', at('OutLayer') - 0.2 + 2.6, 0.8], ['deny', at('enclave', 1) - 0.2 + 1.2, 0.8]);
-  out.push(['stamp', at('Bob') - 0.9 + 2.2, 0.8]);
+  out.push(['stamp', at('Bob') - 0.9 + 1.8, 0.8]);
   out.push(['impact', at('Plinth', 1) - 0.15, 0.4]);
   return out;
 })();

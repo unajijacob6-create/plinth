@@ -12,12 +12,12 @@ export const Exit: React.FC = () => {
   const g = (x: number) => x - o;
   const tBob = g(at('Bob')) - 0.9;
   const dur = S.exit[1] - o;
-  const split = lerp(t, tBob + 0.9, tBob + 1.7, 0, 1, Easing.inOut(Easing.cubic));
+  const split = lerp(t, tBob + 0.6, tBob + 1.3, 0, 1, Easing.inOut(Easing.cubic));
   const tokens = [
     { name: 'pUSD', total: 89.9955, bob: 35.9982, dec: 4, color: C.blue },
     { name: 'wNEAR', total: 0.021, bob: 0.0084, dec: 4, color: C.cyan },
   ];
-  const barW = L(820, 620);
+  const barW = L(880, 620);
   return (
     <AbsoluteFill>
       {/* A: the live fund card, anyone can leave */}
@@ -32,18 +32,18 @@ export const Exit: React.FC = () => {
       {/* B: Bob's redemption, real amounts */}
       <AbsoluteFill style={{ opacity: useEnv(tBob, dur - 0.3, 0.3, 0.3) }}>
         <div style={{ position: 'absolute', top: L(70, 80), left: L(120, 70) }}>
-          <Words text="Bob redeems 40% of the shares." at={tBob} size={L(60, 48)} grad={['40%']} />
+          <Words text="Bob redeems 40% of the shares." at={tBob} size={L(72, 52)} grad={['40%']} />
         </div>
         <Testnet at={tBob + 0.2} style={{ position: 'absolute', right: L(120, 70), top: L(84, 170) }} />
         <div style={{ position: 'absolute', left: L(120, 70), top: L(250, 260), display: 'flex', flexDirection: 'column', gap: L(50, 40) }}>
           {tokens.map((tk, i) => (
             <div key={tk.name} style={{ opacity: useEnv(tBob + 0.2 + i * 0.15) }}>
-              <div style={{ fontFamily: FONT, fontWeight: 800, fontSize: 30, color: C.ink2, marginBottom: 12 }}>
+              <div style={{ fontFamily: FONT, fontWeight: 800, fontSize: 36, color: C.ink2, marginBottom: 12 }}>
                 Fund held {tk.total} {tk.name}
               </div>
               <div style={{ position: 'relative', width: barW, height: 70 }}>
                 <div style={{ position: 'absolute', left: 0, top: 0, height: 70, width: barW * 0.6 - 4, borderRadius: 12, background: `${tk.color}55`, border: `2px solid ${tk.color}` }} />
-                <div style={{ position: 'absolute', left: barW * 0.6 + split * L(160, 40), top: split * L(0, 0), height: 70, width: barW * 0.4, borderRadius: 12, background: tk.color, boxShadow: `0 0 ${40 * split}px ${tk.color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: FONT, fontWeight: 800, fontSize: 30, color: C.bg }}>
+                <div style={{ position: 'absolute', left: barW * 0.6 + split * L(60, 40), top: split * L(0, 0), height: 70, width: barW * 0.4, borderRadius: 12, background: tk.color, boxShadow: `0 0 ${40 * split}px ${tk.color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: FONT, fontWeight: 800, fontSize: 30, color: C.bg }}>
                   40%
                 </div>
               </div>
@@ -51,20 +51,20 @@ export const Exit: React.FC = () => {
           ))}
         </div>
         {/* Bob */}
-        <div style={{ position: 'absolute', left: L(1530, 120), top: L(250, 690), opacity: useEnv(tBob + 1.2), transform: `scale(${0.8 + 0.2 * useSpring(tBob + 1.2)})`, transformOrigin: 'left top' }}>
-          <Panel glow={C.ok} style={{ width: L(300, 840), padding: '24px 28px' }}>
-            <div style={{ fontFamily: FONT, fontWeight: 800, fontSize: 36, color: C.ink }}>Bob received</div>
+        <div style={{ position: 'absolute', left: L(1230, 70), top: L(300, 755), opacity: useEnv(tBob + 0.8), transform: `scale(${0.8 + 0.2 * useSpring(tBob + 0.8)})`, transformOrigin: 'left top' }}>
+          <Panel glow={C.ok} style={{ width: L(570, 840), padding: '30px 36px' }}>
+            <div style={{ fontFamily: FONT, fontWeight: 800, fontSize: 40, color: C.ink }}>Bob received</div>
             <div style={{ display: 'flex', flexDirection: L('column', 'row'), gap: L(4, 30), marginTop: 8 }}>
               {tokens.map((tk) => (
-                <div key={tk.name} style={{ fontFamily: FONT, fontWeight: 800, fontSize: 38, color: tk.color }}>
-                  <Counter to={tk.bob} at={tBob + 1.4} dur={1.0} decimals={tk.dec} /> <span style={{ fontSize: 26, color: C.ink2 }}>{tk.name}</span>
+                <div key={tk.name} style={{ fontFamily: FONT, fontWeight: 800, fontSize: L(64, 48), color: tk.color }}>
+                  <Counter to={tk.bob} at={tBob + 0.9} dur={0.8} decimals={tk.dec} /> <span style={{ fontSize: 32, color: C.ink2 }}>{tk.name}</span>
                 </div>
               ))}
             </div>
           </Panel>
         </div>
-        <div style={{ position: 'absolute', left: L(120, 70), top: L(700, sq ? 900 : 700), display: 'flex', gap: 24, alignItems: 'center' }}>
-          <Stamp at={tBob + 2.2} verdict="REDEEMED IN KIND" tx="D1a37KJz…" reason="40,000,000 of 100,000,000 shares → 40% of each holding" color={C.ok} size={L(0.72, 0.6)} rot={-2} maxWidth={L(1000, 940)} />
+        <div style={{ position: 'absolute', left: L(120, 70), top: L(700, 615), display: 'flex', gap: 24, alignItems: 'center' }}>
+          <Stamp at={tBob + 1.8} verdict="REDEEMED IN KIND" tx="D1a37KJz…" reason="40,000,000 of 100,000,000 shares → 40% of each holding" color={C.ok} size={L(0.9, 0.6)} rot={-2} maxWidth={L(1300, 940)} />
         </div>
       </AbsoluteFill>
     </AbsoluteFill>
