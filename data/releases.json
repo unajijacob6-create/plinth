@@ -22,14 +22,23 @@
     "image": "sourcescan/cargo-near:0.23.0-rust-1.99.1",
     "image_digest": "sha256:8013f039e8005627f10ae66b5519d1a6eeeed7d7aef4b5067d5e9a86c4302fcc",
     "command": "cargo near build reproducible-wasm --manifest-path contracts/plinth/Cargo.toml",
-    "bytes": 311012,
+    "bytes": 311122,
     "sha256_hex": "287f4b1d57df8a681123d243ba18f2ff153ecfd02526ffe5bd7ce8101b67b138"
    },
    "factory_code": {
     "sha256_base58": "5w3ozPKyriikxStn8roDb4DHmHT9fbNFgvSXpe17rsPE",
     "bytes": 160882
+   },
+   "published": {
+    "testnet": {
+     "tx": "3Mpr34HR8nkoMVxesjHje6qPRgkx1C5PZz9G9gBYsNwY",
+     "by": "plinthfund.testnet",
+     "at": "2026-11-11T12:58:18Z"
+    }
    }
   }
  },
- "factories": {}
+ "factories": {
+  "testnet": "funds.plinthfund.testnet"
+ }
 }
