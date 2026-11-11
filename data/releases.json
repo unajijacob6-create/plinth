@@ -12,6 +12,23 @@
    "commit": "4cad1b0",
    "note": "staking route, management fee, fixes from the second security review",
    "known_issue": "counts bounced transfers as holdings; see README"
+  },
+  "3j5tSNim99x5caDaQF618gJL1QdcZQTJT7yk9G4PJn23": {
+   "version": "0.3",
+   "commit": "aecddbb358b7afe73aa6b0bdf52493b48bfd4fb6",
+   "note": "no balance reads: trade output is pushed by 1Click, refunds go through a per-fund relay running this same code; in-kind joins; funds are created by the factory from this code published once as a global contract by hash; optional manager-less strategy",
+   "global": true,
+   "reproducible": {
+    "image": "sourcescan/cargo-near:0.23.0-rust-1.99.1",
+    "image_digest": "sha256:8013f039e8005627f10ae66b5519d1a6eeeed7d7aef4b5067d5e9a86c4302fcc",
+    "command": "cargo near build reproducible-wasm --manifest-path contracts/plinth/Cargo.toml",
+    "bytes": 311012,
+    "sha256_hex": "287f4b1d57df8a681123d243ba18f2ff153ecfd02526ffe5bd7ce8101b67b138"
+   },
+   "factory_code": {
+    "sha256_base58": "5w3ozPKyriikxStn8roDb4DHmHT9fbNFgvSXpe17rsPE",
+    "bytes": 160257
+   }
   }
  },
  "factories": {}
