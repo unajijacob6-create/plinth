@@ -12,3 +12,8 @@ web/dist/
 strategy/target/
 strategy/host-test/target/
 .vercel
+
+# video: dependencies, renders and screen captures are generated
+video/node_modules/
+video/out/
+video/public/rec/

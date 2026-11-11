@@ -1,0 +1,13 @@
+Every fund has someone who can change the rules. This one doesn't. Plinth is a fund on NEAR with no keys.
+
+Each fund is an account with zero access keys. Its code was published once, pinned by hash, and rebuilds byte for byte. Anyone can check it, straight from the chain.
+
+The manager, here an AI agent on NEAR AI Cloud, can only propose a swap, with a signed NEAR Intents quote. The contract decides. A hijacked operator tried to pay an attacker. Refused, on chain. Thirty percent in one trade. Refused. Then two models had to agree. Gemini obeyed an injected note, and tried to send the whole holding to an attacker. DeepSeek held, so nothing was proposed.
+
+We found a bug in our own funds. Releases zero point one and zero point two counted a bounced transfer as money. Zero point three counts tokens only when they're handed to it, and reads no balance anywhere. Refunds go through a relay that can only pay this fund.
+
+Or skip the manager. Anyone presses rebalance, and a strategy program runs in an OutLayer enclave. That enclave is trusted, not proven on chain, so the contract checks its answer anyway.
+
+And anyone can leave, any time, with their share of every token. Bob left with forty percent of each.
+
+Plinth. No keys. No oracle. No manager. On testnet today.

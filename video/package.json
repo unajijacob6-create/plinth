@@ -1,0 +1,23 @@
+{
+  "name": "plinth-video",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Plinth hackathon demo video, rendered from code with Remotion",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render PlinthX out/plinth-x.mp4",
+    "render:square": "remotion render PlinthSquare out/plinth-x-square.mp4",
+    "poster": "remotion still PlinthX out/poster.png --frame=2450"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.543",
+    "@remotion/renderer": "4.0.543",
+    "remotion": "4.0.543",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}
