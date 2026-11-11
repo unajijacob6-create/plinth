@@ -39,7 +39,8 @@ const rpcWeather = (text) => RPC_HOST.test(text) && /fetch|CORS|Access-Control|4
 const watch = (page) => {
   const errors = [];
   page.on("console", (m) => {
-    if (m.type() === "error" && !rpcWeather(m.text())) errors.push(m.text());
+    // Chrome's "Failed to load resource" text carries no URL; the URL is in the message's location.
+    if (m.type() === "error" && !rpcWeather(`${m.text()} ${m.location()?.url ?? ""}`)) errors.push(`${m.text()} ${m.location()?.url ?? ""}`.trim());
   });
   page.on("pageerror", (e) => {
     if (!rpcWeather(e.message)) errors.push(e.message);
