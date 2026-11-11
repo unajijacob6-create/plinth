@@ -141,7 +141,7 @@ async fn mint(root: &Account, t: &Contract, to: &AccountId, amount: u128) -> any
 async fn create(worker: &Sb, root: &Account, fund_id: &AccountId, tokens: Vec<String>, op: &AccountId, close: u64) -> anyhow::Result<()> {
     // The refund relay: the same code, started in relay mode, keyless, serving this one fund.
     let relay = relay_of(fund_id);
-    let r = root.batch(&relay).create_account().transfer(NearToken::from_near(1)).deploy(&std::fs::read(PLINTH)?)
+    let r = root.batch(&relay).create_account().transfer(NearToken::from_near(5)).deploy(&std::fs::read(PLINTH)?)
         .call(Function::new("relay_init").args_json(json!({"fund": fund_id, "tokens": tokens, "storage_deposit": STORAGE.as_yoctonear().to_string()})).deposit(NearToken::from_millinear(20)).gas(Gas::from_tgas(100)))
         .transact().await?;
     assert!(r.is_success(), "{:?}", r.failures());

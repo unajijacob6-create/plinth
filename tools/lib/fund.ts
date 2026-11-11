@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { NETWORK, accessKeyCount, accountExists, accountView, call, chainSeconds, eventsOf, explorer, formatNear, globalCode, log, returned, txHash, view, type Network } from "./near.ts";
-import { creationDeposit, normaliseConfig, validateConfig, validateFundName, type Config } from "./config.ts";
+import { creationDeposit, normaliseConfig, relayAccount, validateConfig, validateFundName, type Config } from "./config.ts";
 import { hashToBase58, type ReleasesFile } from "./classify.ts";
 import type { FundState, TradeView } from "./oneclick.ts";
 
@@ -31,6 +31,8 @@ export const tradeById = async (fund: string, id: number): Promise<TradeView | u
 
 export interface Created {
   fund: string;
+  /** The fund's refund relay, `<name>-r.<factory>`, created in the same call. */
+  relay: string;
   factory: string;
   tx: string;
   /** The code hash the factory gives every fund (base58). */
@@ -44,7 +46,8 @@ export interface Created {
 
 /** Create `<name>.<factory>` through `factory.create_fund`, paid by `from`, and check the result:
  *  no access keys, the factory's code hash, registered on every token. `near` (yocto) is what the
- *  fund starts with (at least 0.5 NEAR); registrations and the factory's 0.003 NEAR list fee are added. */
+ *  fund starts with (at least 0.5 NEAR); the relay's 0.03 NEAR, both accounts' registrations and the
+ *  factory's 0.003 NEAR list fee are added. */
 export async function createFund(o: { from: string; factory: string; name: string; config: Config; near: bigint }): Promise<Created> {
   const fund = `${o.name}.${o.factory}`;
   const config = normaliseConfig(o.config);
@@ -55,22 +58,37 @@ export async function createFund(o: { from: string; factory: string; name: strin
     throw new Error(`${o.factory} is not a Plinth factory on ${NETWORK} (get_code_hash: ${(e as Error).message})`);
   });
   if (!(await globalCode(codeHash))) throw new Error(`the factory's fund code ${codeHash} is not published on ${NETWORK} (view_global_contract_code): no fund can be created yet`);
-  if (await accountExists(fund)) throw new Error(`${fund} already exists; pick another --name`);
+  const relay = relayAccount(o.name, o.factory);
+  for (const id of [fund, relay]) if (await accountExists(id)) throw new Error(`${id} already exists; pick another --name`);
 
   const r = await call(o.from, o.factory, "create_fund", { name: o.name, config }, { deposit: total, gas: 300 });
   const tx = txHash(r);
   if (returned<string>(r) !== fund) {
-    // The fund's `new` refused the config (or the name was taken in the meantime): the factory sends the NEAR back.
-    throw new Error(`the factory did not create ${fund}; the ${formatNear(total)} NEAR attached is sent back to ${o.from}. ${explorer(tx)}`);
+    // The fund's `new` refused the config, or one of the two accounts could not be made: nothing is
+    // listed and the factory sends back the NEAR of whatever failed.
+    throw new Error(`the factory did not create ${fund} with its relay; of the ${formatNear(total)} NEAR attached, the part for whatever failed is sent back to ${o.from}. ${explorer(tx)}`);
   }
   const acct = await accountView(fund);
   const access_keys = await accessKeyCount(fund);
   const s = await fundState(fund);
   if (access_keys !== 0) throw new Error(`${fund} has ${access_keys} access keys; expected none`);
+  // The relay: keyless, the same pinned code, serving this fund, and the one the fund will accept.
+  const relayAcct = await accountView(relay);
+  const relayKeys = await accessKeyCount(relay);
+  const serves = await view<string>(relay, "relay_fund");
+  if (relayKeys !== 0 || hashToBase58(relayAcct.global_contract_hash) !== codeHash || serves !== fund || s.config.refund_relay !== relay) {
+    throw new Error(`${fund}'s refund relay ${relay} is not as intended: ${relayKeys} access keys, code ${relayAcct.global_contract_hash}, serves ${serves}, fund config names ${s.config.refund_relay}`);
+  }
   if (hashToBase58(acct.global_contract_hash) !== codeHash) throw new Error(`${fund} does not run the factory's code ${codeHash} (account view: ${JSON.stringify(acct)})`);
   const missing = (s.registered ?? []).flatMap((ok, i) => (ok ? [] : [s.config.mandate.tokens[i]]));
   if (missing.length) log("WARNING", `the fund's registration failed on ${missing.join(", ")}; anyone can retry with register({token_index})`);
-  return { fund, factory: o.factory, tx, code_hash: codeHash, attached: String(total), access_keys, registered: s.registered ?? [], version: s.version };
+  return { fund, relay, factory: o.factory, tx, code_hash: codeHash, attached: String(total), access_keys, registered: s.registered ?? [], version: s.version };
+}
+
+/** The fund's refund relay, as the fund reports it. */
+export function relayOf(s: FundState, fund: string): string {
+  if (!s.config.refund_relay) throw new Error(`${fund} reports no refund relay`);
+  return s.config.refund_relay;
 }
 
 /** The fund's own events (`standard: "plinth"`) a transaction emitted, in order. */

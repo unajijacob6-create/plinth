@@ -13,6 +13,9 @@ const WNEAR: &str = "wrap.test.near";
 const OTHER: &str = "other.test.near";
 const FUND: &str = "fund.test.near";
 const OPERATOR: &str = "operator.test.near";
+/// The fund's refund relay: where 1Click sends refunds, and the only sender whose "refund" push
+/// closes a trade.
+const RELAY: &str = "relay.test.near";
 const T0: u64 = 1_800_000_000; // seconds
 const CLOSE: u64 = T0 + 3600;
 
@@ -44,7 +47,7 @@ fn mandate() -> Mandate {
 }
 
 fn config() -> Config {
-    Config { mandate: mandate(), operator: OPERATOR.parse().unwrap(), quote_signer: pk_b58(), storage_deposit: U128(1_250_000_000_000_000_000_000) }
+    Config { mandate: mandate(), operator: OPERATOR.parse().unwrap(), quote_signer: pk_b58(), storage_deposit: U128(1_250_000_000_000_000_000_000), refund_relay: RELAY.parse().unwrap() }
 }
 
 fn ctx(predecessor: &str, now: u64) -> VMContextBuilder {
@@ -120,7 +123,7 @@ impl Default for Q {
             deadline: CLOSE + 10 + 3 * 86_400,
             deposit: "a".repeat(64),
             recipient: FUND.into(),
-            refund_to: FUND.into(),
+            refund_to: RELAY.into(),
             msg: None,
             memo: false,
             refund_fee: 4_500,
@@ -275,8 +278,11 @@ fn every_mandate_rule_refuses_and_records_its_reason() {
         (Q { out_usd: "9.800000", ..Default::default() }, CLOSE + 20, "all-in cost"),
         (Q { issued: CLOSE + 10, ..Default::default() }, CLOSE + 10 + 121, "s old"),
         (Q { deadline: CLOSE + 20 + 100, ..Default::default() }, CLOSE + 20, "closes too soon"),
-        (Q { recipient: "thief.test.near".into(), ..Default::default() }, CLOSE + 20, "deliver to and refund to this fund"),
-        (Q { refund_to: "thief.test.near".into(), ..Default::default() }, CLOSE + 20, "deliver to and refund to this fund"),
+        (Q { recipient: "thief.test.near".into(), ..Default::default() }, CLOSE + 20, "quote must deliver to this fund and refund to its relay on NEAR"),
+        (Q { recipient: RELAY.into(), ..Default::default() }, CLOSE + 20, "quote must deliver to this fund and refund to its relay on NEAR"),
+        (Q { refund_to: "thief.test.near".into(), ..Default::default() }, CLOSE + 20, "quote must deliver to this fund and refund to its relay on NEAR"),
+        // 0.2-style quotes that refund to the fund itself are refused: the fund could not see them arrive.
+        (Q { refund_to: FUND.into(), ..Default::default() }, CLOSE + 20, "quote must deliver to this fund and refund to its relay on NEAR"),
         (Q { buy: OTHER, ..Default::default() }, CLOSE + 20, "not allowed by the mandate"),
         (Q { buy: USDC, ..Default::default() }, CLOSE + 20, "itself"),
         (Q { msg: Some("hello".into()), ..Default::default() }, CLOSE + 20, "quote must set customRecipientMsg to \"trade:0\""),
@@ -357,8 +363,8 @@ const SOLVER: &str = "solver.test.near";
 const AMOUNT_IN: u128 = 10_000_000;
 const REFUND: u128 = AMOUNT_IN - 4_500;
 const MIN_OUT: u128 = 2_690_000_000_000_000_000_000_000;
-/// When the default trade (sent at CLOSE + 20) may first be checked for a refund.
-const REFUND_AT: u64 = CLOSE + 20 + REFUND_WAIT_SECONDS;
+/// Some time after the default trade (sent at CLOSE + 20).
+const LATER: u64 = CLOSE + 20 + 3_600;
 
 fn acct(s: &str) -> AccountId {
     s.parse().unwrap()
@@ -384,6 +390,20 @@ fn panics<R>(f: impl FnOnce() -> R) -> String {
         Ok(_) => panic!("expected a panic"),
         Err(e) => e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default(),
     }
+}
+
+/// The relay forwards a refund: `ft_transfer_call(fund, amount, "refund")` on `token`, sender the
+/// relay. Returns what the fund hands back.
+fn relay_refund(f: &mut Plinth, token: &str, amount: u128, now: u64) -> u128 {
+    push(f, token, RELAY, amount, "refund", now)
+}
+
+/// The default trade, refunded in full through the relay.
+fn refunded_fund() -> Plinth {
+    let mut f = sent_fund();
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, LATER), 0);
+    assert_eq!(trade(&f, 0).status, TradeStatus::Refunded);
+    f
 }
 
 fn set_deposit(predecessor: &str, now: u64, yocto: u128) {
@@ -1009,14 +1029,12 @@ fn v3_the_message_is_covered_by_the_signature() {
 #[test]
 fn v3_push_of_exactly_min_out_settles() {
     let mut f = sent_fund();
-    let flux = f.flux;
     assert_eq!(push(&mut f, WNEAR, SOLVER, MIN_OUT, "trade:0", CLOSE + 60), 0);
     let v = f.get_fund();
     assert!(v.pending.is_none());
     assert_eq!((v.held[0].1 .0, v.held[1].1 .0), (90_000_000, MIN_OUT));
     let t = trade(&f, 0);
     assert_eq!((t.status, t.received_out.0, t.received_refund.0, t.closed_at), (TradeStatus::Settled, MIN_OUT, 0, Some(CLOSE + 60)));
-    assert_eq!(f.flux, flux + 2, "once for the transfer arriving, once for keeping it");
     assert!(get_logs().iter().any(|l| l.contains("\"output_received\"")));
     assert!(get_logs().iter().any(|l| l.contains("\"trade_closed\"")));
 }
@@ -1097,11 +1115,9 @@ fn v3_a_push_naming_a_stake_is_a_donation() {
 #[test]
 fn v3_donate_push_is_kept_and_counted() {
     let mut f = funded();
-    let flux = f.flux;
     assert_eq!(push(&mut f, USDC, "donor.test.near", 123, "donate", T0 + 100), 0);
     assert_eq!(push(&mut f, WNEAR, "donor.test.near", 456, "donate", T0 + 100), 0);
     assert_eq!((held(&f, 0), held(&f, 1)), (100_000_123, 456));
-    assert_eq!(f.flux, flux + 4);
     // No shares are minted for a donation.
     assert_eq!(f.get_fund().total_shares.0, 100_000_000);
     assert_eq!(f.get_shares(acct("donor.test.near")).0, 0);
@@ -1129,15 +1145,6 @@ fn v3_pushes_from_other_tokens_and_empty_or_overflowing_pushes_are_returned() {
     assert_eq!(push(&mut f, USDC, SOLVER, 5_000_000, "trade", CLOSE + 60), 5_000_000);
     assert_eq!((held(&f, 0), held(&f, 1)), (90_000_000, 0));
     assert_eq!(trade(&f, 0).status, TradeStatus::Sent);
-    // A returned transfer of a fund token still counts as a movement (it sat in the balance for a
-    // moment); a token outside the mandate does not.
-    let flux = f.flux;
-    assert_eq!(push(&mut f, OTHER, SOLVER, 1_000, "", CLOSE + 61), 1_000);
-    assert_eq!(f.flux, flux);
-    assert_eq!(push(&mut f, WNEAR, SOLVER, 9, "hello", CLOSE + 61), 9);
-    assert_eq!(push(&mut f, USDC, SOLVER, 0, "donate", CLOSE + 61), 0);
-    assert_eq!(push(&mut f, USDC, SOLVER, u128::MAX, "donate", CLOSE + 61), u128::MAX);
-    assert_eq!(f.flux, flux + 3);
 }
 
 // ------------------------------------------------------------------ v3: output while Sending
@@ -1183,7 +1190,6 @@ fn v3_a_failed_send_after_an_output_push_restores_the_input_and_keeps_the_push()
     // Nothing can re-open it.
     assert_eq!(push(&mut f, WNEAR, SOLVER, MIN_OUT, "trade:0", CLOSE + 22), 0);
     assert_eq!(trade(&f, 0).status, TradeStatus::Failed);
-    assert!(panics(|| f.settle_refund(0)).contains("not waiting for a refund"));
 }
 
 // ------------------------------------------------------------------ v3: no balance read settles
@@ -1202,7 +1208,6 @@ fn v3_late_output_settles_an_abandoned_trade() {
     assert_eq!((t.status, t.received_out.0, t.closed_at), (TradeStatus::Settled, MIN_OUT, Some(at + 100)));
     assert_eq!((held(&f, 0), held(&f, 1)), (90_000_000, MIN_OUT));
     set(ANYONE, at + 101);
-    assert!(panics(|| f.settle_refund(0)).contains("not waiting for a refund"));
 }
 
 // ------------------------------------------------------------------ v3: stakes
@@ -1212,7 +1217,6 @@ fn v3_on_staked_credits_the_amount_deposit_and_stake_returned() {
     let mut f = staking_fund(0);
     assert!(stake(&mut f, FIVE, CLOSE + 20));
     unwrapped(&mut f, 0, CLOSE + 21);
-    let flux = f.flux;
     let minted = expected_mint() - 12_345; // inside the slippage band
     staked(&mut f, 0, Some(format!("\"{minted}\"").as_bytes()), CLOSE + 22);
     let t = trade(&f, 0);
@@ -1220,7 +1224,7 @@ fn v3_on_staked_credits_the_amount_deposit_and_stake_returned() {
     let v = f.get_fund();
     assert!(v.pending.is_none());
     assert_eq!((v.held[1].1 .0, v.held[2].1 .0), (15 * 10u128.pow(24), minted));
-    assert_eq!((f.near_in_flight, f.flux), (0, flux + 1));
+    assert_eq!(f.near_in_flight, 0);
     assert!(get_logs().iter().any(|l| l.contains("\"trade_closed\"")));
     assert!(!get_logs().iter().any(|l| l.contains("below the")));
 }
@@ -1381,12 +1385,11 @@ fn v3_recover_stuck_trade_after_a_day_treats_the_input_as_sent() {
     set(ANYONE, CLOSE + 20 + 86_400);
     assert!(panics(|| f.recover_stuck_trade()).contains("too early"));
     set(ANYONE, CLOSE + 20 + 86_401);
-    let flux = f.flux;
     f.recover_stuck_trade();
     let t = trade(&f, 0);
     assert_eq!((t.status, t.closed_at), (TradeStatus::Sent, None));
     assert_eq!(f.get_fund().pending.unwrap().id, 0);
-    assert_eq!((held(&f, 0), f.flux), (90_000_000, flux + 1));
+    assert_eq!(held(&f, 0), 90_000_000);
     // Not twice.
     assert!(panics(|| f.recover_stuck_trade()).contains("no swap is stuck"));
     // From here it behaves like any sent trade: output settles it...
@@ -1396,12 +1399,19 @@ fn v3_recover_stuck_trade_after_a_day_treats_the_input_as_sent() {
     g.recover_stuck_trade();
     assert_eq!(push(&mut g, WNEAR, SOLVER, MIN_OUT, "trade:0", CLOSE + 20 + 86_402), 0);
     assert_eq!(trade(&g, 0).status, TradeStatus::Settled);
-    // ...or, if the input never left (it is still in the balance), settle_refund counts it back,
-    // less the refund fee.
-    let flux = request_refund(&mut f, 0, CLOSE + 20 + 86_402);
-    assert_eq!(refund_cb(&mut f, 0, flux, 100_000_000, CLOSE + 20 + 86_403), TradeStatus::Refunded);
-    assert_eq!(held(&f, 0), 100_000_000 - 4_500);
+    // ...or a refund through the relay closes it.
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, CLOSE + 20 + 86_402), 0);
+    assert_eq!((trade(&f, 0).status, held(&f, 0)), (TradeStatus::Refunded, 90_000_000 + REFUND));
     assert!(f.get_fund().pending.is_none());
+    // Documented limit (0.3 without the balance read): if the input never left the fund and the
+    // callback was lost, nothing counts it back. The trade can only be written off.
+    let mut h = funded();
+    assert!(propose(&mut h, &Q::default(), CLOSE + 20));
+    set(ANYONE, CLOSE + 20 + 86_401);
+    h.recover_stuck_trade();
+    set(ANYONE, Q::default().deadline + ABANDON_AFTER_SECONDS + 1);
+    h.abandon();
+    assert_eq!((trade(&h, 0).status, held(&h, 0)), (TradeStatus::Abandoned, 90_000_000));
 }
 
 #[test]
@@ -1712,9 +1722,7 @@ fn v3_basket_needs_open_basket_and_its_deposit() {
     assert_eq!(f.get_basket(acct(CAROL)), None);
     open_basket(&mut f, CAROL, now);
     assert_eq!(f.get_basket(acct(CAROL)), Some(vec![U128(0), U128(0)]));
-    let flux = f.flux;
     assert_eq!(push(&mut f, USDC, CAROL, 5_000_000, "basket", now), 0);
-    assert_eq!(f.flux, flux + 2);
     // Opening again keeps what is in it.
     open_basket(&mut f, CAROL, now + 1);
     assert_eq!(f.get_basket(acct(CAROL)), Some(vec![U128(5_000_000), U128(0)]));
@@ -1733,7 +1741,6 @@ fn v3_withdraw_basket_pays_everything_back_and_removes_the_entry() {
     assert_eq!(join(&mut f, CAROL, 0, now + 1), 5_000_000);
     assert_eq!(push(&mut f, WNEAR, CAROL, 9, "basket", now + 2), 0);
     let held_before = (held(&f, 0), held(&f, 1));
-    let flux = f.flux;
     set(CAROL, now + 3);
     f.withdraw_basket();
     let v = f.get_fund();
@@ -1741,7 +1748,6 @@ fn v3_withdraw_basket_pays_everything_back_and_removes_the_entry() {
     assert_eq!(v.basket_total, vec![U128(0), U128(0)]);
     assert_eq!(v.in_flight_payouts, vec![U128(25_000_000), U128(9)]);
     assert_eq!((v.held[0].1 .0, v.held[1].1 .0), held_before);
-    assert_eq!(f.flux, flux + 2);
     assert_eq!(f.get_shares(acct(CAROL)).0, 5_000_000, "shares already minted stay");
     assert!(panics(|| f.withdraw_basket()).contains("no basket"));
     // One payout lands, one fails and becomes claimable like a redemption payout.
@@ -1785,11 +1791,12 @@ fn v3_baskets_are_not_holdings() {
     assert!(last_reason(&f).contains("of the 60000000 held"));
     assert!(propose(&mut f, &Q { amount: 15_000_000, issued: now + 15, deadline: now + 86_400, ..Default::default() }, now + 20));
     ok_sent(&mut f, 0, now + 21);
-    // The basket is not a refund: balance = 45 held + 1000 basket + 40 in flight to Bob.
-    let at = now + 20 + REFUND_WAIT_SECONDS;
-    let flux = request_refund(&mut f, 0, at);
-    assert_eq!(refund_cb(&mut f, 0, flux, 45_000_000 + 1_000_000_000 + 40_000_000, at + 1), TradeStatus::Sent);
-    assert_eq!(refund_cb(&mut f, 0, flux, 45_000_000 + 1_000_000_000 + 40_000_000 + 15_000_000 - 4_500, at + 1), TradeStatus::Refunded);
+    // A refund through the relay is counted into holdings, never into a basket.
+    let at = now + 4_000;
+    assert_eq!(relay_refund(&mut f, USDC, 15_000_000 - 4_500, at), 0);
+    assert_eq!(trade(&f, 0).status, TradeStatus::Refunded);
+    assert_eq!(held(&f, 0), 60_000_000 - 4_500);
+    assert_eq!(f.get_fund().basket_total, vec![U128(1_000_000_000), U128(10 * WNEAR_20)]);
     // Carol gets every unit back.
     set(CAROL, at + 2);
     f.withdraw_basket();
@@ -1831,7 +1838,7 @@ fn v3_join_in_kind_needs_shares_and_holdings_to_price_against() {
     set(ANYONE, Q::default().deadline + ABANDON_AFTER_SECONDS + 1);
     g.abandon();
     fill_basket(&mut g, CAROL, 10_000_000, 5, Q::default().deadline + ABANDON_AFTER_SECONDS + 2);
-    set(CAROL, Q::default().deadline + REFUND_CLOSES_SECONDS + 1);
+    set(CAROL, Q::default().deadline + LATE_ARRIVAL_SECONDS + 1);
     assert!(panics(|| g.join_in_kind(U128(0))).contains("holds nothing to join"));
 }
 
@@ -1862,10 +1869,9 @@ fn v3_claim_can_take_part_of_what_is_owed() {
     assert_eq!(f.get_owed(acct(BOB)), vec![U128(25_000_000), U128(400)]);
     // All zeros / empty: nothing moves, nothing is lost.
     set(BOB, T0 + 106);
-    let flux = f.flux;
     f.claim(Some(vec![]));
     f.claim(Some(vec![U128(0), U128(0), U128(9)]));
-    assert_eq!((f.get_owed(acct(BOB)), f.flux), (vec![U128(25_000_000), U128(400)], flux));
+    assert_eq!(f.get_owed(acct(BOB)), vec![U128(25_000_000), U128(400)]);
     // No list: everything.
     f.claim(None);
     assert!(f.get_owed(acct(BOB)).is_empty());
@@ -2062,6 +2068,8 @@ const TOKENS: [&str; 2] = [USDC, WNEAR];
 struct World {
     f: Plinth,
     real: [u128; 2],
+    /// What the refund relay holds of each token (1Click's refunds, not yet forwarded).
+    relay: [u128; 2],
     now: u64,
     rng: Rng,
     deposits: u64,
@@ -2128,7 +2136,9 @@ impl World {
             assert_eq!(owed[i], v.owed_total[i].0, "step {step} ({what}): owed of token {i}");
             assert_eq!(v.in_flight_payouts[i].0, 0, "step {step} ({what}): every payout was resolved");
             let accounted = v.held[i].1 .0 + v.owed_total[i].0 + v.in_flight_payouts[i].0 + v.basket_total[i].0;
-            assert_eq!(accounted, self.f.accounted(i));
+            // With no balance read left, every unit the fund counts arrived by a push it kept and
+            // every unit that left was sent by the fund: the books equal the balance exactly.
+            assert_eq!(self.real[i], accounted, "step {step} ({what}): token {i} balance != books");
             assert!(
                 self.real[i] >= accounted,
                 "step {step} ({what}): token {i} balance {} < accounted {accounted} (held {}, owed {}, baskets {})",
@@ -2328,23 +2338,26 @@ impl World {
                 assert!(held(&self.f, buy) >= h + t.min_out.0.saturating_sub(t.received_out.0));
                 self.count("settled");
             }
-            1 if self.now >= t.sent_at + REFUND_WAIT_SECONDS => {
-                // 1Click refunds by plain transfer; then anyone asks the fund to look.
+            1 => {
+                // The swap fails and 1Click refunds by plain transfer: the tokens land in the relay.
                 let refund = t.amount_in.0 - t.refund_fee.0;
-                self.real[sell] += refund;
-                let h = held(&self.f, sell);
-                let mut flux = request_refund(&mut self.f, t.id, self.now);
-                if self.rng.chance(4) {
-                    // Tokens move while the read is in the air: that read is ignored.
-                    assert_eq!(self.push(sell, "donor.test.near", refund, "donate"), 0);
-                    assert_eq!(refund_cb(&mut self.f, t.id, flux, self.real[sell], self.now), TradeStatus::Sent);
-                    assert_eq!(held(&self.f, sell), h + refund, "only the donation");
-                    flux = request_refund(&mut self.f, t.id, self.now);
-                    self.count("refund read ignored");
+                self.relay[sell] += refund;
+                self.count("refund reached the relay");
+                if self.rng.chance(3) {
+                    return; // nobody forwards it yet (see misc)
                 }
+                // Anyone forwards it, in one piece or two.
                 let h = held(&self.f, sell);
-                assert_eq!(refund_cb(&mut self.f, t.id, flux, self.real[sell], self.now), TradeStatus::Refunded);
-                assert_eq!(held(&self.f, sell), h + refund, "exactly amount_in - refund_fee");
+                let first = if self.rng.chance(3) { self.rng.range(1, refund - 1) } else { refund };
+                self.forward(sell, first);
+                if first < refund {
+                    assert_eq!(trade(&self.f, t.id).status, TradeStatus::Sent);
+                    assert_eq!(trade(&self.f, t.id).received_refund.0, first);
+                    self.forward(sell, refund - first);
+                }
+                let after = trade(&self.f, t.id);
+                assert_eq!((after.status, after.received_refund.0), (TradeStatus::Refunded, refund));
+                assert_eq!(held(&self.f, sell), h + refund, "exactly what was forwarded");
                 assert!(self.f.get_fund().pending.is_none());
                 self.refunded.push((t.id, buy, t.min_out.0.saturating_sub(t.received_out.0)));
                 self.count("refunded");
@@ -2353,46 +2366,49 @@ impl World {
         }
     }
 
+    /// `relay_forward`: the relay ft_transfer_calls `amount` of token `i` to the fund as a refund.
+    fn forward(&mut self, i: usize, amount: u128) {
+        assert!(amount > 0 && self.relay[i] >= amount);
+        let h = held(&self.f, i);
+        let returned = push(&mut self.f, TOKENS[i], RELAY, amount, "refund", self.now);
+        assert_eq!(returned, 0, "a refund is always kept");
+        self.relay[i] -= amount;
+        self.real[i] += amount;
+        assert_eq!(held(&self.f, i), h + amount);
+    }
+
     fn misc(&mut self) {
         let trades = self.f.get_fund().trades;
         if trades == 0 {
             return;
         }
         if self.rng.chance(3) && !self.refunded.is_empty() {
-            // Output for a trade that was counted as refunded turns up after all.
+            // Output for a trade that was closed as refunded turns up after all: both are real
+            // tokens, both stay.
             let k = self.rng.range(0, self.refunded.len() as u128 - 1) as usize;
             let (id, buy, need) = self.refunded.swap_remove(k);
             let before = trade(&self.f, id);
-            let seen = self.stats.get("refund undone").copied().unwrap_or(0) + self.stats.get("late gift").copied().unwrap_or(0);
-            if seen % 2 == 1 {
-                self.now += 5 * 86_400; // long after 1Click could still deliver
-            }
             let sell_held = held(&self.f, before.sell as usize);
             assert_eq!(self.push(buy, SOLVER, need.max(1), &format!("trade:{id}")), 0);
-            let t = trade(&self.f, id);
-            if self.now > before.deposit_deadline.max(before.sent_at) + REFUND_UNDO_SECONDS {
-                // Too late to be the trade's output: a gift, the refund stands.
-                assert_eq!((t.status, t.received_refund), (TradeStatus::Refunded, before.received_refund));
-                assert_eq!(held(&self.f, before.sell as usize), sell_held);
-                self.count("late gift");
-                return;
-            }
-            assert_eq!((t.status, t.received_refund.0), (TradeStatus::Settled, 0));
-            self.count("refund undone");
+            assert_eq!(trade(&self.f, id).received_refund, before.received_refund);
+            assert_eq!(held(&self.f, before.sell as usize), sell_held, "the refund stays");
+            self.count("output after a refund");
             return;
         }
-        // An honest balance read for any trade at any time never breaks the books.
-        let id = self.rng.range(0, trades as u128 - 1) as u64;
-        let sell = trade(&self.f, id).sell as usize;
-        let h = held(&self.f, sell);
-        let flux = self.f.flux;
-        let status = refund_cb(&mut self.f, id, flux, self.real[sell], self.now);
-        if status == TradeStatus::Refunded && held(&self.f, sell) != h {
-            // Only possible when the balance really holds that much more than the fund counts.
-            self.count("surplus counted as a refund");
-            let t = trade(&self.f, id);
-            self.refunded.push((id, t.buy as usize, t.min_out.0.saturating_sub(t.received_out.0)));
+        // Whatever sits in the relay is forwarded by someone, whenever, in whatever pieces.
+        let i = self.rng.range(0, 1) as usize;
+        if self.relay[i] > 0 {
+            let amount = if self.rng.chance(2) { self.relay[i] } else { self.rng.range(1, self.relay[i]) };
+            self.forward(i, amount);
+            self.count("late forward");
         }
+        // A "refund" from anyone but the relay is a donation and closes nothing.
+        let before = self.f.get_trades(0, u64::MAX);
+        let pending = self.f.get_fund().pending.map(|t| t.id);
+        let gift = self.rng.range(1, 20_000_000);
+        assert_eq!(self.push(i, "mallory.test.near", gift, "refund"), 0);
+        assert_eq!(self.f.get_trades(0, u64::MAX), before);
+        assert_eq!(self.f.get_fund().pending.map(|t| t.id), pending);
         // Stray pushes: wrong id, wrong token.
         let i = self.rng.range(0, 1) as usize;
         let before = self.f.get_trades(0, u64::MAX);
@@ -2406,7 +2422,7 @@ fn run_world(seed: u64, steps: usize) -> World {
     let mut c = open_config();
     c.mandate.max_trades_per_day = 1_000;
     c.mandate.management_fee_bps = 100;
-    let mut w = World { f: fund_from(c), real: [0, 0], now: T0 + 1, rng: Rng(seed), deposits: 0, refunded: vec![], stats: Default::default() };
+    let mut w = World { f: fund_from(c), real: [0, 0], relay: [0, 0], now: T0 + 1, rng: Rng(seed), deposits: 0, refunded: vec![], stats: Default::default() };
     for step in 0..steps {
         // Slow steps while the subscription window is open, so it sees a fair number of them.
         w.now += if w.now < CLOSE {
@@ -2474,9 +2490,9 @@ fn v3_property_random_sequences_keep_the_books_inside_the_real_balances() {
         ("send failed", 3),
         ("settled", 25),
         ("refunded", 6),
-        ("refund read ignored", 1),
-        ("refund undone", 1),
-        ("late gift", 1),
+        ("refund reached the relay", 8),
+        ("late forward", 2),
+        ("output after a refund", 1),
     ] {
         assert!(totals.get(what).copied().unwrap_or(0) >= at_least, "{what}: {:?}", totals);
     }
@@ -2831,8 +2847,9 @@ fn v3_strategy_hostile_answers_are_refused_and_recorded_and_nothing_moves() {
     let cases: Vec<(Vec<u8>, &str)> = vec![
         (trade_answer(&Q { amount: 30_000_000, ..Default::default() }, 0), "over 2500 bps"),
         (trade_answer(&Q { out_usd: "9.800000", ..Default::default() }, 0), "all-in cost"),
-        (trade_answer(&Q { recipient: "thief.test.near".into(), ..Default::default() }, 0), "deliver to and refund to this fund"),
-        (trade_answer(&Q { refund_to: "thief.test.near".into(), ..Default::default() }, 0), "deliver to and refund to this fund"),
+        (trade_answer(&Q { recipient: "thief.test.near".into(), ..Default::default() }, 0), "quote must deliver to this fund and refund to its relay"),
+        (trade_answer(&Q { refund_to: "thief.test.near".into(), ..Default::default() }, 0), "quote must deliver to this fund and refund to its relay"),
+        (trade_answer(&Q { refund_to: FUND.into(), ..Default::default() }, 0), "quote must deliver to this fund and refund to its relay"),
         (trade_answer(&Q { buy: OTHER, ..Default::default() }, 0), "not allowed by the mandate"),
         (trade_answer(&Q { msg: Some(String::new()), ..Default::default() }, 0), "quote must set customRecipientMsg to \"trade:0\""),
         (trade_answer(&Q { msg: Some("trade:1".into()), ..Default::default() }, 0), "quote must set customRecipientMsg to \"trade:0\""),
@@ -2855,14 +2872,13 @@ fn v3_strategy_hostile_answers_are_refused_and_recorded_and_nothing_moves() {
     for (bytes, why) in cases {
         let mut f = strategy_fund(true);
         rebalance(&mut f, CLOSE + 20);
-        let flux = f.flux;
         assert_eq!(answer(&mut f, Some(&bytes), CLOSE + 25), "refused", "{why}");
         assert!(last_reason(&f).contains(why), "expected '{why}', got '{}'", last_reason(&f));
         let v = f.get_fund();
         assert!(v.pending.is_none(), "{why}");
         assert_eq!((v.held[0].1 .0, v.held[1].1 .0, v.held[2].1 .0), (100_000_000, WNEAR_20, 0), "{why}");
         assert_eq!((v.trades, v.rejections, v.strategy_started, v.last_trade_at, v.trades_today), (0, 1, 0, 0, 0), "{why}");
-        assert_eq!((f.flux, f.near_in_flight), (flux, 0), "{why}");
+        assert_eq!(f.near_in_flight, 0, "{why}");
         assert!(near_sdk::test_utils::get_created_receipts().is_empty(), "{why}: no promise is created");
     }
 }
@@ -2918,13 +2934,12 @@ fn v3_strategy_no_answer_or_anything_else_is_a_hold() {
         let mut f = strategy_fund(true);
         rebalance(&mut f, CLOSE + 20);
         assert_eq!(f.get_fund().strategy_started, CLOSE + 20);
-        let flux = f.flux;
         assert_eq!(answer(&mut f, a, CLOSE + 25), "hold", "{shown:?}");
         assert!(get_logs().iter().any(|l| l.contains("\"strategy_hold\"")), "{shown:?}");
         let v = f.get_fund();
         assert!(v.pending.is_none(), "{shown:?}");
         assert_eq!((v.strategy_started, v.rejections, v.trades, v.last_trade_at), (0, 0, 0, 0), "{shown:?}");
-        assert_eq!((v.held[0].1 .0, v.held[1].1 .0, f.flux), (100_000_000, WNEAR_20, flux), "{shown:?}");
+        assert_eq!((v.held[0].1 .0, v.held[1].1 .0), (100_000_000, WNEAR_20), "{shown:?}");
         // A hold does not start the cooldown: the next run can be asked for at once.
         rebalance(&mut f, CLOSE + 26);
     }
@@ -3040,7 +3055,7 @@ fn v3_a_quote_whose_deposit_address_stays_open_over_14_days_is_refused() {
     ok_sent(&mut f, 0, now + 1);
     set(ANYONE, now + MAX_DEADLINE_SECONDS + ABANDON_AFTER_SECONDS + 1);
     f.abandon();
-    assert_eq!(f.get_fund().joins_blocked_until, now + MAX_DEADLINE_SECONDS + REFUND_CLOSES_SECONDS);
+    assert_eq!(f.get_fund().joins_blocked_until, now + MAX_DEADLINE_SECONDS + LATE_ARRIVAL_SECONDS);
 }
 
 #[test]
@@ -3054,7 +3069,7 @@ fn v3_joins_are_blocked_after_an_abandon_until_refunds_for_it_close() {
     let at = Q::default().deadline + ABANDON_AFTER_SECONDS + 1;
     set(ANYONE, at);
     f.abandon();
-    let until = Q::default().deadline + REFUND_CLOSES_SECONDS;
+    let until = Q::default().deadline + LATE_ARRIVAL_SECONDS;
     assert_eq!(f.get_fund().joins_blocked_until, until);
     fill_basket(&mut f, CAROL, 9_000_000, 0, at + 1);
     for now in [at + 2, until - 1, until] {
@@ -3087,7 +3102,7 @@ fn v3_a_second_abandon_never_shortens_the_join_block() {
     ok_sent(&mut f, 0, first + 1);
     set(ANYONE, first + MAX_DEADLINE_SECONDS + ABANDON_AFTER_SECONDS + 1);
     f.abandon();
-    let until0 = first + MAX_DEADLINE_SECONDS + REFUND_CLOSES_SECONDS;
+    let until0 = first + MAX_DEADLINE_SECONDS + LATE_ARRIVAL_SECONDS;
     assert_eq!(f.get_fund().joins_blocked_until, until0);
     let second = first + MAX_DEADLINE_SECONDS + ABANDON_AFTER_SECONDS + 10;
     let q = Q { deposit: "c".repeat(64), issued: second - 5, deadline: second + 700, ..Default::default() };
@@ -3095,7 +3110,7 @@ fn v3_a_second_abandon_never_shortens_the_join_block() {
     ok_sent(&mut f, 1, second + 1);
     set(ANYONE, second + 700 + ABANDON_AFTER_SECONDS + 1);
     f.abandon();
-    let until1 = second + 700 + REFUND_CLOSES_SECONDS;
+    let until1 = second + 700 + LATE_ARRIVAL_SECONDS;
     assert!(until1 > until0);
     assert_eq!(f.get_fund().joins_blocked_until, until1, "the later of the two");
 }

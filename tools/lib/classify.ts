@@ -47,6 +47,22 @@ export interface FundFacts {
   forbiddenImports: string[];
   releases: Record<string, Release>;
   allowKnownIssue: boolean;
+  /** The fund account id. Needed with `relay`. */
+  fund?: string;
+  /** Release 0.3 (global-by-hash) funds: what the chain reports about the fund's refund relay.
+   *  Leave undefined only for a fund that carries its own code (releases 0.1 and 0.2 had no relay). */
+  relay?: RelayFacts;
+}
+
+/** The fund's refund relay: the account 1Click refunds go to, which can only hand them to its fund. */
+export interface RelayFacts {
+  /** `get_fund().config.refund_relay`; null if the fund reports none. */
+  account_id: string | null;
+  /** `view_account` of the relay; null if the account does not exist. */
+  account: { code_hash: string; global_contract_hash?: string | null; global_contract_account_id?: string | null } | null;
+  accessKeys: number;
+  /** The relay's `relay_fund` view; null if the call failed (the account is not a relay). */
+  servesFund: string | null;
 }
 
 export type CodeKind = "none" | "local" | "global-by-hash" | "global-by-account";
@@ -96,6 +112,22 @@ export function classifyFund(f: FundFacts): Verdict {
     if (release?.known_issue) {
       knownIssue = release.known_issue;
       check(f.allowKnownIssue, `KNOWN ISSUE in release ${release.version}: ${release.known_issue}${f.allowKnownIssue ? " (allowed by --allow-known-issue)" : ""}`);
+    }
+  }
+  // A release 0.3 fund counts a refund only when its relay pushes it, so the relay must be as
+  // fixed as the fund: same pinned code, no keys, and serving this fund only.
+  if (kind === "global-by-hash") {
+    const r = f.relay;
+    if (!r || !r.account_id) check(false, "the fund reports no refund relay (config.refund_relay)");
+    else if (!r.account) check(false, `refund relay ${r.account_id} does not exist`);
+    else {
+      check(r.accessKeys === 0, r.accessKeys === 0 ? `refund relay ${r.account_id}: 0 access keys` : `refund relay ${r.account_id} has ${r.accessKeys} access key(s): whoever holds one can take refunds`);
+      if (r.account.global_contract_account_id) check(false, `refund relay runs whatever ${r.account.global_contract_account_id} publishes: that account can change it at any time`);
+      else {
+        const relayHash = hashToBase58(r.account.global_contract_hash);
+        check(relayHash !== null && relayHash === codeHash, relayHash !== null && relayHash === codeHash ? "refund relay runs the same pinned code as the fund" : `refund relay code is ${relayHash ?? (r.account.code_hash === NO_CODE_HASH ? "missing" : `its own copy (${r.account.code_hash})`)}, not the fund's ${codeHash}`);
+      }
+      check(!!f.fund && r.servesFund === f.fund, r.servesFund === null ? "refund relay does not answer relay_fund (it is not a relay)" : r.servesFund === f.fund ? "refund relay hands refunds to this fund only" : `refund relay serves ${r.servesFund}, not this fund`);
     }
   }
   return { kind, codeHash, release, checks, knownIssue, verified: checks.every((c) => c.ok) };
