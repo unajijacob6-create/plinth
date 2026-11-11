@@ -74,7 +74,9 @@ test("agent: reads the fund from the chain, asks the model once, returns decisio
   assert.equal(chats[0].headers.authorization, "Bearer test-key-not-a-secret");
   const sent = JSON.parse(chats[0].body);
   assert.equal(sent.max_tokens, AGENT_MAX_TOKENS);
-  assert.ok(AGENT_MAX_TOKENS <= 2000);
+  // Large enough for models that reason before answering (Gemini used ~1,900 tokens on hidden
+  // reasoning on 2026-11-11 and was cut off at 2,000), small enough to bound the key owner's cost.
+  assert.ok(AGENT_MAX_TOKENS >= 4000 && AGENT_MAX_TOKENS <= 8000);
   assert.equal(sent.temperature, 0);
   assert.notEqual(sent.model, "evil/model");
   assert.equal(sent.messages[0].content, AGENT_SYSTEM);
