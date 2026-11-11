@@ -98,7 +98,7 @@ await waitForChainTime(close + 2);
 // ---------------------------------------------------------------- buy wNEAR (test price 1 pUSD = 0.3 wNEAR)
 const amountIn = 15_000_000n; // 15 pUSD = 25% of the holding
 const out = 4_500_000_000_000_000_000_000_000n; // 4.5 wNEAR
-const quote = testQuote({ fund, tradeId: 0, sell: TOKEN, buy: WRAP, amount: amountIn, out, minOut: (out * 995n) / 1000n, inUsd: "15.000000", outUsd: "14.970000", deposit: randomBytes(32).toString("hex") });
+const quote = testQuote({ fund, refundRelay: created.relay, tradeId: 0, sell: TOKEN, buy: WRAP, amount: amountIn, out, minOut: (out * 995n) / 1000n, inUsd: "15.000000", outUsd: "14.970000", deposit: randomBytes(32).toString("hex") });
 run.buy_accepted = ret(await call("propose_buy_wnear", OPERATOR, fund, "propose_trade", { quote }, 0n, 200));
 if (run.buy_accepted !== true) throw new Error(`the contract refused the quote: ${JSON.stringify(await view(fund, "get_rejections", { from: 0, limit: 1 }))}`);
 // The solver pushes the output with msg "trade:0"; the trade settles inside that transfer.

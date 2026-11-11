@@ -8,8 +8,8 @@
 //   1. the AI operator (NEAR AI Cloud, signed receipt) reads the fund and the note and decides;
 //   2. a hold ends the round; a trade is turned into a LIVE 1Click quote for the fund, bound to the
 //      id the trade will get (customRecipientMsg "trade:<id>": 1Click then pushes the output to the
-//      fund with ft_transfer_call). Recipient and refund address are always the fund: the tool does
-//      not take those from the model;
+//      fund with ft_transfer_call). The recipient is always the fund and the refund address its
+//      refund relay: the tool does not take those from the model;
 //   3. the quote is checked off-chain exactly as the contract will check it; --dry stops here;
 //   4. it is proposed; the round then waits for 1Click to deliver. The trade settles inside the
 //      delivery; there is no settle step. A stake settles inside its own transaction.
@@ -40,7 +40,7 @@ const { NETWORK, call, returned, explorer, txHash, log } = await import("./lib/n
 const { requestQuote, preflight, preflightStake, costBps, status, sameEd25519Key } = await import("./lib/oneclick.ts");
 const { decide, decideQuorum, cleanDecision, QUORUM_MODELS } = await import("./lib/agent.ts");
 const { verifyReceipt, attestedSigners, AGENT_MODEL } = await import("./lib/nearai.ts");
-const { ROOT, fundState, requireRelease03, tradeById } = await import("./lib/fund.ts");
+const { ROOT, fundState, requireRelease03, relayOf, tradeById } = await import("./lib/fund.ts");
 type QuoteResponse = import("./lib/oneclick.ts").QuoteResponse;
 
 const fund = a.values["--fund"];
@@ -50,6 +50,7 @@ const state = await fundState(fund);
 requireRelease03(state, fund);
 const tokens: string[] = state.config.mandate.tokens;
 const op = a.values["--operator"] ?? state.config.operator;
+const refundRelay = relayOf(state, fund);
 
 // ---------------------------------------------------------------- test-signer mode (testnet)
 let test: { prices: import("./lib/testprices.ts").TestPrices; solver: string } | null = null;
@@ -78,7 +79,7 @@ if (test) {
       const held = BigInt(state.held[i][1]);
       if (held === 0n) continue;
       try {
-        const q = await requestQuote({ fund, sellToken: t, buyToken: u, amount: String(held / 100n || 1n), tradeId: state.trades, dry: true });
+        const q = await requestQuote({ fund, sellToken: t, buyToken: u, amount: String(held / 100n || 1n), tradeId: state.trades, refundRelay, dry: true });
         prices.push(`${q.quote.amountIn} ${t} -> ${q.quote.amountOut} ${u} (about $${q.quote.amountInUsd})`);
       } catch (e) {
         prices.push(`${t} -> ${u}: no quote (${(e as Error).message.slice(0, 60)})`);
@@ -98,7 +99,7 @@ const save = () => {
   fs.mkdirSync(path.join(ROOT, "data"), { recursive: true });
   fs.appendFileSync(path.join(ROOT, `data/operate-${record.network}.jsonl`), JSON.stringify(record) + "\n");
 };
-/** Exit codes: 0 = done as intended (hold, dry run, settled); 1 = refused or failed;
+/** Exit codes: 0 = done as intended (hold, dry run, settled, refunded); 1 = refused or failed;
  *  3 = sent but not closed yet (1Click has not delivered; see the message). */
 const finish = (code: number, msg: string): never => {
   record.outcome = msg;
@@ -168,9 +169,9 @@ if (test) {
   const { testFill } = await import("./lib/testprices.ts");
   const fill = testFill(test.prices, decision.sell, decision.buy, BigInt(decision.amount));
   out = fill.out;
-  q = JSON.parse(testQuote({ fund, tradeId, sell: decision.sell, buy: decision.buy, amount: BigInt(decision.amount), ...fill, deposit: randomBytes(32).toString("hex") }));
+  q = JSON.parse(testQuote({ fund, refundRelay, tradeId, sell: decision.sell, buy: decision.buy, amount: BigInt(decision.amount), ...fill, deposit: randomBytes(32).toString("hex") }));
 } else {
-  q = await requestQuote({ fund, sellToken: decision.sell, buyToken: decision.buy, amount: decision.amount, tradeId, dry, slippageBps: 50 });
+  q = await requestQuote({ fund, sellToken: decision.sell, buyToken: decision.buy, amount: decision.amount, tradeId, refundRelay, dry, slippageBps: 50 });
 }
 // A dry 1Click quote has no deposit address or deadline: check it as if live, without those.
 const why = !test && dry ? preflight({ ...q, quoteRequest: { ...q.quoteRequest, dry: false } }, fund, fresh).filter((r) => !/signature|dry|closes too soon/.test(r)) : preflight(q, fund, fresh);
@@ -208,8 +209,9 @@ if (trade?.status === "Sent") {
 }
 record.settle_status = trade?.status ?? "unknown";
 if (trade?.status === "Settled") finish(0, `trade ${tradeId} Settled ${explorer(record.tx)}`);
+if (trade?.status === "Refunded") finish(0, `trade ${tradeId} Refunded: 1Click sent the input back through the relay ${explorer(record.tx)}`);
 if (trade?.status === "Sent") {
-  const at = new Date((trade.sent_at + 3600) * 1000).toISOString();
-  finish(3, `trade ${tradeId} is sent and not delivered yet (1Click: ${record.oneclick_status ?? "unknown"}). It settles by itself when the output arrives; if 1Click refunds instead, anyone can count the refund after ${at}: npm run operator -- settle-refund ${tradeId} --fund ${fund}${NETWORK === "mainnet" ? " --network mainnet" : ""} ${explorer(record.tx)}`);
+  const net = NETWORK === "mainnet" ? " --network mainnet" : "";
+  finish(3, `trade ${tradeId} is sent and not delivered yet (1Click: ${record.oneclick_status ?? "unknown"}). It settles by itself when the output arrives. If 1Click refunds instead, the refund lands on the relay ${refundRelay} and anyone hands it to the fund: npm run operator -- forward-refund ${fund} ${tokens[trade.sell]} <amount>${net} --as <account> ${explorer(record.tx)}`);
 }
 finish(1, `trade ${tradeId} ${record.settle_status} ${explorer(record.tx)}`);

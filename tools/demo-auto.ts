@@ -13,7 +13,8 @@
 //   2. a keyless fund with that strategy is created by the factory; Alice subscribes;
 //   3. after the window closes the operator tries to propose and is rejected (recorded);
 //   4. anyone (--as, default bob.<parent>) calls `rebalance` with --near NEAR for the OutLayer run
-//      (at least 0.005) and 300 TGas. OutLayer runs the program in a TEE; its answer goes through
+//      (at least 0.005) and 300 TGas. If OutLayer refuses the request outright, that NEAR stays
+//      with the fund (the contract cannot send NEAR back). OutLayer runs the program in a TEE; its answer goes through
 //      exactly the checks an operator's proposal does. The decision events and the resulting trade
 //      are printed;
 //   5. if a swap was sent, the solver stand-in delivers its output (1Click has no testnet).

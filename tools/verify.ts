@@ -12,17 +12,20 @@
 //   3. the hash is a release listed in data/releases.json (and, with --wasm, equals a local build);
 //   4. the code imports no host function that can deploy code, add/delete keys, stake or delete
 //      the account (so even the contract itself can never do it);
-//   5. the release has no known issue. Releases 0.1 and 0.2 have one (they count bounced transfers
+//   5. (release 0.3) the fund's refund relay, the account 1Click refunds go to: it exists, has
+//      zero access keys, runs the same pinned code as the fund, follows nobody's updatable code,
+//      and serves this fund only (its `relay_fund` view);
+//   6. the release has no known issue. Releases 0.1 and 0.2 have one (they count bounced transfers
 //      as holdings): they fail unless --allow-known-issue is given, and the warning is printed
 //      either way.
 // Then prints the version, mandate, operator and quote signer the contract reports.
-// Exit code 0 only if 1-5 hold.
+// Exit code 0 only if 1-6 hold.
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import bs58 from "bs58";
 import { parseArgs, plainErrors, withUsage, UsageError } from "./lib/args.ts";
-import { classifyFund, type ReleasesFile } from "./lib/classify.ts";
+import { classifyFund, type RelayFacts, type ReleasesFile } from "./lib/classify.ts";
 import { ONECLICK_KEY, sameEd25519Key, type FundState } from "./lib/oneclick.ts";
 
 plainErrors();
@@ -65,7 +68,19 @@ if (bytes) {
     forbiddenImports = [`(import scan failed: ${(e as Error).message})`];
   }
 }
-const v = classifyFund({ account: acct, accessKeys: await accessKeyCount(fund), fetchedCodeHash: bytes ? sha(bytes) : null, forbiddenImports, releases, allowKnownIssue: a.switches.has("--allow-known-issue") });
+// Release 0.3: the fund's refund relay (where 1Click refunds go) must be as fixed as the fund.
+let relay: RelayFacts | undefined;
+if (acct.global_contract_hash && !acct.global_contract_account_id) {
+  const relayId = await view<FundState>(fund, "get_fund").then((f) => f.config.refund_relay ?? null, () => null);
+  const relayAcct = relayId ? await accountView(relayId).catch((e) => (e?.rpcName === "UNKNOWN_ACCOUNT" ? null : Promise.reject(e))) : null;
+  relay = {
+    account_id: relayId,
+    account: relayAcct,
+    accessKeys: relayId && relayAcct ? await accessKeyCount(relayId) : 0,
+    servesFund: relayId && relayAcct ? await view<string>(relayId, "relay_fund").catch(() => null) : null,
+  };
+}
+const v = classifyFund({ account: acct, accessKeys: await accessKeyCount(fund), fetchedCodeHash: bytes ? sha(bytes) : null, forbiddenImports, releases, allowKnownIssue: a.switches.has("--allow-known-issue"), fund, relay });
 let ok = v.verified;
 for (const c of v.checks) console.log(`${c.ok ? "  ok " : "  XX "} ${c.text}`);
 if (bytes) console.log(`       code: ${bytes.length} bytes, ${v.kind === "global-by-hash" ? "published once as a global contract; the fund stores only the hash" : "stored on the fund account"}`);

@@ -15,7 +15,7 @@ import { randomBytes } from "node:crypto";
 process.env.NEAR_NETWORK = "testnet";
 const { view, call, returned, explorer, txHash, log } = await import("./lib/near.ts");
 const { sameEd25519Key } = await import("./lib/oneclick.ts");
-const { fundState, requireRelease03 } = await import("./lib/fund.ts");
+const { fundState, requireRelease03, relayOf } = await import("./lib/fund.ts");
 const { deliver } = await import("./lib/solver.ts");
 const { decideQuorum, QUORUM_MODELS } = await import("./lib/agent.ts");
 const { verifyReceipt, attestedSigners } = await import("./lib/nearai.ts");
@@ -34,6 +34,7 @@ const [pusd, wrap] = state0.config.mandate.tokens as string[];
 requireRelease03(state0, FUND);
 if (!sameEd25519Key(state0.config.quote_signer, testSigner().public_key)) throw new Error(`${FUND} does not use this machine's test quote signer`);
 const operator: string = state0.config.operator;
+const RELAY = relayOf(state0, FUND);
 const [primary, second] = QUORUM_MODELS;
 
 const CASES = [
@@ -68,8 +69,8 @@ for (const { label, note, models } of CASES) {
     // The quote is bound to the id the trade will get: the output is pushed with "trade:<id>".
     const tradeId = state.trades;
     const quote = testQuote({
-      fund: FUND, tradeId, sell: d.sell!, buy: d.buy!, amount, out, minOut: (out * 995n) / 1000n, inUsd: usd, outUsd: (Number(usd) * 0.998).toFixed(6),
-      recipient: d.recipient || FUND, refundTo: d.recipient && d.recipient !== FUND ? d.recipient : FUND, deposit: randomBytes(32).toString("hex"),
+      fund: FUND, refundRelay: RELAY, tradeId, sell: d.sell!, buy: d.buy!, amount, out, minOut: (out * 995n) / 1000n, inUsd: usd, outUsd: (Number(usd) * 0.998).toFixed(6),
+      recipient: d.recipient || FUND, refundTo: d.recipient && d.recipient !== FUND ? d.recipient : RELAY, deposit: randomBytes(32).toString("hex"),
     });
     const r = await call(operator, FUND, "propose_trade", { quote }, { gas: 200 });
     c.tx = txHash(r);
