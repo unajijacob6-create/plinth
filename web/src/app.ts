@@ -655,7 +655,7 @@ async function act(f: FundCard, kind: string) {
       const receiving = tokens.filter((_, i) => (big(s.held[i][1]) * burn) / total > 0n);
       const r = await send([...(await registrations(me, receiving)), { receiverId: f.id, methodName: "redeem", args: { shares: burn.toString() }, gas: TGAS(200) }]);
       const left = await shares();
-      f.ui.exitAmt = "";
+      if (left < mine) f.ui.exitAmt = "";
       setMsg(f, left < mine ? `Exited with ${units(mine - left, sd, 6)} shares: your slice of every token is on its way to you.` : "The exit did not go through; your shares are unchanged.", r.hashes.pop());
     } else if (kind === "claim") {
       const owed = await view<string[]>(NET, f.id, "get_owed", { account_id: me });

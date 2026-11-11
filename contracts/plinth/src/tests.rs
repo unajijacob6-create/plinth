@@ -3804,7 +3804,7 @@ fn v3_a_rewrap_is_tracked_from_dispatch_to_callback_on_every_path() {
     assert_eq!(f.rewrap_started, 0);
     unwrapped(&mut f, 0, CLOSE + 21);
     staked(&mut f, 0, None, CLOSE + 22);
-    assert_eq!((f.rewrap_started, f.near_in_flight), (CLOSE + 22, 0));
+    assert_eq!((f.rewrap_started, f.near_in_flight), (0, 0), "a stake's own re-wrap needs no marker: the stake is still pending");
     assert_eq!(f.get_fund().pending.unwrap().status, TradeStatus::Sending, "the legitimate chain is not a late callback");
     set_with_results(CLOSE + 23, vec![PromiseResult::Successful(vec![])]);
     f.on_rewrapped(0, U128(FIVE));
@@ -3817,7 +3817,8 @@ fn v3_a_rewrap_is_tracked_from_dispatch_to_callback_on_every_path() {
     set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
     g.on_unwrapped(0);
     assert!(!get_logs().iter().any(|l| l.contains("late callback")));
-    assert_eq!((g.rewrap_started, g.near_in_flight), (CLOSE + 21, 0));
+    assert_eq!((g.rewrap_started, g.near_in_flight), (0, 0));
+    assert_eq!(g.get_fund().pending.unwrap().status, TradeStatus::Sending);
     set_with_results(CLOSE + 22, vec![PromiseResult::Failed]);
     g.on_rewrapped(0, U128(FIVE));
     assert!(!get_logs().iter().any(|l| l.contains("late callback")));
@@ -4074,7 +4075,6 @@ fn v3_bug_a_lost_on_rewrapped_must_not_block_refunds_and_joins_for_ever() {
     assert!(f.stake_idle(U128(FIVE)));
     set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
     f.on_unwrapped(0); // re-wrap dispatched; its callback is lost
-    assert_eq!(f.rewrap_started, CLOSE + 21);
     with_balance(ANYONE, DAY_AFTER_STAKE, 20_000);
     f.recover_stuck_stake();
     assert!(f.get_fund().pending.is_none());
@@ -4127,9 +4127,10 @@ fn v3_a_lost_rewrap_retry_delays_refunds_and_joins_by_an_hour_at_most() {
     assert_eq!(refund_cb(&mut g, 1, flux, 90_000_000 + REFUND, retry + 3_602), TradeStatus::Refunded);
 }
 
-// ------------------------------------------------------------------ v3: suspected contract bugs (pass 4)
+// ------------------------------------------------------------------ v3: regression for the pass-4 finding (fixed)
 
-/// BUG 10 (low; narrow timing). There is ONE `rewrap_started` for two re-wraps that can be in
+/// Was BUG 10 (fixed: the marker now belongs to `rewrap_stranded` retries only, and a stake's own
+/// re-wrap is covered by the stake staying pending). As found: there was ONE `rewrap_started` for two re-wraps that can be in
 /// flight together: a stake's own (`rewrap`, lib.rs ~911) and a `rewrap_stranded` retry of NEAR
 /// stranded earlier (lib.rs ~953). Whichever `on_rewrapped` lands first sets it to 0
 /// (lib.rs ~925 / ~932) while the other near_deposit is still on its way, so `rewrap_in_flight()`
@@ -4141,7 +4142,6 @@ fn v3_a_lost_rewrap_retry_delays_refunds_and_joins_by_an_hour_at_most() {
 /// counted. Mallory joins with 100 USDC + 15 wNEAR (half the fund); the retry lands (+5 wNEAR);
 /// she redeems 17.5 wNEAR. Expected: the join is refused until the retry has resolved.
 #[test]
-#[ignore = "contract bug: one rewrap_started for two overlapping re-wraps; the first callback clears the guard for the second"]
 fn v3_bug_overlapping_rewraps_must_both_keep_joins_closed() {
     let mut f = stranded_fund(); // 100 USDC, 15 wNEAR, 5 NEAR stranded
     let three = 3 * 10u128.pow(24);
@@ -4168,4 +4168,58 @@ fn v3_bug_overlapping_rewraps_must_both_keep_joins_closed() {
         let out = f.get_fund().in_flight_payouts[1].0;
         assert!(out <= wnear_in, "Mallory put in {wnear_in} wNEAR and took out {out}");
     }
+}
+
+#[test]
+fn v3_a_second_rewrap_retry_waits_for_the_first() {
+    // 5 NEAR stranded; a retry is sent at `t`; then a second stake fails and strands 3 more.
+    let three = 3 * 10u128.pow(24);
+    let t = CLOSE + 20 + 700;
+    let setup = || {
+        let mut f = stranded_fund();
+        with_balance(ANYONE, t, 20_000);
+        f.rewrap_stranded();
+        assert_eq!((f.rewrap_started, f.get_fund().stranded_near.0), (t, 0));
+        assert!(panics(|| f.rewrap_stranded()).contains("nothing stranded"));
+        with_balance(OPERATOR, t, 20_000);
+        assert!(f.stake_idle(U128(three)));
+        set_with_results(t + 1, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
+        f.on_unwrapped(1);
+        set_with_results(t + 2, vec![PromiseResult::Failed]);
+        f.on_rewrapped(1, U128(three));
+        // The stake's own callback did not touch the retry's marker.
+        assert_eq!((f.rewrap_started, f.get_fund().stranded_near.0, trade(&f, 1).status), (t, three, TradeStatus::Failed));
+        f
+    };
+    // While the first retry is in flight a second is refused, up to and including the hour.
+    let mut f = setup();
+    for now in [t + 3, t + 3_600] {
+        with_balance(ANYONE, now, 20_000);
+        assert!(panics(|| f.rewrap_stranded()).contains("a re-wrap is already on its way; try again shortly"), "{now}");
+        assert_eq!((f.rewrap_started, f.get_fund().stranded_near.0), (t, three), "{now}");
+    }
+    // Allowed once the first has landed...
+    set_with_results(t + 4, vec![PromiseResult::Successful(vec![])]);
+    f.on_rewrapped(u64::MAX, U128(FIVE));
+    assert_eq!((f.rewrap_started, held(&f, 1)), (0, 12 * 10u128.pow(24) + FIVE));
+    with_balance(ANYONE, t + 5, 20_000);
+    f.rewrap_stranded();
+    assert_eq!((f.rewrap_started, f.get_fund().stranded_near.0), (t + 5, 0));
+    set_with_results(t + 6, vec![PromiseResult::Successful(vec![])]);
+    f.on_rewrapped(u64::MAX, U128(three));
+    assert_eq!((f.rewrap_started, held(&f, 1), f.get_fund().stranded_near.0), (0, WNEAR_20, 0));
+    // ...or, if its callback is lost, an hour and a second after it was sent.
+    let mut g = setup();
+    with_balance(ANYONE, t + 3_601, 20_000);
+    g.rewrap_stranded();
+    assert_eq!((g.rewrap_started, g.get_fund().stranded_near.0), (t + 3_601, 0));
+    // A first retry that failed (NEAR back, stranded again) can be retried at once.
+    let mut h = stranded_fund();
+    with_balance(ANYONE, t, 20_000);
+    h.rewrap_stranded();
+    set_with_results(t + 1, vec![PromiseResult::Failed]);
+    h.on_rewrapped(u64::MAX, U128(FIVE));
+    assert_eq!((h.rewrap_started, h.get_fund().stranded_near.0), (0, FIVE));
+    with_balance(ANYONE, t + 2, 20_000);
+    h.rewrap_stranded();
 }

@@ -51,6 +51,7 @@ export function withUsage<T>(usageText: string, fn: () => T): T {
  *  PLINTH_DEBUG=1 keeps the stack. */
 export function plainErrors(): void {
   const die = (e: unknown) => {
+    if ((e as NodeJS.ErrnoException)?.code === "EPIPE") process.exit(0); // output piped into a reader that closed, e.g. `| head`
     console.error(process.env.PLINTH_DEBUG ? e : `error: ${(e as Error)?.message ?? e}`);
     process.exit(1);
   };

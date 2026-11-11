@@ -93,9 +93,16 @@ export const pctOf = (hundredths: number) => `${Number((hundredths / 100).toFixe
 const NAMESAKE: Record<string, string> = { "wrap.testnet": "wrap.near", "meta-v2.pool.testnet": "meta-pool.near", "wrap.near": "wrap.near", "meta-pool.near": "meta-pool.near" };
 let prices: Record<string, number> | null = null;
 let pricesAsked: Promise<Record<string, number> | null> | null = null;
-export function loadPrices(): Promise<Record<string, number> | null> {
-  return (pricesAsked ??= fetch("https://1click.chaindefuser.com/v0/tokens")
+const ONECLICK_TOKENS = "https://1click.chaindefuser.com/v0/tokens";
+const getList = (url: string): Promise<any[]> =>
+  fetch(url)
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error("no prices"))))
+    .then((list) => (Array.isArray(list) ? list : Promise.reject(new Error("no prices"))));
+export function loadPrices(): Promise<Record<string, number> | null> {
+  // The optional API serves the same list from its cache; without it, or if it fails, ask 1Click.
+  const api = import.meta.env.VITE_PLINTH_API as string | undefined;
+  const first = typeof api === "string" ? getList(`${api.replace(/\/$/, "")}/api/tokens`).catch(() => getList(ONECLICK_TOKENS)) : getList(ONECLICK_TOKENS);
+  return (pricesAsked ??= first
     .then((list: any[]) => {
       const out: Record<string, number> = {};
       for (const t of list) if (t?.blockchain === "near" && typeof t.contractAddress === "string" && Number.isFinite(t.price) && t.price > 0) out[t.contractAddress] = t.price;
