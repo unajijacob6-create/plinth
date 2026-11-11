@@ -286,6 +286,10 @@ fn every_mandate_rule_refuses_and_records_its_reason() {
         (Q { msg: Some("trade:1".into()), ..Default::default() }, CLOSE + 20, "quote must set customRecipientMsg to \"trade:0\""),
         (Q { msg: Some("trade:00".into()), ..Default::default() }, CLOSE + 20, "quote must set customRecipientMsg to \"trade:0\""),
         (Q { min_out: 3_000_000_000_000_000_000_000_000, ..Default::default() }, CLOSE + 20, "not usable"),
+        // A refund of amount_in - refund_fee must be able to close the trade: a fee that eats the
+        // whole amount (or more) would leave a refunded trade pending until it is written off.
+        (Q { refund_fee: 10_000_000, ..Default::default() }, CLOSE + 20, "refund fee is not below the amount"),
+        (Q { refund_fee: 10_000_001, ..Default::default() }, CLOSE + 20, "refund fee is not below the amount"),
     ];
     for (q, now, why) in cases {
         let mut f = funded();
@@ -3622,30 +3626,20 @@ fn v3_refund_pushes_accumulate_to_amount_in_minus_refund_fee() {
 
 #[test]
 fn v3_the_refund_floor_follows_the_quotes_refund_fee() {
-    // (refund fee, smallest relay refund that closes the trade)
-    for (fee, floor) in [(0u128, Some(AMOUNT_IN)), (4_500, Some(AMOUNT_IN - 4_500)), (AMOUNT_IN - 1, Some(1)), (AMOUNT_IN, None), (AMOUNT_IN + 5, None)] {
+    // (refund fee, smallest relay refund that closes the trade). A fee at or above the amount is
+    // refused at proposal time (see the mandate-rule table), so the floor is always at least 1.
+    for (fee, floor) in [(0u128, AMOUNT_IN), (4_500, AMOUNT_IN - 4_500), (AMOUNT_IN - 1, 1)] {
         let mut f = funded();
         assert!(propose(&mut f, &Q { refund_fee: fee, ..Default::default() }, CLOSE + 20));
         ok_sent(&mut f, 0, CLOSE + 21);
-        match floor {
-            Some(floor) => {
-                if floor > 1 {
-                    assert_eq!(relay_refund(&mut f, USDC, floor - 1, LATER), 0);
-                    assert_eq!(trade(&f, 0).status, TradeStatus::Sent, "fee {fee}");
-                    assert_eq!(relay_refund(&mut f, USDC, 1, LATER), 0);
-                } else {
-                    assert_eq!(relay_refund(&mut f, USDC, 1, LATER), 0);
-                }
-                assert_eq!((trade(&f, 0).status, held(&f, 0)), (TradeStatus::Refunded, 90_000_000 + floor), "fee {fee}");
-            }
-            None => {
-                // A quote whose refund fee eats the whole input can never close as refunded; the
-                // tokens are still kept, and the trade is written off in the end.
-                assert_eq!(relay_refund(&mut f, USDC, AMOUNT_IN, LATER), 0);
-                assert_eq!((trade(&f, 0).status, held(&f, 0)), (TradeStatus::Sent, 100_000_000), "fee {fee}");
-                assert_eq!(f.get_fund().pending.unwrap().id, 0);
-            }
+        if floor > 1 {
+            assert_eq!(relay_refund(&mut f, USDC, floor - 1, LATER), 0);
+            assert_eq!(trade(&f, 0).status, TradeStatus::Sent, "fee {fee}");
+            assert_eq!(relay_refund(&mut f, USDC, 1, LATER), 0);
+        } else {
+            assert_eq!(relay_refund(&mut f, USDC, 1, LATER), 0);
         }
+        assert_eq!((trade(&f, 0).status, held(&f, 0)), (TradeStatus::Refunded, 90_000_000 + floor), "fee {fee}");
     }
 }
 

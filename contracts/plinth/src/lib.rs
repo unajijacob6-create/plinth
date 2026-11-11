@@ -1155,6 +1155,10 @@ impl Plinth {
         if q.amount_in == 0 || q.min_amount_out == 0 || q.min_amount_out > q.amount_out {
             return fail("quote amounts are not usable".into());
         }
+        if q.refund_fee >= q.amount_in {
+            // A refund of amount_in - refund_fee must be able to close the trade.
+            return fail("the quote's refund fee is not below the amount".into());
+        }
         let held = self.held[sell];
         if q.amount_in > mul_div(held, m.max_trade_bps as u128, 10_000).unwrap_or(0) {
             return fail(format!("trade of {} is over {} bps of the {} held", q.amount_in, m.max_trade_bps, held));

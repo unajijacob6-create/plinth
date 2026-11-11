@@ -89,6 +89,16 @@ checks after each attempt that the fund counts exactly what it holds and that th
 balance never grows. `regression_a_basket_cannot_be_drained_through_a_faked_refund` replays the
 reviewer's exploit.
 
+Three things the relay design does not do, found by the test review and accepted:
+
+- Anyone can pay a trade's refund amount to the relay and forward it, closing someone's trade as
+  refunded while 1Click still delivers. The fund keeps both amounts; the payer loses what they
+  paid. If the output then arrives, the trade becomes settled.
+- Nothing on chain checks that a relay's fund names it back, or that the relay registered on the
+  same tokens. The factory sets both from one config, and the verifier checks both directions.
+- A quote whose refund fee is not below its amount is refused at proposal time, since its refund
+  could never close the trade.
+
 **No balance is read anywhere in the fund's code.** The cost of that rule:
 
 - Tokens sent straight to a fund with a plain transfer are never counted. They stay in its balance
