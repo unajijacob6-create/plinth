@@ -14,9 +14,16 @@
 //   - an attacker who bounces tokens off the fund (ft_transfer_call with msg "", which the fund hands
 //     back) and calls `settle` / `absorb`, the entry points of releases 0.1 and 0.2 that counted a
 //     bounced transfer as holdings: holdings do not change and the trade stays in flight;
+//     the attacker also bounces tokens off the fund's refund relay while relay_forward is called.
+//     At every step the fund's counted holdings equal its real balance and the attacker's own
+//     balance never grows;
 //   - the delivery push, which settles the trade inside the transfer;
 //   - an in-kind join by a new account after trading started, and that account's in-kind exit;
+//   - after the mandate's cooldown (11 minutes), a second trade that "1Click" refunds: the input
+//     comes back to the fund's relay as a plain transfer, a third account calls relay_forward, the
+//     trade ends Refunded and the holdings are restored less the refund fee;
 //   - Bob's in-kind exit.
+// The run takes about 15 minutes: 2 for the subscription window, 11 for the cooldown.
 //
 // Accounts, all created here and funded only from the public testnet faucet: the parent
 // (PLINTH_PARENT, default plinthfund.testnet), pusd.<parent> (a test dollar, 6 decimals, mintable by
@@ -31,7 +38,7 @@ process.env.NEAR_NETWORK = "testnet";
 const { view, accountView, accountExists, accessKeyCount, chainSeconds, send, call, returned, failure, TGAS, NEAR, explorer, txHash, log } = await import("./lib/near.ts");
 const { ROOT, factoryFor, createFund, fundState, waitForChainTime } = await import("./lib/fund.ts");
 const { testQuote, testSigner } = await import("./lib/testsigner.ts");
-const { deliver } = await import("./lib/solver.ts");
+const { deliver, forwardRefund, refundViaRelay } = await import("./lib/solver.ts");
 const { basketAmounts } = await import("./lib/basket.ts");
 type Config = import("./lib/config.ts").Config;
 
@@ -128,7 +135,9 @@ run.config = config;
 // factory.create_fund: CreateAccount, Transfer, UseGlobalContract(hash), new(config) in one receipt, no AddKey.
 const created = await createFund({ from: PARENT, factory: FACTORY, name: `fund-${Date.now().toString(36)}`, config, near: NEAR(1) });
 const fund = created.fund;
+const RELAY = created.relay; // where a 1Click refund goes; it can only hand tokens to this fund
 run.fund = fund;
+run.relay = RELAY;
 run.tx.create_fund_keyless = created.tx;
 run.created = created;
 run.access_keys_after_create = created.access_keys;
@@ -143,8 +152,8 @@ await waitForChainTime(close + 2);
 const OUT = 20_000_000_000_000_000_000_000n; // 0.02 wNEAR for 10 pUSD (test prices)
 const MIN_OUT = 19_900_000_000_000_000_000_000n;
 const dep = randomBytes(32).toString("hex"); // a fresh implicit account, unregistered on the token, like a 1Click deposit address
-const quote = (o: { amount: bigint; out: bigint; minOut: bigint; inUsd: string; outUsd: string; recipient?: string; customRecipientMsg?: string | null }) =>
-  testQuote({ fund, tradeId: 0, sell: TOKEN, buy: WRAP, deposit: dep, ...o });
+const quote = (o: { amount: bigint; out: bigint; minOut: bigint; inUsd: string; outUsd: string; recipient?: string; customRecipientMsg?: string | null; tradeId?: number; deposit?: string }) =>
+  testQuote({ fund, refundRelay: RELAY, tradeId: 0, sell: TOKEN, buy: WRAP, deposit: dep, ...o });
 const propose = (key: string, q: string) => step(key, call(OPERATOR, fund, "propose_trade", { quote: q }, { gas: 200 }));
 
 // ---------------------------------------------------------------- refused: output to the operator
@@ -159,11 +168,16 @@ run.rejection_no_delivery_msg = (await view<any[]>(fund, "get_rejections", { fro
 // ---------------------------------------------------------------- the attacker bounces a non-base token (no trade in flight)
 await wrapTo(MALLORY, OUT);
 await mintTo(MALLORY, 5_000_000n);
+/** What the fund counts (holdings, failed payouts, payouts in flight, baskets) next to what the
+ *  token contracts say it really holds, and the attacker's own balances. */
 const snapshot = async () => {
   const s = await fundState(fund);
-  return { held: s.held, pending_status: s.pending?.status ?? null, trades: s.trades, balances: [String(await ft(fund)), String(await ft(fund, WRAP))] };
+  const counted = s.held.map(([, v], i) => String(BigInt(v) + BigInt(s.owed_total![i]) + BigInt(s.in_flight_payouts![i]) + BigInt(s.basket_total![i])));
+  const balances = [String(await ft(fund)), String(await ft(fund, WRAP))];
+  return { held: s.held, pending_status: s.pending?.status ?? null, trades: s.trades, counted, balances, counted_equals_balance: counted.every((c, i) => c === balances[i]), attacker: [String(await ft(MALLORY)), String(await ft(MALLORY, WRAP))] };
 };
-const attack: any = { attacker: MALLORY, note: "ft_transfer_call with msg \"\" is handed back by the fund (not a subscription, donation, basket or trade output). Releases 0.1 and 0.2 could be made to count such a transfer while it sat in the fund's balance; `settle` and `absorb` were the entry points. Release 0.3 has neither and never reads a balance for trade output." };
+const notRicher = (before: { attacker: string[] }, after: { attacker: string[] }) => after.attacker.every((b, i) => BigInt(b) <= BigInt(before.attacker[i]));
+const attack: any = { attacker: MALLORY, note: "ft_transfer_call with msg \"\" is handed back by the fund (not a subscription, donation, basket or trade output). Releases 0.1 and 0.2 could be made to count such a transfer while it sat in the fund's balance; `settle` and `absorb` were the entry points. Release 0.3 has neither and reads no balance at all: a refund reaches the fund only as a push from its relay." };
 attack.before_trade = { before: await snapshot() };
 {
   const mine = await ft(MALLORY, WRAP);
@@ -189,12 +203,12 @@ attack.in_flight = { before: await snapshot() };
     push(MALLORY, WRAP, fund, OUT, ""),
     call(BOB, fund, "settle", {}, { allowFailure: true }),
     call(ALICE, fund, "absorb", { token_index: 1 }, { gas: 50, allowFailure: true }),
-    call(CAROL, fund, "settle_refund", { trade_id: 0 }, { allowFailure: true }),
+    call(CAROL, fund, "settle_refund", { trade_id: 0 }, { allowFailure: true }), // existed in early 0.3 builds; gone
   ]);
   await step("attack_bounce_wnear_in_flight", Promise.resolve(bounce));
   await step("attack_call_settle", Promise.resolve(settle));
   await step("attack_call_absorb", Promise.resolve(absorb));
-  await step("attack_call_settle_refund_early", Promise.resolve(refund));
+  await step("attack_call_settle_refund", Promise.resolve(refund));
   attack.in_flight.bounce_fund_kept = returned(bounce);
   attack.in_flight.settle_failed = failure(settle);
   attack.in_flight.absorb_failed = failure(absorb);
@@ -205,9 +219,32 @@ attack.in_flight = { before: await snapshot() };
 }
 attack.holdings_unchanged = JSON.stringify(attack.before_trade.before.held) === JSON.stringify(attack.before_trade.after.held) && JSON.stringify(attack.in_flight.before.held) === JSON.stringify(attack.in_flight.after.held);
 attack.trade_still_in_flight = attack.in_flight.after.pending_status === "Sent";
+
+// ---------------------------------------------------------------- the attacker bounces tokens off the relay while relay_forward is called
+// The relay has no ft_on_transfer, so a ft_transfer_call to it comes back. If relay_forward runs
+// while the tokens sit there, the relay really hands them to the fund: the attacker has given
+// them away. Either way the fund counts exactly what it holds. (wNEAR, not the token trade 0
+// sold, so the trade in flight is not touched.)
+const RELAY_BOUNCE = 1_000_000_000_000_000_000_000n; // 0.001 wNEAR
+await wrapTo(MALLORY, RELAY_BOUNCE);
+attack.relay = { relay: RELAY, amount: String(RELAY_BOUNCE), before: await snapshot() };
+{
+  const [bounce, forward] = await Promise.all([push(MALLORY, WRAP, RELAY, RELAY_BOUNCE, "", true), forwardRefund({ from: BOB, relay: RELAY, token: WRAP, amount: RELAY_BOUNCE, allowFailure: true })]);
+  await step("attack_bounce_wnear_off_relay", Promise.resolve(bounce));
+  await step("attack_call_relay_forward", Promise.resolve(forward));
+  attack.relay.relay_kept = returned(bounce);
+  attack.relay.forward_failed = failure(forward);
+  attack.relay.after = await snapshot();
+  // true: the forward caught the tokens, so the attacker donated them to the fund.
+  attack.relay.attacker_donated = attack.relay.after.held[1][1] !== attack.relay.before.held[1][1];
+  attack.relay.relay_balance_after = String(await ft(RELAY, WRAP));
+}
+attack.counted_always_equals_balance = [attack.before_trade.before, attack.before_trade.after, attack.in_flight.before, attack.in_flight.after, attack.relay.before, attack.relay.after].every((x: any) => x.counted_equals_balance);
+attack.attacker_never_richer = notRicher(attack.before_trade.before, attack.before_trade.after) && notRicher(attack.in_flight.before, attack.in_flight.after) && notRicher(attack.relay.before, attack.relay.after);
+attack.trade_still_in_flight = attack.trade_still_in_flight && attack.relay.after.pending_status === "Sent";
 run.attack = attack;
-if (!attack.holdings_unchanged || !attack.trade_still_in_flight || !attack.in_flight.settle_failed || !attack.in_flight.absorb_failed || !attack.in_flight.settle_refund_failed) throw new Error(`the attack changed the fund: ${JSON.stringify(attack)}`);
-log("attack", "holdings unchanged, trade 0 still in flight; settle and absorb do not exist");
+if (!attack.holdings_unchanged || !attack.trade_still_in_flight || !attack.counted_always_equals_balance || !attack.attacker_never_richer || !attack.in_flight.settle_failed || !attack.in_flight.absorb_failed || !attack.in_flight.settle_refund_failed) throw new Error(`the attack changed the fund: ${JSON.stringify(attack)}`);
+log("attack", `fund bounces: holdings unchanged; relay bounce: ${attack.relay.attacker_donated ? "the attacker gave the tokens to the fund" : "nothing moved"}; counted holdings equal the real balance throughout; trade 0 still in flight`);
 
 // ---------------------------------------------------------------- the solver delivers: the push settles the trade
 const d = await deliver({ solver: SOLVER, fund, token: WRAP, amount: OUT, tradeId: 0 });
@@ -245,6 +282,44 @@ run.after_settle = await fundState(fund);
   run.after_join_exit = await fundState(fund);
 }
 
+// ---------------------------------------------------------------- 1Click refunds a trade
+// A second trade, after the mandate's cooldown. Instead of delivering, the stand-in for 1Click sends
+// the input back (less its refund fee) to the quote's refundTo, the relay, with a plain transfer.
+// A third account asks the relay to hand it over; the fund sees it arrive and closes the trade.
+{
+  const last = (await fundState(fund)).last_trade_at;
+  log("waiting for the cooldown", `${last + 662 - (await chainSeconds())} s`);
+  await waitForChainTime(last + 662, 10_000);
+  const before = await fundState(fund);
+  const dep2 = randomBytes(32).toString("hex");
+  const ok = returned(await propose("propose_trade_to_be_refunded", quote({ amount: 10_000_000n, out: OUT, minOut: MIN_OUT, inUsd: "10.000000", outUsd: "9.980000", tradeId: before.trades, deposit: dep2 })));
+  if (ok !== true) throw new Error(`the contract refused the second quote: ${JSON.stringify(await view(fund, "get_rejections", { from: 3, limit: 5 }))}`);
+  const sent = await fundState(fund);
+  const fee = BigInt(sent.pending!.refund_fee);
+  await mintTo(SOLVER, 10_000_000n - fee);
+  const r = await refundViaRelay({ solver: SOLVER, forwarder: CAROL, fund, tradeId: before.trades });
+  run.tx.refund_sent_to_relay = r.transfer_tx;
+  run.tx.relay_forward = r.forward_tx;
+  const after = await fundState(fund);
+  run.refund = {
+    trade_id: before.trades,
+    deposit_address: dep2,
+    relay: RELAY,
+    forwarded_by: CAROL,
+    refund_fee: String(fee),
+    amount: r.amount,
+    held_before: before.held,
+    held_in_flight: sent.held,
+    held_after: after.held,
+    trade: r.trade,
+    status: r.trade.status,
+    restored_less_fee: BigInt(after.held[0][1]) === BigInt(before.held[0][1]) - fee && after.held[1][1] === before.held[1][1],
+    relay_balance_after: String(await ft(RELAY)),
+  };
+  if (!run.refund.restored_less_fee || after.pending !== null) throw new Error(`the refund did not restore the holdings: ${JSON.stringify(run.refund)}`);
+  log("refund", `trade ${before.trades} Refunded; holdings restored less the ${fee} refund fee`);
+}
+
 // ---------------------------------------------------------------- bob exits in kind
 const bobPusd = await ft(BOB), bobWrap = await ft(BOB, WRAP);
 await step("bob_redeem", call(BOB, fund, "redeem", { shares: "40000000" }, { gas: 200 }));
@@ -259,4 +334,4 @@ run.version = run.after_redeem.version;
 run.finished_at = new Date().toISOString();
 fs.mkdirSync(path.join(ROOT, "data"), { recursive: true });
 fs.writeFileSync(path.join(ROOT, "data/testnet-run.json"), JSON.stringify(run, null, 1));
-log("done", { fund, settle: run.settle_status, attack_held_unchanged: attack.holdings_unchanged, carol_shares: run.join_in_kind.shares_minted, bob_received: run.bob_received, keys: run.access_keys_at_end });
+log("done", { fund, relay: RELAY, refund: run.refund.status, settle: run.settle_status, attack_held_unchanged: attack.holdings_unchanged, carol_shares: run.join_in_kind.shares_minted, bob_received: run.bob_received, keys: run.access_keys_at_end });

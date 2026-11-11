@@ -193,6 +193,8 @@ export interface FundState {
   registered?: boolean[];
   trades_today?: number;
   near_available_for_registrations?: string;
+  /** Redemption payouts whose transfer has not resolved yet, per token. */
+  in_flight_payouts?: string[];
   // Release 0.3:
   version?: string;
   owed_total?: string[];

@@ -211,10 +211,6 @@ fn payout(f: &mut Plinth, who: &str, i: u8, amount: u128, ok: bool, now: u64) {
     f.on_payout(who.parse().unwrap(), i, U128(amount));
 }
 
-fn bal(v: u128) -> Result<U128, PromiseError> {
-    Ok(U128(v))
-}
-
 // ------------------------------------------------------------------ setup
 
 #[test]
@@ -991,6 +987,13 @@ fn audit2_m_new_depositors_cannot_eat_the_reserve() {
 }
 
 // ================================================================== release 0.3
+//
+// 0.3 as shipped has NO balance read. Earlier drafts counted refunds with `settle_refund`, which
+// read `ft_balance_of` and could be fooled by a transfer that was about to bounce; the tests for
+// that read, for `flux` (the counter that discarded overlapping reads) and for its documented
+// limit (`v3_limit_a_gas_starved_bounce...`) are gone with it: the limit no longer exists.
+// Everything the fund counts now arrives as a push it keeps: trade output (`trade:<id>`), refunds
+// forwarded by the fund's relay (`refund`), donations, baskets and subscriptions.
 
 // ------------------------------------------------------------------ v3: quote message
 
@@ -3074,7 +3077,7 @@ fn v3_joins_are_blocked_after_an_abandon_until_refunds_for_it_close() {
     fill_basket(&mut f, CAROL, 9_000_000, 0, at + 1);
     for now in [at + 2, until - 1, until] {
         set(CAROL, now);
-        assert!(panics(|| f.join_in_kind(U128(0))).contains("a written-off trade can still be refunded; joins reopen when that closes"), "{now}");
+        assert!(panics(|| f.join_in_kind(U128(0))).contains("a written-off trade can still be refunded or delivered; joins reopen when that window closes"), "{now}");
     }
     // Everything else goes on: redeem, baskets in and out, the next trade.
     set(ALICE, at + 3);
@@ -3437,4 +3440,777 @@ fn v3_a_second_rewrap_retry_waits_for_the_first() {
     assert_eq!((h.rewrap_started, h.get_fund().stranded_near.0), (0, FIVE));
     with_balance(ANYONE, t + 2, 20_000);
     h.rewrap_stranded();
+}
+
+// ------------------------------------------------------------------ v3: nothing reads a balance
+
+/// Compile-time: no balance-reading method exists on Plinth. If an inherent method with one of
+/// these names came back, the calls below would resolve to it (inherent methods win over trait
+/// methods) and stop compiling (wrong arity / return type).
+#[test]
+fn v3_there_is_no_settle_absorb_or_settle_refund_method() {
+    struct Absent;
+    trait Removed {
+        fn settle(&mut self) -> Absent {
+            Absent
+        }
+        fn absorb(&mut self) -> Absent {
+            Absent
+        }
+        fn on_settle(&mut self) -> Absent {
+            Absent
+        }
+        fn on_absorb(&mut self) -> Absent {
+            Absent
+        }
+        fn settle_refund(&mut self) -> Absent {
+            Absent
+        }
+        fn on_settle_refund(&mut self) -> Absent {
+            Absent
+        }
+        fn refundable(&mut self) -> Absent {
+            Absent
+        }
+        fn accounted(&mut self) -> Absent {
+            Absent
+        }
+    }
+    impl Removed for Plinth {}
+    let mut f = funded();
+    let _: [Absent; 8] = [f.settle(), f.absorb(), f.on_settle(), f.on_absorb(), f.settle_refund(), f.on_settle_refund(), f.refundable(), f.accounted()];
+}
+
+#[test]
+fn v3_no_fund_method_ever_calls_ft_balance_of() {
+    // Drive every method that creates promises and look at each function call the fund makes.
+    fn methods() -> Vec<String> {
+        let mut seen = vec![];
+        for r in near_sdk::test_utils::get_created_receipts() {
+            for a in r.actions {
+                if let near_sdk::mock::MockAction::FunctionCallWeight { method_name, .. } = a {
+                    seen.push(String::from_utf8(method_name).unwrap());
+                }
+            }
+        }
+        seen
+    }
+    let mut all: Vec<String> = vec![];
+    let mut f = open_staking_fund();
+    set(BOB, T0 + 100);
+    f.redeem(U128(1_000_000));
+    all.extend(methods());
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    all.extend(methods());
+    ok_sent(&mut f, 0, CLOSE + 21);
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, CLOSE + 30), 0);
+    all.extend(methods());
+    assert!(stake(&mut f, 3 * 10u128.pow(24), CLOSE + 20 + 700));
+    all.extend(methods());
+    unwrapped(&mut f, 1, CLOSE + 721);
+    all.extend(methods());
+    staked(&mut f, 1, None, CLOSE + 722);
+    all.extend(methods());
+    set_with_results(CLOSE + 723, vec![PromiseResult::Failed]);
+    f.on_rewrapped(1, U128(3 * 10u128.pow(24)));
+    with_balance(ANYONE, CLOSE + 724, 20_000);
+    f.rewrap_stranded();
+    all.extend(methods());
+    set_with_results(CLOSE + 725, vec![PromiseResult::Successful(vec![])]);
+    f.on_rewrapped(u64::MAX, U128(3 * 10u128.pow(24)));
+    fill_basket(&mut f, CAROL, 5, 5, CLOSE + 726);
+    set(CAROL, CLOSE + 727);
+    f.withdraw_basket();
+    all.extend(methods());
+    all.sort();
+    all.dedup();
+    assert!(!all.iter().any(|m| m.contains("balance")), "{all:?}");
+    for expected in ["ft_transfer", "storage_deposit", "on_payout", "on_trade_sent", "near_withdraw", "deposit_and_stake", "near_deposit"] {
+        assert!(all.iter().any(|m| m == expected), "{expected} missing from {all:?}");
+    }
+}
+
+// ------------------------------------------------------------------ v3: refunds through the relay
+
+#[test]
+fn v3_quote_must_refund_to_the_relay() {
+    let mut f = funded();
+    // Refund to the fund itself (the 0.2 way): refused, recorded, nothing moves.
+    assert!(!propose(&mut f, &Q { refund_to: FUND.into(), ..Default::default() }, CLOSE + 20));
+    assert_eq!(last_reason(&f), "quote must deliver to this fund and refund to its relay on NEAR");
+    // Delivery to the relay is refused too: output must be pushed to the fund.
+    assert!(!propose(&mut f, &Q { recipient: RELAY.into(), refund_to: RELAY.into(), ..Default::default() }, CLOSE + 20));
+    assert_eq!(last_reason(&f), "quote must deliver to this fund and refund to its relay on NEAR");
+    assert!(!propose(&mut f, &Q { recipient: RELAY.into(), refund_to: FUND.into(), ..Default::default() }, CLOSE + 20));
+    assert!(f.get_fund().pending.is_none());
+    assert_eq!((held(&f, 0), f.get_fund().trades), (100_000_000, 0));
+    // Deliver to the fund, refund to its relay: accepted.
+    assert!(propose(&mut f, &Q { recipient: FUND.into(), refund_to: RELAY.into(), ..Default::default() }, CLOSE + 20));
+    assert_eq!(f.get_fund().config.refund_relay, acct(RELAY));
+}
+
+#[test]
+fn v3_new_refuses_a_fund_that_is_its_own_relay() {
+    set("deployer.test.near", T0);
+    let mut c = config();
+    c.refund_relay = acct(FUND);
+    assert!(panics(|| Plinth::new(c)).contains("the refund relay must be a separate account"));
+}
+
+#[test]
+fn v3_new_refuses_an_account_in_relay_mode() {
+    set("deployer.test.near", T0);
+    near_sdk::mock::with_mocked_blockchain(|b| {
+        b.take_storage();
+    });
+    env::storage_write(b"RELAY", b"somefund.test.near");
+    assert!(panics(|| Plinth::new(config())).contains("this account is a refund relay"));
+}
+
+#[test]
+fn v3_refund_push_from_the_relay_closes_the_trade_in_flight() {
+    let mut f = sent_fund();
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, LATER), 0);
+    let t = trade(&f, 0);
+    assert_eq!((t.status, t.received_refund.0, t.received_out.0, t.closed_at), (TradeStatus::Refunded, REFUND, 0, Some(LATER)));
+    let v = f.get_fund();
+    assert!(v.pending.is_none());
+    assert_eq!((v.held[0].1 .0, v.held[1].1 .0), (90_000_000 + REFUND, 0));
+    assert!(get_logs().iter().any(|l| l.contains("\"refund_received\"")));
+    assert!(get_logs().iter().any(|l| l.contains("\"trade_closed\"")));
+    // No waiting period: a refund that reaches the relay a minute after the send counts at once.
+    let mut g = sent_fund();
+    assert_eq!(relay_refund(&mut g, USDC, REFUND, CLOSE + 22), 0);
+    assert_eq!(trade(&g, 0).status, TradeStatus::Refunded);
+    // The next trade can go out after the cooldown.
+    let later = CLOSE + 20 + 660;
+    assert!(propose(&mut g, &Q { deposit: "c".repeat(64), issued: later, deadline: later + 86_400, ..Default::default() }, later));
+}
+
+#[test]
+fn v3_refund_pushes_accumulate_to_amount_in_minus_refund_fee() {
+    // One unit short: kept, counted in holdings, the trade stays open.
+    let mut f = sent_fund();
+    assert_eq!(relay_refund(&mut f, USDC, REFUND - 1, LATER), 0);
+    let t = trade(&f, 0);
+    assert_eq!((t.status, t.received_refund.0, t.closed_at), (TradeStatus::Sent, REFUND - 1, None));
+    assert_eq!(held(&f, 0), 90_000_000 + REFUND - 1);
+    assert_eq!(f.get_fund().pending.unwrap().id, 0);
+    // Redeeming is still subject to the trade in flight (well past the 10 minutes here).
+    // The last unit closes it.
+    assert_eq!(relay_refund(&mut f, USDC, 1, LATER + 5), 0);
+    let t = trade(&f, 0);
+    assert_eq!((t.status, t.received_refund.0, t.closed_at), (TradeStatus::Refunded, REFUND, Some(LATER + 5)));
+    assert_eq!(held(&f, 0), 90_000_000 + REFUND);
+    assert!(f.get_fund().pending.is_none());
+    // Many small pieces.
+    let mut g = sent_fund();
+    for k in 0..10u64 {
+        assert_eq!(trade(&g, 0).status, TradeStatus::Sent);
+        assert_eq!(relay_refund(&mut g, USDC, REFUND / 10, LATER + k), 0);
+    }
+    assert_eq!((trade(&g, 0).status, trade(&g, 0).received_refund.0), (TradeStatus::Refunded, REFUND));
+    // More than the floor in one push: all of it is the fund's.
+    let mut h = sent_fund();
+    assert_eq!(relay_refund(&mut h, USDC, AMOUNT_IN + 7, LATER), 0);
+    assert_eq!((trade(&h, 0).status, trade(&h, 0).received_refund.0, held(&h, 0)), (TradeStatus::Refunded, AMOUNT_IN + 7, 100_000_007));
+    // After it closed, further relay refunds only grow holdings.
+    let closed = trade(&h, 0);
+    assert_eq!(relay_refund(&mut h, USDC, 5, LATER + 1), 0);
+    assert_eq!((trade(&h, 0), held(&h, 0)), (closed, 100_000_012));
+}
+
+#[test]
+fn v3_the_refund_floor_follows_the_quotes_refund_fee() {
+    // (refund fee, smallest relay refund that closes the trade)
+    for (fee, floor) in [(0u128, Some(AMOUNT_IN)), (4_500, Some(AMOUNT_IN - 4_500)), (AMOUNT_IN - 1, Some(1)), (AMOUNT_IN, None), (AMOUNT_IN + 5, None)] {
+        let mut f = funded();
+        assert!(propose(&mut f, &Q { refund_fee: fee, ..Default::default() }, CLOSE + 20));
+        ok_sent(&mut f, 0, CLOSE + 21);
+        match floor {
+            Some(floor) => {
+                if floor > 1 {
+                    assert_eq!(relay_refund(&mut f, USDC, floor - 1, LATER), 0);
+                    assert_eq!(trade(&f, 0).status, TradeStatus::Sent, "fee {fee}");
+                    assert_eq!(relay_refund(&mut f, USDC, 1, LATER), 0);
+                } else {
+                    assert_eq!(relay_refund(&mut f, USDC, 1, LATER), 0);
+                }
+                assert_eq!((trade(&f, 0).status, held(&f, 0)), (TradeStatus::Refunded, 90_000_000 + floor), "fee {fee}");
+            }
+            None => {
+                // A quote whose refund fee eats the whole input can never close as refunded; the
+                // tokens are still kept, and the trade is written off in the end.
+                assert_eq!(relay_refund(&mut f, USDC, AMOUNT_IN, LATER), 0);
+                assert_eq!((trade(&f, 0).status, held(&f, 0)), (TradeStatus::Sent, 100_000_000), "fee {fee}");
+                assert_eq!(f.get_fund().pending.unwrap().id, 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn v3_a_refund_push_from_anyone_but_the_relay_is_only_a_donation() {
+    for sender in ["mallory.test.near", OPERATOR, ALICE, FUND, USDC, "relay.test.nea", "x.relay.test.near", &"a".repeat(64)] {
+        let mut f = sent_fund();
+        let before = trade(&f, 0);
+        assert_eq!(push(&mut f, USDC, sender, 10 * REFUND, "refund", LATER), 0, "{sender}: kept");
+        assert_eq!(trade(&f, 0), before, "{sender} cannot close the trade");
+        assert_eq!(f.get_fund().pending.unwrap().id, 0, "{sender}");
+        assert_eq!(held(&f, 0), 90_000_000 + 10 * REFUND, "{sender}");
+        assert!(get_logs().iter().any(|l| l.contains("\"donated\"")), "{sender}");
+        assert!(!get_logs().iter().any(|l| l.contains("\"refund_received\"") || l.contains("\"trade_closed\"")), "{sender}");
+        // The relay's own refund still closes it afterwards.
+        assert_eq!(relay_refund(&mut f, USDC, REFUND, LATER + 1), 0);
+        assert_eq!(trade(&f, 0).status, TradeStatus::Refunded, "{sender}");
+    }
+}
+
+#[test]
+fn v3_only_the_exact_refund_message_is_a_refund() {
+    // Near-misses from the relay fall through to the subscription path: returned after the window.
+    for msg in ["Refund", "refund ", " refund", "refund:0", "refunds", "REFUND"] {
+        let mut f = sent_fund();
+        assert_eq!(push(&mut f, USDC, RELAY, REFUND, msg, LATER), REFUND, "{msg:?} is returned");
+        assert_eq!((trade(&f, 0).status, held(&f, 0)), (TradeStatus::Sent, 90_000_000), "{msg:?}");
+    }
+}
+
+#[test]
+fn v3_a_relay_refund_that_matches_no_trade_in_flight_only_grows_holdings() {
+    // No trade at all.
+    let mut f = funded();
+    assert_eq!(relay_refund(&mut f, USDC, 123, T0 + 100), 0);
+    assert_eq!(relay_refund(&mut f, WNEAR, 456, CLOSE + 100), 0);
+    assert_eq!((held(&f, 0), held(&f, 1), f.get_fund().trades, f.get_fund().total_shares.0), (100_000_123, 456, 0, 100_000_000));
+    // The wrong token: the trade in flight sold USDC, this is wNEAR.
+    let mut f = sent_fund();
+    let before = trade(&f, 0);
+    assert_eq!(relay_refund(&mut f, WNEAR, u128::MAX / 4, LATER), 0);
+    assert_eq!((trade(&f, 0), held(&f, 1)), (before, u128::MAX / 4));
+    assert_eq!(f.get_fund().pending.unwrap().id, 0);
+    // The trade is still being sent (its transfer has not been confirmed).
+    let mut f = funded();
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    let before = trade(&f, 0);
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, CLOSE + 20), 0);
+    assert_eq!((trade(&f, 0), held(&f, 0)), (before, 90_000_000 + REFUND));
+    assert_eq!(f.get_fund().pending.unwrap().status, TradeStatus::Sending);
+    // After the trade was written off.
+    let (mut f, at) = abandoned_fund();
+    let before = trade(&f, 0);
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, at + 10), 0);
+    assert_eq!((trade(&f, 0), held(&f, 0)), (before, 90_000_000 + REFUND));
+    assert!(f.get_fund().pending.is_none());
+    // After it settled (see also v3_output_then_a_relay_refund_stays_settled) or failed.
+    let mut f = funded();
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Failed]);
+    f.on_trade_sent(0);
+    let before = trade(&f, 0);
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, LATER), 0);
+    assert_eq!((trade(&f, 0), held(&f, 0)), (before, 100_000_000 + REFUND));
+    // The token the trade BOUGHT.
+    let mut f = funded();
+    let q = Q { sell: USDC, buy: WNEAR, ..Default::default() };
+    assert!(propose(&mut f, &q, CLOSE + 20));
+    ok_sent(&mut f, 0, CLOSE + 21);
+    assert_eq!(relay_refund(&mut f, WNEAR, MIN_OUT, LATER), 0);
+    assert_eq!((trade(&f, 0).status, trade(&f, 0).received_out.0, held(&f, 1)), (TradeStatus::Sent, 0, MIN_OUT), "a refund is not output");
+}
+
+#[test]
+fn v3_a_relay_refund_never_closes_a_stake() {
+    let mut f = staking_fund(0);
+    assert!(stake(&mut f, FIVE, CLOSE + 20));
+    // The stake sold wNEAR; a wNEAR refund from the relay while it is in flight...
+    let before = trade(&f, 0);
+    assert_eq!(relay_refund(&mut f, WNEAR, FIVE, CLOSE + 21), 0);
+    assert_eq!((trade(&f, 0), held(&f, 1)), (before, WNEAR_20));
+    assert_eq!((f.get_fund().pending.unwrap().id, f.near_in_flight), (0, FIVE));
+    unwrapped(&mut f, 0, CLOSE + 22);
+    let before = trade(&f, 0);
+    assert_eq!(relay_refund(&mut f, WNEAR, FIVE, CLOSE + 23), 0);
+    assert_eq!(trade(&f, 0), before);
+    // ...changes nothing about how it settles.
+    staked(&mut f, 0, Some(format!("\"{}\"", expected_mint()).as_bytes()), CLOSE + 24);
+    assert_eq!((trade(&f, 0).status, trade(&f, 0).received_refund.0, held(&f, 2), held(&f, 1)), (TradeStatus::Settled, 0, expected_mint(), WNEAR_20 + FIVE));
+}
+
+#[test]
+fn v3_refund_pushes_that_cannot_be_counted_are_handed_back_to_the_relay() {
+    let mut f = sent_fund();
+    let before = trade(&f, 0);
+    // Zero, a token outside the mandate, and an amount that would overflow the holding: returned,
+    // so the tokens stay in the relay and can be forwarded again. None of these panics.
+    assert_eq!(relay_refund(&mut f, USDC, 0, LATER), 0);
+    assert_eq!(relay_refund(&mut f, OTHER, REFUND, LATER), REFUND);
+    assert_eq!(relay_refund(&mut f, USDC, u128::MAX, LATER), u128::MAX);
+    assert_eq!(relay_refund(&mut f, USDC, u128::MAX - 90_000_000 + 1, LATER), u128::MAX - 90_000_000 + 1);
+    assert_eq!((trade(&f, 0), held(&f, 0)), (before, 90_000_000));
+    // The largest amount that fits is kept, and received_refund saturates instead of overflowing.
+    assert_eq!(relay_refund(&mut f, USDC, u128::MAX - 90_000_000, LATER), 0);
+    assert_eq!((trade(&f, 0).status, held(&f, 0)), (TradeStatus::Refunded, u128::MAX));
+    let mut g = sent_fund();
+    assert_eq!(relay_refund(&mut g, USDC, REFUND - 1, LATER), 0);
+    set(BOB, LATER + 1);
+    g.redeem(U128(40_000_000)); // makes room in the holding again
+    assert_eq!(relay_refund(&mut g, USDC, u128::MAX / 2, LATER + 2), 0);
+    assert_eq!(trade(&g, 0).status, TradeStatus::Refunded);
+}
+
+#[test]
+fn v3_refund_then_late_output_keeps_both() {
+    // 1Click refunds or delivers, never both; if both ever arrive, both are real tokens.
+    let mut f = refunded_fund();
+    assert_eq!(push(&mut f, WNEAR, SOLVER, MIN_OUT - 1, "trade:0", LATER + 100), 0);
+    let t = trade(&f, 0);
+    assert_eq!((t.status, t.received_refund.0, t.received_out.0), (TradeStatus::Refunded, REFUND, MIN_OUT - 1));
+    assert_eq!(push(&mut f, WNEAR, SOLVER, 1, "trade:0", LATER + 200), 0);
+    let t = trade(&f, 0);
+    assert_eq!((t.received_refund.0, t.received_out.0), (REFUND, MIN_OUT), "both recorded against the trade");
+    assert_eq!((held(&f, 0), held(&f, 1)), (90_000_000 + REFUND, MIN_OUT), "nothing is taken back");
+    assert!(f.get_fund().pending.is_none());
+    // Long after, the same.
+    assert_eq!(push(&mut f, WNEAR, SOLVER, 5, "trade:0", LATER + 30 * 86_400), 0);
+    assert_eq!((held(&f, 0), held(&f, 1)), (90_000_000 + REFUND, MIN_OUT + 5));
+    // It does not disturb a newer trade in flight.
+    let mut g = refunded_fund();
+    let at = LATER + 700;
+    assert!(propose(&mut g, &Q { deposit: "c".repeat(64), issued: at - 5, deadline: at + 86_400, ..Default::default() }, at));
+    ok_sent(&mut g, 1, at + 1);
+    assert_eq!(push(&mut g, WNEAR, SOLVER, MIN_OUT, "trade:0", at + 2), 0);
+    assert_eq!((g.get_fund().pending.unwrap().id, trade(&g, 1).status), (1, TradeStatus::Sent));
+}
+
+#[test]
+fn v3_output_then_a_relay_refund_stays_settled() {
+    let mut f = sent_fund();
+    assert_eq!(push(&mut f, WNEAR, SOLVER, MIN_OUT, "trade:0", CLOSE + 60), 0);
+    let settled = trade(&f, 0);
+    assert_eq!(settled.status, TradeStatus::Settled);
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, LATER), 0);
+    assert_eq!(trade(&f, 0), settled, "a settled trade is not reopened or re-labelled");
+    assert_eq!((held(&f, 0), held(&f, 1)), (90_000_000 + REFUND, MIN_OUT));
+    assert!(f.get_fund().pending.is_none());
+}
+
+#[test]
+fn v3_a_refund_forwarded_while_the_trade_is_still_sending_is_kept_but_not_attributed() {
+    // on_trade_sent is lost; 1Click refunds and the relay forwards before anyone recovers the trade.
+    let mut f = funded();
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, CLOSE + 3_000), 0);
+    assert_eq!(held(&f, 0), 90_000_000 + REFUND, "the holdings have it");
+    assert_eq!((trade(&f, 0).status, trade(&f, 0).received_refund.0), (TradeStatus::Sending, 0));
+    set(ANYONE, CLOSE + 20 + 86_401);
+    f.recover_stuck_trade();
+    // The trade is Sent with no refund recorded: it stays in flight until it is written off.
+    assert_eq!((trade(&f, 0).status, f.get_fund().pending.map(|t| t.id)), (TradeStatus::Sent, Some(0)));
+    set(ALICE, CLOSE + 20 + 86_402);
+    f.redeem(U128(60_000_000)); // redemptions are not held up (the 10 minutes are long over)
+    set(ANYONE, Q::default().deadline + ABANDON_AFTER_SECONDS + 1);
+    f.abandon();
+    assert!(f.get_fund().pending.is_none());
+}
+
+#[test]
+fn v3_a_relay_refund_is_attributed_to_the_trade_in_flight_that_sold_that_token() {
+    // Trade 0 is written off; a week later trade 1 sells USDC again; then trade 0's refund finally
+    // reaches the relay and is forwarded. It closes trade 1 (the one in flight). All tokens are
+    // real, and trade 1's own output still settles it afterwards.
+    let (mut f, at) = abandoned_fund();
+    let q = Q { deposit: "c".repeat(64), issued: at, deadline: at + 86_400, ..Default::default() };
+    assert!(propose(&mut f, &q, at + 5));
+    ok_sent(&mut f, 1, at + 6);
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, at + 7), 0);
+    assert_eq!((trade(&f, 0).status, trade(&f, 1).status), (TradeStatus::Abandoned, TradeStatus::Refunded));
+    assert_eq!(held(&f, 0), 80_000_000 + REFUND);
+    assert!(f.get_fund().pending.is_none());
+    assert_eq!(push(&mut f, WNEAR, SOLVER, MIN_OUT, "trade:1", at + 60), 0);
+    assert_eq!((held(&f, 0), held(&f, 1)), (80_000_000 + REFUND, MIN_OUT));
+}
+
+#[test]
+fn v3_redeemers_share_a_refund_like_any_holding() {
+    let mut f = refunded_fund();
+    set(BOB, LATER + 10);
+    f.redeem(U128(40_000_000));
+    assert_eq!(f.get_fund().in_flight_payouts[0].0, (90_000_000 + REFUND) * 40 / 100);
+    assert_eq!(held(&f, 0), (90_000_000 + REFUND) - (90_000_000 + REFUND) * 40 / 100);
+}
+
+#[test]
+fn v3_a_failed_payout_stays_owed_and_out_of_holdings() {
+    // (0.2: "...is not mistaken for trade output"; there is no read left to mistake it.)
+    let mut f = sent_fund();
+    set(BOB, CLOSE + 20 + REDEEM_WAIT_SECONDS);
+    f.redeem(U128(40_000_000));
+    payout(&mut f, BOB, 0, 36_000_000, false, CLOSE + 20 + REDEEM_WAIT_SECONDS + 1);
+    assert_eq!(f.get_owed(acct(BOB)), vec![U128(36_000_000), U128(0)]);
+    assert_eq!(f.get_fund().owed_total, vec![U128(36_000_000), U128(0)]);
+    assert_eq!(held(&f, 0), 54_000_000);
+    // A refund for the trade goes to the remaining holders, not to what Bob is owed.
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, LATER), 0);
+    assert_eq!((held(&f, 0), f.get_fund().owed_total[0].0), (54_000_000 + REFUND, 36_000_000));
+    set(BOB, LATER + 2);
+    f.claim(None);
+    assert_eq!(f.get_fund().owed_total[0].0, 0);
+    payout(&mut f, BOB, 0, 36_000_000, true, LATER + 3);
+    assert!(f.get_owed(acct(BOB)).is_empty());
+    assert_eq!(held(&f, 0), 54_000_000 + REFUND);
+}
+
+// ------------------------------------------------------------------ v3: joins and what is outside holdings
+
+#[test]
+fn v3_joins_are_not_blocked_in_funds_without_a_written_off_trade() {
+    // Settled, refunded and failed trades do not block joins.
+    let mut f = open_fund();
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    ok_sent(&mut f, 0, CLOSE + 21);
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, LATER), 0);
+    let now = LATER + 700;
+    let q = |dep: &str, at: u64| Q { deposit: dep.repeat(64), issued: at - 5, deadline: at + 86_400, ..Default::default() };
+    assert!(propose(&mut f, &q("c", now), now));
+    set_with_results(now + 1, vec![PromiseResult::Failed]);
+    f.on_trade_sent(1);
+    assert!(propose(&mut f, &q("d", now + 700), now + 700));
+    ok_sent(&mut f, 2, now + 701);
+    assert_eq!(push(&mut f, WNEAR, SOLVER, MIN_OUT, "trade:2", now + 702), 0);
+    assert_eq!(f.get_fund().joins_blocked_until, 0);
+    fill_basket(&mut f, CAROL, 10_000_000, WNEAR_20, now + 703);
+    assert!(join(&mut f, CAROL, 0, now + 704) > 0);
+}
+
+/// Was BUG 6 (pass 2), now with the relay: an abandoned trade's refund may still be on its way, or
+/// sit in the relay until someone forwards it. Joins stay closed until LATE_ARRIVAL_SECONDS after
+/// the deadline, so nobody can join first and forward the refund afterwards.
+#[test]
+fn v3_bug_join_before_an_abandoned_trades_refund_is_counted_must_not_take_a_share_of_it() {
+    let mut f = fund_from(open_config());
+    assert_eq!(subscribe(&mut f, ALICE, 60_000_000, T0 + 10).0, 0);
+    assert_eq!(subscribe(&mut f, BOB, 40_000_000, T0 + 20).0, 0);
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    ok_sent(&mut f, 0, CLOSE + 21);
+    let at = Q::default().deadline + ABANDON_AFTER_SECONDS + 1;
+    set(ANYONE, at);
+    f.abandon();
+    // The refund (9.9955 USDC) is in the relay. Mallory tries to join before forwarding it.
+    fill_basket(&mut f, "mallory.test.near", 90_000_000, 0, at + 1);
+    set("mallory.test.near", at + 2);
+    assert!(panics(|| f.join_in_kind(U128(0))).contains("a written-off trade can still be refunded"));
+    // Forwarding it first does not reopen joins early; the holders keep all of it.
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, at + 3), 0);
+    assert_eq!((held(&f, 0), trade(&f, 0).status), (90_000_000 + REFUND, TradeStatus::Abandoned));
+    set("mallory.test.near", at + 5);
+    assert!(panics(|| f.join_in_kind(U128(0))).contains("a written-off trade can still be refunded"));
+    // When the wait is over she joins at the full price and gains nothing.
+    let open = Q::default().deadline + LATE_ARRIVAL_SECONDS + 1;
+    let (h, total) = (held(&f, 0), f.get_fund().total_shares.0);
+    let shares = join(&mut f, "mallory.test.near", 0, open);
+    assert_eq!(shares, mul_div(90_000_000, total, h).unwrap());
+    set("mallory.test.near", open + 1);
+    f.redeem(U128(shares));
+    let out = f.get_fund().in_flight_payouts[0].0;
+    assert!(out <= 90_000_000, "Mallory put in 90000000 USDC and took out {out}");
+}
+
+/// Was BUG 8 (pass 2): a callback arriving after `recover_stuck_trade` must not be applied.
+#[test]
+fn v3_bug_a_callback_arriving_after_recovery_must_not_be_applied_twice() {
+    let mut f = funded();
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    let day = CLOSE + 20 + 86_401;
+    set(ANYONE, day);
+    f.recover_stuck_trade();
+    assert_eq!(relay_refund(&mut f, USDC, REFUND, day + 1), 0);
+    assert_eq!((trade(&f, 0).status, held(&f, 0)), (TradeStatus::Refunded, 90_000_000 + REFUND));
+    set_with_results(day + 3, vec![PromiseResult::Failed]);
+    f.on_trade_sent(0);
+    assert_eq!((trade(&f, 0).status, held(&f, 0)), (TradeStatus::Refunded, 90_000_000 + REFUND), "the input is not restored on top of the refund");
+}
+
+/// Was BUG 9 (pass 3): a re-wrap whose `on_rewrapped` never ran must not block joins for good.
+#[test]
+fn v3_bug_a_lost_on_rewrapped_must_not_block_joins_for_ever() {
+    // A stake's own re-wrap, callback lost: the stake is recovered after a day, and joins work.
+    let mut f = open_staking_fund();
+    with_balance(OPERATOR, CLOSE + 20, 20_000);
+    assert!(f.stake_idle(U128(FIVE)));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
+    f.on_unwrapped(0);
+    with_balance(ANYONE, DAY_AFTER_STAKE, 20_000);
+    f.recover_stuck_stake();
+    fill_basket(&mut f, CAROL, 10_000_000, 2 * 10u128.pow(24), DAY_AFTER_STAKE + 1);
+    assert!(join(&mut f, CAROL, 0, DAY_AFTER_STAKE + 2) > 0);
+    // A `rewrap_stranded` retry, callback lost: joins are closed for an hour, then reopen.
+    let mut g = stranded_fund();
+    let start = CLOSE + 100;
+    fill_basket(&mut g, CAROL, 10_000_000, 2 * 10u128.pow(24), start);
+    with_balance(ANYONE, start, 20_000);
+    g.rewrap_stranded();
+    assert_eq!((g.rewrap_started, g.get_fund().stranded_near.0), (start, 0));
+    for now in [start, start + 1, start + 3_600] {
+        set(CAROL, now);
+        assert!(panics(|| g.join_in_kind(U128(0))).contains("NEAR from a failed stake is being wrapped back"), "{now}");
+    }
+    assert!(join(&mut g, CAROL, 0, start + 3_601) > 0);
+}
+
+#[test]
+fn v3_rebalance_tells_the_strategy_where_refunds_go() {
+    let mut f = strategy_fund(true);
+    rebalance(&mut f, CLOSE + 20);
+    let receipts = near_sdk::test_utils::get_created_receipts();
+    let args = receipts
+        .iter()
+        .filter(|r| r.receiver_id.as_str() == OUTLAYER)
+        .flat_map(|r| r.actions.iter())
+        .find_map(|a| match a {
+            near_sdk::mock::MockAction::FunctionCallWeight { method_name, args, .. } if method_name == b"request_execution" => Some(args.clone()),
+            _ => None,
+        })
+        .expect("request_execution on OutLayer");
+    let args: Value = serde_json::from_slice(&args).unwrap();
+    let input: Value = serde_json::from_str(args["input_data"].as_str().unwrap()).unwrap();
+    assert_eq!(input["refund_to"], json!(RELAY));
+    assert_eq!(input["fund"], json!(FUND));
+    assert_eq!(input["next_trade_id"], json!(0));
+}
+
+// ------------------------------------------------------------------ v3: relay mode
+//
+// `relay_init`, `relay_forward` and `relay_fund` call `env::setup_panic_hook()`, which installs a
+// process-wide panic hook that calls `env::panic_str`. In a native test process that hook panics
+// again inside itself, and Rust aborts the whole process: one refusal inside a relay function
+// would kill every other test. So each relay call runs in a child process (this same test binary,
+// running only `v3_relay_child`), which reports what the call did on stdout.
+
+const PER: u128 = 1_250_000_000_000_000_000_000;
+
+/// The child side: does nothing unless PLINTH_RELAY_CHILD holds a call to make.
+#[test]
+fn v3_relay_child() {
+    let Ok(spec) = std::env::var("PLINTH_RELAY_CHILD") else { return };
+    let spec: Value = serde_json::from_str(&spec).unwrap();
+    let mut b = VMContextBuilder::new();
+    b.current_account_id(spec["current"].as_str().unwrap().parse().unwrap())
+        .predecessor_account_id("factory.test.near".parse().unwrap())
+        .signer_account_id("creator.test.near".parse().unwrap())
+        .block_timestamp(T0 * 1_000_000_000)
+        .account_balance(NearToken::from_near(1))
+        .attached_deposit(NearToken::from_yoctonear(spec["deposit"].as_str().unwrap().parse().unwrap()));
+    let mut c = b.build();
+    c.input = spec["input"].as_str().unwrap().as_bytes().to_vec().into();
+    testing_env!(c);
+    for step in spec["pre"].as_array().unwrap() {
+        match step.as_str().unwrap() {
+            "fund-state" => env::storage_write(b"STATE", b"x"),
+            "relay-state" => env::storage_write(b"RELAY", FUND.as_bytes()),
+            other => panic!("unknown step {other}"),
+        };
+    }
+    // The relay functions install near-sdk's panic hook, which cannot run in a native process
+    // (it aborts). Keep putting a printing hook back from a second thread, so that a refusal is
+    // reported as RELAY_PANIC instead of killing the process before it can say why. If the swap
+    // loses the race the process aborts with neither marker, and the parent runs the case again.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let spinner = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                std::panic::set_hook(Box::new(|info| println!("\nRELAY_PANIC:{}", info.to_string().replace('\n', " "))));
+            }
+        })
+    };
+    let call = spec["call"].as_str().unwrap().to_string();
+    let outcome = std::panic::catch_unwind(move || match call.as_str() {
+        "relay_init" => super::relay_init(),
+        "relay_forward" => super::relay_forward(),
+        "relay_fund" => super::relay_fund(),
+        other => panic!("unknown call {other}"),
+    });
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    spinner.join().unwrap();
+    let _ = std::panic::take_hook();
+    if outcome.is_err() {
+        std::process::exit(3);
+    }
+    let receipts: Vec<Value> = near_sdk::test_utils::get_created_receipts()
+        .into_iter()
+        .map(|r| {
+            let calls: Vec<Value> = r
+                .actions
+                .iter()
+                .filter_map(|a| match a {
+                    near_sdk::mock::MockAction::FunctionCallWeight { method_name, args, attached_deposit, prepaid_gas, .. } => Some(json!({
+                        "method": String::from_utf8_lossy(method_name),
+                        "args": serde_json::from_slice::<Value>(args).unwrap_or(Value::Null),
+                        "deposit": attached_deposit.as_yoctonear().to_string(),
+                        "tgas": prepaid_gas.as_tgas(),
+                    })),
+                    _ => None,
+                })
+                .collect();
+            json!({"receiver": r.receiver_id, "calls": calls, "actions": r.actions.len()})
+        })
+        .collect();
+    let result = json!({
+        "receipts": receipts,
+        "relay_key": env::storage_read(b"RELAY").map(|v| String::from_utf8_lossy(&v).to_string()),
+        "state_exists": env::state_exists(),
+        "logs": get_logs(),
+    });
+    println!("\nRELAY_RESULT:{result}");
+}
+
+/// Run one relay function in a child process. Ok(what it did) or Err(the child's output) if the
+/// call panicked.
+fn relay_call(call: &str, input: &str, deposit: u128, pre: &[&str], current: &str) -> Result<Value, String> {
+    let spec = json!({"call": call, "input": input, "deposit": deposit.to_string(), "pre": pre, "current": current});
+    let mut last = String::new();
+    for _ in 0..50 {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::v3_relay_child", "--nocapture", "--test-threads=1"])
+            .env("PLINTH_RELAY_CHILD", spec.to_string())
+            .output()
+            .expect("spawn the test binary");
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        if let Some(reason) = stdout.lines().find_map(|l| l.strip_prefix("RELAY_PANIC:")) {
+            return Err(reason.to_string());
+        }
+        if let Some(j) = stdout.lines().find_map(|l| l.strip_prefix("RELAY_RESULT:")) {
+            assert!(out.status.success(), "{stdout}");
+            return Ok(serde_json::from_str(j).unwrap());
+        }
+        // Aborted inside near-sdk's hook before ours was back in place: try again.
+        last = format!("{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    }
+    panic!("the relay child never reported: {last}");
+}
+
+fn init_args(fund: &str, tokens: &[&str]) -> String {
+    json!({"fund": fund, "tokens": tokens, "storage_deposit": PER.to_string()}).to_string()
+}
+
+#[test]
+fn v3_relay_init_remembers_its_fund_and_registers_on_every_token() {
+    let r = relay_call("relay_init", &init_args(FUND, &[USDC, WNEAR, LST]), 3 * PER, &[], RELAY).expect("relay_init");
+    assert_eq!(r["relay_key"], json!(FUND));
+    assert_eq!(r["state_exists"], json!(false), "a relay has no fund state");
+    let receipts = r["receipts"].as_array().unwrap();
+    assert_eq!(receipts.len(), 3, "one registration per token and nothing else");
+    for (receipt, token) in receipts.iter().zip([USDC, WNEAR, LST]) {
+        assert_eq!(receipt["receiver"], json!(token));
+        assert_eq!(receipt["actions"], json!(1));
+        assert_eq!(
+            receipt["calls"],
+            json!([{"method": "storage_deposit", "args": {"account_id": RELAY, "registration_only": true}, "deposit": PER.to_string(), "tgas": 10}])
+        );
+    }
+    assert!(r["logs"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().contains("\"relay_created\"")));
+    // One token, the exact deposit; four tokens, more than needed.
+    let r = relay_call("relay_init", &init_args(FUND, &[USDC]), PER, &[], RELAY).expect("one token");
+    assert_eq!(r["receipts"].as_array().unwrap().len(), 1);
+    let r = relay_call("relay_init", &init_args(FUND, &[USDC, WNEAR, LST, OTHER]), 10 * PER, &[], RELAY).expect("four tokens");
+    assert_eq!(r["receipts"].as_array().unwrap().len(), 4);
+}
+
+#[test]
+fn v3_relay_init_refusals() {
+    let ok = init_args(FUND, &[USDC, WNEAR]);
+    let per = PER.to_string();
+    let five: Vec<String> = (0..5).map(|i| format!("t{i}.test.near")).collect();
+    let cases: Vec<(&str, String, u128, Vec<&str>, &str)> = vec![
+        ("already a fund", ok.clone(), 2 * PER, vec!["fund-state"], "this account is already set up"),
+        ("already a relay", ok.clone(), 2 * PER, vec!["relay-state"], "this account is already set up"),
+        ("not JSON", "fund".into(), 2 * PER, vec![], "arguments are not JSON"),
+        ("empty input", String::new(), 2 * PER, vec![], "arguments are not JSON"),
+        ("no fund", json!({"tokens": [USDC], "storage_deposit": per}).to_string(), PER, vec![], "fund is not an account"),
+        ("fund not a string", json!({"fund": 5, "tokens": [USDC], "storage_deposit": per}).to_string(), PER, vec![], "fund is not an account"),
+        ("fund not an account", json!({"fund": "Not An Account", "tokens": [USDC], "storage_deposit": per}).to_string(), PER, vec![], "fund is not an account"),
+        ("its own fund", init_args(RELAY, &[USDC]), PER, vec![], "a relay cannot serve itself"),
+        ("no tokens", json!({"fund": FUND, "storage_deposit": per}).to_string(), PER, vec![], "tokens: 1 to 4 accounts"),
+        ("empty tokens", init_args(FUND, &[]), PER, vec![], "tokens: 1 to 4 accounts"),
+        ("five tokens", json!({"fund": FUND, "tokens": five, "storage_deposit": per}).to_string(), 5 * PER, vec![], "tokens: 1 to 4 accounts"),
+        ("a token that is not an account", json!({"fund": FUND, "tokens": [USDC, "NOT VALID"], "storage_deposit": per}).to_string(), 2 * PER, vec![], "tokens: 1 to 4 accounts"),
+        ("a token that is not a string", json!({"fund": FUND, "tokens": [USDC, 7], "storage_deposit": per}).to_string(), 2 * PER, vec![], "tokens: 1 to 4 accounts"),
+        ("tokens not a list", json!({"fund": FUND, "tokens": USDC, "storage_deposit": per}).to_string(), PER, vec![], "tokens: 1 to 4 accounts"),
+        ("no storage_deposit", json!({"fund": FUND, "tokens": [USDC]}).to_string(), PER, vec![], "storage_deposit is missing"),
+        ("storage_deposit a number", json!({"fund": FUND, "tokens": [USDC], "storage_deposit": 1250}).to_string(), PER, vec![], "storage_deposit is missing"),
+        ("too little attached", ok.clone(), 2 * PER - 1, vec![], "attach storage_deposit for each token"),
+        ("nothing attached", ok.clone(), 0, vec![], "attach storage_deposit for each token"),
+        ("deposit overflow", json!({"fund": FUND, "tokens": [USDC, WNEAR], "storage_deposit": u128::MAX.to_string()}).to_string(), u128::MAX / 2, vec![], "attach storage_deposit for each token"),
+    ];
+    for (what, input, deposit, pre, why) in cases {
+        let err = relay_call("relay_init", &input, deposit, &pre, RELAY).expect_err(what);
+        assert!(err.contains(why), "{what}: expected '{why}' in:\n{err}");
+    }
+}
+
+#[test]
+fn v3_relay_forward_creates_exactly_one_refund_transfer_call() {
+    let input = json!({"token": USDC, "amount": "9995500"}).to_string();
+    let r = relay_call("relay_forward", &input, 0, &["relay-state"], RELAY).expect("relay_forward");
+    assert_eq!(
+        r["receipts"],
+        json!([{
+            "receiver": USDC,
+            "actions": 1,
+            "calls": [{"method": "ft_transfer_call", "args": {"receiver_id": FUND, "amount": "9995500", "msg": "refund"}, "deposit": "1", "tgas": 80}],
+        }])
+    );
+    assert_eq!(r["relay_key"], json!(FUND), "forwarding changes nothing in the relay");
+    // Any amount and any token account are passed on as given: the token contract is what
+    // refuses an amount the relay does not hold. The receiver is always the relay's own fund.
+    let huge = json!({"token": "some-other-token.test.near", "amount": u128::MAX.to_string(), "receiver_id": "mallory.test.near", "msg": "donate"}).to_string();
+    let r = relay_call("relay_forward", &huge, 0, &["relay-state"], RELAY).expect("relay_forward, any token");
+    let call = &r["receipts"][0]["calls"][0];
+    assert_eq!(r["receipts"][0]["receiver"], json!("some-other-token.test.near"));
+    assert_eq!(call["args"], json!({"receiver_id": FUND, "amount": u128::MAX.to_string(), "msg": "refund"}), "extra arguments are ignored");
+    assert_eq!((&call["deposit"], &call["tgas"]), (&json!("1"), &json!(80)));
+    assert_eq!(r["receipts"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn v3_relay_forward_refusals() {
+    let relay = vec!["relay-state"];
+    let cases: Vec<(&str, String, Vec<&str>, &str)> = vec![
+        ("zero", json!({"token": USDC, "amount": "0"}).to_string(), relay.clone(), "amount must be a positive integer string"),
+        ("a number", json!({"token": USDC, "amount": 5}).to_string(), relay.clone(), "amount must be a positive integer string"),
+        ("negative", json!({"token": USDC, "amount": "-1"}).to_string(), relay.clone(), "amount must be a positive integer string"),
+        ("words", json!({"token": USDC, "amount": "all"}).to_string(), relay.clone(), "amount must be a positive integer string"),
+        ("decimal", json!({"token": USDC, "amount": "1.5"}).to_string(), relay.clone(), "amount must be a positive integer string"),
+        ("empty", json!({"token": USDC, "amount": ""}).to_string(), relay.clone(), "amount must be a positive integer string"),
+        ("over u128", json!({"token": USDC, "amount": "340282366920938463463374607431768211456"}).to_string(), relay.clone(), "amount must be a positive integer string"),
+        ("no amount", json!({"token": USDC}).to_string(), relay.clone(), "amount must be a positive integer string"),
+        ("no token", json!({"amount": "5"}).to_string(), relay.clone(), "token is not an account"),
+        ("token not an account", json!({"token": "NOT VALID", "amount": "5"}).to_string(), relay.clone(), "token is not an account"),
+        ("not JSON", "5".repeat(3) + "x", relay.clone(), "arguments are not JSON"),
+        ("not a relay", json!({"token": USDC, "amount": "5"}).to_string(), vec![], "this account is not a refund relay"),
+        ("a fund, not a relay", json!({"token": USDC, "amount": "5"}).to_string(), vec!["fund-state"], "this account is not a refund relay"),
+    ];
+    for (what, input, pre, why) in cases {
+        let err = relay_call("relay_forward", &input, 0, &pre, RELAY).expect_err(what);
+        assert!(err.contains(why), "{what}: expected '{why}' in:\n{err}");
+    }
+}
+
+#[test]
+fn v3_relay_fund_reports_the_fund_only_on_a_relay() {
+    let r = relay_call("relay_fund", "", 0, &["relay-state"], RELAY).expect("relay_fund");
+    assert!(r["receipts"].as_array().unwrap().is_empty());
+    let err = relay_call("relay_fund", "", 0, &[], RELAY).expect_err("not a relay");
+    assert!(err.contains("this account is not a refund relay"), "{err}");
+    let err = relay_call("relay_fund", "", 0, &["fund-state"], FUND).expect_err("a fund");
+    assert!(err.contains("this account is not a refund relay"), "{err}");
+    // What it returns is the stored account, read back the same way here.
+    set(ANYONE, T0);
+    near_sdk::mock::with_mocked_blockchain(|b| {
+        b.take_storage();
+    });
+    env::storage_write(b"RELAY", FUND.as_bytes());
+    assert_eq!(super::relay_fund_id(), acct(FUND));
+    assert_eq!(json!(super::relay_fund_id()).to_string(), format!("\"{FUND}\""));
 }

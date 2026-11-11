@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import bs58 from "bs58";
 import { parseArgs, UsageError } from "../lib/args.ts";
-import { CONFIG_SWITCH_FLAGS, CONFIG_VALUE_FLAGS, MIN_FUND_NEAR, configFromFlags, creationDeposit, normaliseConfig, parseCloses, parseNear, validateConfig, validateFundName, type Config, type ConfigEnv } from "../lib/config.ts";
+import { CONFIG_SWITCH_FLAGS, CONFIG_VALUE_FLAGS, MIN_FUND_NEAR, configFromFlags, creationDeposit, normaliseConfig, parseCloses, parseNear, relayAccount, validateConfig, validateFundName, type Config, type ConfigEnv } from "../lib/config.ts";
 import { ONECLICK_KEY } from "../lib/oneclick.ts";
 
 const NOW = 1_800_000_000;
@@ -162,19 +162,35 @@ test("a strategy with both secrets fields is valid", () => {
   assert.deepEqual(validateConfig(c, FUND, NOW), []);
 });
 
-test("fund names follow the factory's rule", () => {
-  for (const ok of ["ab", "open-3", "a1", "x".repeat(32)]) assert.deepEqual(validateFundName(ok, "funds.testnet"), [], ok);
-  for (const bad of ["a", "-ab", "ab-", "Ab", "a.b", "a_b", "x".repeat(33), ""]) assert.equal(validateFundName(bad, "funds.testnet").length, 1, bad);
+test("fund names follow the factory's rule, and leave room for the relay's name", () => {
+  for (const ok of ["ab", "open-3", "a1", "x".repeat(30)]) assert.deepEqual(validateFundName(ok, "funds.testnet"), [], ok);
+  for (const bad of ["a", "-ab", "ab-", "Ab", "a.b", "a_b", "x".repeat(31), ""]) assert.equal(validateFundName(bad, "funds.testnet").length, 1, bad);
+  assert.equal(relayAccount("alpha", "funds.testnet"), "alpha-r.funds.testnet");
   // Within the factory's rule but not a NEAR account id.
-  assert.match(validateFundName("a--b", "funds.testnet").join(), /valid account id/);
-  assert.match(validateFundName("x".repeat(32), "a-very-long-factory-account-name.testnet").join(), /valid account id/);
+  assert.match(validateFundName("a--b", "funds.testnet").join(), /valid account ids/);
+  // The fund's own id would fit in 64 characters; its relay's (two longer) would not.
+  const factory = "f".repeat(25) + ".testnet"; // 33 characters
+  assert.equal(`${"x".repeat(30)}.${factory}`.length, 64);
+  assert.match(validateFundName("x".repeat(30), factory).join(), /valid account ids/);
+  assert.deepEqual(validateFundName("x".repeat(28), factory), []);
 });
 
-test("the creation deposit is the fund's NEAR, one registration per token and the list fee; at least 0.5 NEAR for the fund", () => {
-  const c = good();
-  assert.deepEqual(creationDeposit(c, parseNear("1")), { registrations: 3_750_000_000_000_000_000_000n, listFee: 3_000_000_000_000_000_000_000n, total: 1_006_750_000_000_000_000_000_000n });
-  // The factory's minimum: 0.503 NEAR plus storage_deposit per token.
-  assert.deepEqual(creationDeposit(c, MIN_FUND_NEAR).total, parseNear("0.503") + 3_750_000_000_000_000_000_000n);
+test("the refund relay is optional in a config (the factory sets it) and checked when given", () => {
+  const c: any = structuredClone(good());
+  assert.equal("refund_relay" in c, false);
+  c.refund_relay = "alpha-r.funds.testnet";
+  assert.deepEqual(validateConfig(c, FUND, NOW), []);
+  c.refund_relay = FUND;
+  assert.match(validateConfig(c, FUND, NOW).join(), /separate account/);
+  c.refund_relay = "Not An Account";
+  assert.match(validateConfig(c, FUND, NOW).join(), /refund_relay/);
+});
+
+test("the creation deposit: fund NEAR + 0.03 for the relay + 0.003 list fee + two sets of registrations", () => {
+  const c = good(); // three tokens at 0.00125 NEAR
+  assert.deepEqual(creationDeposit(c, parseNear("1")), { registrations: 7_500_000_000_000_000_000_000n, relay: parseNear("0.03"), listFee: parseNear("0.003"), total: parseNear("1.0405") });
+  // The factory's minimum: 0.533 NEAR plus twice storage_deposit per token.
+  assert.equal(creationDeposit(c, MIN_FUND_NEAR).total, parseNear("0.533") + 2n * 3n * 1_250_000_000_000_000_000_000n);
   assert.throws(() => creationDeposit(c, MIN_FUND_NEAR - 1n), /at least 0\.5 NEAR/);
   assert.equal(parseNear("0.75"), 750_000_000_000_000_000_000_000n);
   assert.equal(parseNear("0.000000000000000000000001"), 1n);

@@ -13,16 +13,17 @@ import { parseArgs, UsageError } from "../lib/args.ts";
 // A fixed test key, so the tests never touch ~/.near-credentials.
 const SECRET = "09".repeat(32);
 const PUBLIC = `ed25519:${bs58.encode(ed25519.getPublicKey(Buffer.from(SECRET, "hex")))}`;
-const FUND = "fund-a.funds.testnet", PUSD = "pusd.t", WRAP = "wrap.testnet";
+const FUND = "fund-a.funds.testnet", RELAY = "fund-a-r.funds.testnet", PUSD = "pusd.t", WRAP = "wrap.testnet";
 const NOW = 1_800_000_000;
 
 const quote = (o: Partial<Parameters<typeof testQuote>[0]> = {}): QuoteResponse =>
-  JSON.parse(testQuote({ fund: FUND, tradeId: 3, sell: PUSD, buy: WRAP, amount: 10_000_000n, out: 20_000_000_000_000_000_000_000n, minOut: 19_900_000_000_000_000_000_000n, inUsd: "10.000000", outUsd: "9.980000", deposit: "d".repeat(64), secretHex: SECRET, issuedAt: NOW - 5, ...o }));
+  JSON.parse(testQuote({ fund: FUND, refundRelay: RELAY, tradeId: 3, sell: PUSD, buy: WRAP, amount: 10_000_000n, out: 20_000_000_000_000_000_000_000n, minOut: 19_900_000_000_000_000_000_000n, inUsd: "10.000000", outUsd: "9.980000", deposit: "d".repeat(64), secretHex: SECRET, issuedAt: NOW - 5, ...o }));
 
 const state = (o: Partial<FundState> = {}): FundState => ({
   config: {
     operator: "op.testnet",
     quote_signer: PUBLIC,
+    refund_relay: RELAY,
     mandate: { tokens: [PUSD, WRAP], max_trade_bps: 2500, max_cost_bps: 150, min_seconds_between_trades: 660, max_trades_per_day: 6, max_quote_age_seconds: 300, min_deadline_margin_seconds: 600, subscription_closes_at: NOW - 100 },
     storage_deposit: "1250000000000000000000",
   },
@@ -82,7 +83,7 @@ test("a real 1Click dry quote carrying customRecipientMsg verifies against the p
   assert.equal(verifySignature(edited, ONECLICK_KEY), false, "1Click signs the delivery message");
 });
 
-test("requestQuote sends customRecipientMsg for the trade id, with the fund as recipient and refund address", async () => {
+test("requestQuote sends customRecipientMsg for the trade id, the fund as recipient and its relay as refund address", async () => {
   const real = globalThis.fetch;
   let body: any;
   globalThis.fetch = (async (_url: any, init: any) => {
@@ -90,13 +91,13 @@ test("requestQuote sends customRecipientMsg for the trade id, with the fund as r
     return new Response(JSON.stringify({ quote: {}, quoteRequest: body, signature: "", timestamp: "" }), { status: 201 });
   }) as typeof fetch;
   try {
-    await requestQuote({ fund: FUND, sellToken: PUSD, buyToken: WRAP, amount: "5", tradeId: 12, dry: true });
+    await requestQuote({ fund: FUND, refundRelay: RELAY, sellToken: PUSD, buyToken: WRAP, amount: "5", tradeId: 12, dry: true });
   } finally {
     globalThis.fetch = real;
   }
   assert.equal(body.customRecipientMsg, "trade:12");
   assert.equal(body.recipient, FUND);
-  assert.equal(body.refundTo, FUND);
+  assert.equal(body.refundTo, RELAY, "1Click refunds to the relay, never to the fund itself");
   assert.equal(body.dry, true);
 });
 
@@ -126,7 +127,7 @@ test("preflight refuses a missing, empty or wrong delivery message, as the contr
 });
 
 test("preflight says nothing about settle and still makes the other checks", () => {
-  assert.match(preflight(quote({ recipient: "op.testnet" }), FUND, state(), NOW).join(), /deliver to and refund to the fund/);
+  assert.match(preflight(quote({ recipient: "op.testnet" }), FUND, state(), NOW).join(), /deliver to the fund and refund to its relay/);
   assert.match(preflight(quote({ amount: 30_000_000n }), FUND, state(), NOW).join(), /2500 bps/);
   assert.match(preflight(quote(), FUND, state({ pending: { id: 2 } as any }), NOW).join(), /in flight/);
   assert.match(preflight(quote({ secretHex: "07".repeat(32) }), FUND, state(), NOW).join(), /signature/);
@@ -145,6 +146,22 @@ test("a fund with an exclusive strategy takes no operator proposal or stake", ()
   assert.match(preflightStake("1", s as any, NOW).join(), /no manager/);
   s.config.mandate.strategy.exclusive = false;
   assert.deepEqual(preflight(quote(), FUND, s, NOW), []);
+});
+
+test("preflight requires the refund address to be the fund's relay", () => {
+  const want = /refund to its relay fund-a-r\.funds\.testnet/;
+  // Release 0.2 quotes refunded to the fund itself: now refused (a plain refund there is never counted).
+  assert.match(preflight(quote({ refundTo: FUND }), FUND, state(), NOW).join(), want);
+  assert.match(preflight(quote({ refundTo: "op.testnet" }), FUND, state(), NOW).join(), want);
+  assert.equal(preflight(quote({ refundTo: FUND }), FUND, state(), NOW).length, 1);
+  // The relay is read from the fund's own config, not assumed from its name.
+  const other = state();
+  other.config.refund_relay = "elsewhere.testnet";
+  assert.match(preflight(quote(), FUND, other, NOW).join(), /refund to its relay elsewhere\.testnet/);
+  assert.deepEqual(preflight(quote({ refundRelay: "elsewhere.testnet" }), FUND, other, NOW), []);
+  const none = state();
+  delete none.config.refund_relay;
+  assert.match(preflight(quote(), FUND, none, NOW).join(), /no refund relay/);
 });
 
 // ---------------------------------------------------------------- quote signer comparison (keys with and without the prefix)

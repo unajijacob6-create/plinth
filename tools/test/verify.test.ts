@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import bs58 from "bs58";
-import { NO_CODE_HASH, classifyFund, hashToBase58, type FundFacts, type Release, type ReleasesFile } from "../lib/classify.ts";
+import { NO_CODE_HASH, classifyFund, hashToBase58, type FundFacts, type RelayFacts, type Release, type ReleasesFile } from "../lib/classify.ts";
 
 const b58 = (seed: string) => bs58.encode(createHash("sha256").update(seed).digest());
 const hex = (seed: string) => createHash("sha256").update(seed).digest("hex");
@@ -13,7 +13,11 @@ const RELEASES: Record<string, Release> = {
   [OLD]: { version: "0.2", commit: "4cad1b0", known_issue: "counts bounced transfers as holdings; see README" },
   [NEW]: { version: "0.3", commit: "abcdef0", global: true, reproducible: { image: "sourcescan/cargo-near:0.23.0-rust-1.99.1", image_digest: "sha256:00", command: "cargo near build reproducible-wasm" } },
 };
-const facts = (o: Partial<FundFacts>): FundFacts => ({ account: { code_hash: NO_CODE_HASH }, accessKeys: 0, fetchedCodeHash: null, forbiddenImports: [], releases: RELEASES, allowKnownIssue: false, ...o });
+const FUND = "alpha.funds.near", RELAY = "alpha-r.funds.near";
+/** A sound relay for a fund on release NEW: keyless, same pinned code, serving the fund. */
+const relay = (o: Partial<RelayFacts> = {}): RelayFacts => ({ account_id: RELAY, account: { code_hash: NO_CODE_HASH, global_contract_hash: NEW }, accessKeys: 0, servesFund: FUND, ...o });
+const facts = (o: Partial<FundFacts>): FundFacts => ({ account: { code_hash: NO_CODE_HASH }, accessKeys: 0, fetchedCodeHash: null, forbiddenImports: [], releases: RELEASES, allowKnownIssue: false, fund: FUND, relay: relay(), ...o });
+const sound = (o: Partial<FundFacts> = {}) => facts({ account: { code_hash: NO_CODE_HASH, global_contract_hash: NEW }, fetchedCodeHash: NEW, ...o });
 const failed = (f: FundFacts) => classifyFund(f).checks.filter((c) => !c.ok).map((c) => c.text).join("\n");
 
 test("a legacy fund with its own code: hash verified, but it fails on the known issue unless allowed", () => {
@@ -91,6 +95,66 @@ test("code that imports a code- or key-changing host function is not verified", 
   const f = facts({ account: { code_hash: NO_CODE_HASH, global_contract_hash: NEW }, fetchedCodeHash: NEW, forbiddenImports: ["promise_batch_action_deploy_contract"] });
   assert.equal(classifyFund(f).verified, false);
   assert.match(failed(f), /promise_batch_action_deploy_contract/);
+});
+
+// ---------------------------------------------------------------- the refund relay
+
+test("a sound fund with a sound relay verifies, and each relay check is printed", () => {
+  const v = classifyFund(sound());
+  assert.equal(v.verified, true);
+  const text = v.checks.map((c) => c.text).join("\n");
+  assert.match(text, /refund relay alpha-r\.funds\.near: 0 access keys/);
+  assert.match(text, /refund relay runs the same pinned code as the fund/);
+  assert.match(text, /refund relay hands refunds to this fund only/);
+  // The relay's hash may be reported in hex.
+  assert.equal(classifyFund(sound({ relay: relay({ account: { code_hash: NO_CODE_HASH, global_contract_hash: hex("release 0.3 wasm") } }) })).verified, true);
+});
+
+test("a relay with an access key fails the fund", () => {
+  const f = sound({ relay: relay({ accessKeys: 1 }) });
+  assert.equal(classifyFund(f).verified, false);
+  assert.match(failed(f), /^refund relay alpha-r\.funds\.near has 1 access key\(s\)/);
+});
+
+test("a relay running different code fails the fund", () => {
+  for (const account of [
+    { code_hash: NO_CODE_HASH, global_contract_hash: OTHER }, // another global contract
+    { code_hash: NO_CODE_HASH, global_contract_hash: OLD }, // another Plinth release
+    { code_hash: OTHER }, // its own copy of some code
+    { code_hash: NO_CODE_HASH }, // no code at all
+  ]) {
+    const f = sound({ relay: relay({ account }) });
+    assert.equal(classifyFund(f).verified, false, JSON.stringify(account));
+    assert.match(failed(f), /^refund relay code is .*, not the fund's /);
+  }
+  const follows = sound({ relay: relay({ account: { code_hash: NO_CODE_HASH, global_contract_account_id: "publisher.near", global_contract_hash: NEW } }) });
+  assert.equal(classifyFund(follows).verified, false);
+  assert.match(failed(follows), /refund relay runs whatever publisher\.near publishes/);
+});
+
+test("a relay that serves another fund, or is not a relay, fails the fund", () => {
+  const other = sound({ relay: relay({ servesFund: "beta.funds.near" }) });
+  assert.equal(classifyFund(other).verified, false);
+  assert.match(failed(other), /^refund relay serves beta\.funds\.near, not this fund$/);
+  const mute = sound({ relay: relay({ servesFund: null }) });
+  assert.equal(classifyFund(mute).verified, false);
+  assert.match(failed(mute), /does not answer relay_fund/);
+});
+
+test("a missing relay fails the fund: none named, account gone, or no facts given", () => {
+  const unnamed = sound({ relay: relay({ account_id: null }) });
+  assert.match(failed(unnamed), /reports no refund relay/);
+  const gone = sound({ relay: relay({ account: null }) });
+  assert.match(failed(gone), /^refund relay alpha-r\.funds\.near does not exist$/);
+  const nofacts = sound({ relay: undefined });
+  assert.match(failed(nofacts), /reports no refund relay/);
+  for (const f of [unnamed, gone, nofacts]) assert.equal(classifyFund(f).verified, false);
+});
+
+test("releases 0.1 and 0.2 had no relay: none is asked of a fund that carries its own code", () => {
+  const v = classifyFund(facts({ account: { code_hash: OLD }, fetchedCodeHash: OLD, allowKnownIssue: true, relay: undefined }));
+  assert.equal(v.verified, true);
+  assert.doesNotMatch(v.checks.map((c) => c.text).join(), /relay/);
 });
 
 test("an account with no contract is not a fund", () => {
