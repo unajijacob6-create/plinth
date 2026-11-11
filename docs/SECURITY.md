@@ -70,9 +70,14 @@ ft_balance_of(fund) >= held + owed + payouts in flight + baskets      (for every
 3. It runs once per trade.
 4. If the trade's output arrives within a day of the quote's deadline, the credit is taken back
    (`refund_undone`) and the trade becomes `Settled`.
+5. It closes 14 days after the quote's deadline (`REFUND_CLOSES_SECONDS`), so an old unresolved
+   trade does not stay open to it forever.
+6. Any transfer of the token that reaches the fund between the read and its result, kept or
+   returned, cancels the check (`flux`). That stops the ordinary bounce. It does not stop a bounce
+   whose `ft_on_transfer` never runs because the sender starved it of gas: that one leaves no trace.
 
 **What an attacker can still do.** On a trade that has had no output for an hour, an attacker can
-bounce the sold token while calling `settle_refund`, and make the fund count a refund that has not
+bounce the sold token (starved of gas) while calling `settle_refund`, and make the fund count a refund that has not
 arrived. `faked_refund_is_bounded_and_undone_when_output_arrives` does exactly this and shows the
 two outcomes that follow:
 

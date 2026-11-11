@@ -82,6 +82,9 @@ pub const REFUND_WAIT_SECONDS: u64 = 3600;
 /// A counted refund is taken back if the trade's output arrives within this long of the quote's
 /// deadline; later pushes are plain donations.
 pub const REFUND_UNDO_SECONDS: u64 = 86_400;
+/// A refund is counted only this long after the quote's deadline. 1Click refunds within hours; an
+/// old unresolved trade must not stay open to `settle_refund` forever.
+pub const REFUND_CLOSES_SECONDS: u64 = 14 * 86_400;
 /// NEAR a joiner attaches to `open_basket`: pays for their basket and share entries, stays with the
 /// fund (the contract cannot send NEAR).
 pub const BASKET_DEPOSIT: u128 = 5_000_000_000_000_000_000_000; // 0.005 NEAR
@@ -373,8 +376,8 @@ pub struct Plinth {
     /// NEAR of a stake between `near_withdraw` and `deposit_and_stake` (or its re-wrap). It sits in
     /// the account balance but is the fund's, so it is never spent on storage.
     near_in_flight: u128,
-    /// Free NEAR just before the stake in flight started, so a stuck stake can tell whether its
-    /// NEAR came back without mistaking the fund's own NEAR for it.
+    /// The account's NEAR (less stranded NEAR) just before the stake in flight started, so a stuck
+    /// stake can tell whether its NEAR came back without mistaking the fund's own NEAR for it.
     stake_near_before: u128,
     /// Tokens joiners have deposited towards an in-kind join, per account and in total.
     baskets: LookupMap<AccountId, Vec<u128>>,
@@ -500,6 +503,9 @@ impl Plinth {
         let Some(i) = self.config.mandate.tokens.iter().position(|t| *t == token) else {
             return amount; // not one of the fund's tokens
         };
+        // Every transfer of a fund token moves the balance for a moment, kept or not: a refund
+        // check that overlaps it is discarded.
+        self.flux += 1;
         if amount.0 == 0 || self.held[i].checked_add(amount.0).is_none() {
             return amount;
         }
@@ -629,6 +635,7 @@ impl Plinth {
         require!(self.config.mandate.open_ended, "this fund does not take in-kind joins");
         require!(now_seconds() >= self.config.mandate.subscription_closes_at, "the subscription window is open: subscribe in the base token");
         require!(self.pending.is_none(), "a trade is in flight; join when it has settled");
+        require!(self.stranded_near == 0, "NEAR from a failed stake is waiting to be wrapped (rewrap_stranded); join after that");
         self.accrue_fee();
         let who = env::predecessor_account_id();
         let mut b = self.baskets.get(&who).cloned().unwrap_or_else(|| env::panic_str("no basket: call open_basket first"));
@@ -801,7 +808,7 @@ impl Plinth {
             closed_at: None,
         };
         self.start_trade(&t);
-        self.stake_near_before = self.raw_free_near();
+        self.stake_near_before = self.near_balance_less_stranded();
         self.near_in_flight = amount.0;
         event("stake_sent", json!({"trade": &t}));
         let unwrap = call(&tokens[w], "near_withdraw", json!({"amount": amount}), 1, GAS_UNWRAP);
@@ -927,7 +934,7 @@ impl Plinth {
         require!(t.stake && t.status == TradeStatus::Sending, "no stake is stuck");
         require!(now_seconds() > t.sent_at + STUCK_STAKE_SECONDS, "too early to recover this stake");
         let tolerance = NEAR_RESERVE.min(t.amount_in.0 / 2);
-        let present = self.raw_free_near().saturating_sub(self.stranded_near) >= self.stake_near_before.saturating_add(t.amount_in.0 - tolerance);
+        let present = self.near_balance_less_stranded() >= self.stake_near_before.saturating_add(t.amount_in.0 - tolerance);
         self.near_in_flight = 0;
         if present {
             self.stranded_near += t.amount_in.0;
@@ -1202,12 +1209,18 @@ impl Plinth {
     }
 
     fn refundable(&self, trade_id: u64) -> Result<Trade, &'static str> {
-        let t = self.trades.get(trade_id as u32).ok_or("no such trade")?.clone();
+        if trade_id >= self.trades.len() as u64 {
+            return Err("no such trade");
+        }
+        let t = self.trades[trade_id as u32].clone();
         if t.stake || !matches!(t.status, TradeStatus::Sent | TradeStatus::Abandoned) || t.received_refund.0 > 0 {
             return Err("this trade is not waiting for a refund");
         }
         if now_seconds() < t.sent_at + REFUND_WAIT_SECONDS {
             return Err("a refund can be counted an hour after the trade was sent");
+        }
+        if now_seconds() > t.deposit_deadline.max(t.sent_at) + REFUND_CLOSES_SECONDS {
+            return Err("too late: refunds are counted for 14 days after the quote's deadline");
         }
         // Nothing of the fund's may be on its way out or in while the balance is read.
         if self.near_in_flight > 0 || self.pending.map_or(false, |id| self.trades[id as u32].status == TradeStatus::Sending) {
@@ -1218,8 +1231,8 @@ impl Plinth {
 
     #[private]
     pub fn on_settle_refund(&mut self, trade_id: u64, flux: u64, #[callback_result] balance: Result<U128, PromiseError>) -> TradeStatus {
-        let status = self.trades[trade_id as u32].status.clone();
-        let Ok(mut t) = self.refundable(trade_id) else { return status };
+        let Ok(mut t) = self.refundable(trade_id) else { return self.trades[(trade_id.min(self.trades.len() as u64 - 1)) as u32].status.clone() };
+        let status = t.status.clone();
         if flux != self.flux {
             env::log_str("tokens moved while the balance was read; try again");
             return status;
@@ -1368,6 +1381,12 @@ impl Plinth {
     /// in flight, and joiners' baskets.
     fn accounted(&self, i: usize) -> u128 {
         self.held[i] + self.owed_total[i] + self.in_flight[i] + self.basket_total[i]
+    }
+
+    /// The account's NEAR, not counting NEAR already set aside as stranded. Used to tell whether a
+    /// stuck stake's NEAR came back: unlike free NEAR it does not shrink when storage grows.
+    fn near_balance_less_stranded(&self) -> u128 {
+        env::account_balance().as_yoctonear().saturating_sub(self.stranded_near)
     }
 
     /// Account balance above its storage cost.

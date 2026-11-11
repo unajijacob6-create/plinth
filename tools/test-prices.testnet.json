@@ -1,0 +1,8 @@
+{
+ "note": "TEST PRICES for testnet funds whose quotes are signed by the test signer (npm run operate -- --test-signer). Not market data: NEAR Intents 1Click has no testnet. These reproduce the rate the recorded demos use (1 pUSD = 0.002 wNEAR). Add an entry for every token of the fund you operate.",
+ "spread_bps": 20,
+ "tokens": {
+  "pusd.plinthfund.testnet": { "decimals": 6, "usd": "1" },
+  "wrap.testnet": { "decimals": 24, "usd": "500" }
+ }
+}

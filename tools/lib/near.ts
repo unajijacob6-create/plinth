@@ -119,6 +119,26 @@ export async function call(from: string, contractId: string, methodName: string,
   return send(from, contractId, [actions.functionCall(methodName, args, TGAS(o.gas ?? 100), o.deposit ?? 0n)], o);
 }
 
+/** One function call whose receipts may take minutes (the fund's `rebalance` waits for OutLayer to
+ *  run the strategy). The RPC stops waiting long before that, so this waits only for the
+ *  transaction to be included, then polls its status until every receipt has run and is final. */
+export async function callLong(from: string, contractId: string, methodName: string, args: Record<string, unknown>, o: CallOptions & { timeoutS?: number } = {}): Promise<any> {
+  const first: any = await signer(from).signAndSendTransaction({ receiverId: contractId, actions: [actions.functionCall(methodName, args, TGAS(o.gas ?? 100), o.deposit ?? 0n)], waitUntil: "INCLUDED_FINAL", throwOnFailure: false });
+  const hash = txHash(first);
+  if (!hash) throw new Error(`${methodName}: the RPC returned no transaction hash`);
+  const until = Date.now() + (o.timeoutS ?? 900) * 1000;
+  for (;;) {
+    const r = await rpc<any>("tx", { tx_hash: hash, sender_account_id: from, wait_until: "NONE" });
+    if (r.final_execution_status === "FINAL") {
+      const why = failure(r);
+      if (why && !o.allowFailure) throw new Error(`${methodName} failed: ${why} ${explorer(hash)}`);
+      return r;
+    }
+    if (Date.now() > until) throw new Error(`${methodName}: transaction ${hash} is still running after ${o.timeoutS ?? 900} s (${r.final_execution_status}) ${explorer(hash)}`);
+    await new Promise((res) => setTimeout(res, 3000));
+  }
+}
+
 export interface AccountView {
   amount: string;
   code_hash: string;
