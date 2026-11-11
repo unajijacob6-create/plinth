@@ -1,0 +1,39 @@
+{
+  "mode": "proxy",
+  "label": "near-heavy",
+  "tx": "BvvVcbYZaA1vwjYuRZBD7XLm3zCDVm8ZpHZ4Ag6zbP95",
+  "seconds": 12.606,
+  "input": "{\"fund\":\"proxy.plinth-ol-spike-mwb6xcaj.testnet\",\"now\":1794354889,\"next_trade_id\":5,\"tokens\":[\"usdc.fakes.testnet\",\"wrap.testnet\"],\"held\":[\"10000000\",\"20000000000000000000000000\"],\"total_shares\":\"74000000\",\"max_trade_bps\":2500,\"max_cost_bps\":100,\"staking\":null}",
+  "status": {
+    "SuccessValue": "ImtpbmQ9MSBsZW49MTI2MSI="
+  },
+  "resources_used": {
+    "instructions": 10553903,
+    "time_ms": 1154,
+    "compile_time_ms": null
+  },
+  "payment_charged": "1115401000000000000000",
+  "payment_refunded": "2885599000000000000000",
+  "compilation_note": "Cached WASM from 2026-11-10T23:54:21.356904+00:00",
+  "outlayer_log": "Execution completed successfully. Output: Json(1261 bytes), Resources: { instructions: 10553903, time_ms: 1154 }, Cost: 1115401000000000000000 yoctoNEAR, Refund: 2885599000000000000000 yoctoNEAR, Cached WASM from 2026-11-10T23:54:21.356904+00:00",
+  "gas_burnt": [
+    [
+      "proxy",
+      2.15
+    ],
+    [
+      "outlayer",
+      3.783
+    ],
+    [
+      "outlayer",
+      3.247
+    ],
+    [
+      "proxy",
+      1.682
+    ]
+  ],
+  "decision_len": 1261,
+  "decision": "{\"action\":\"trade\",\"quote\":\"{\\\"quote\\\":{\\\"amountIn\\\":\\\"4750000000000000000000000\\\",\\\"amountInFormatted\\\":\\\"4.75\\\",\\\"amountInUsd\\\":\\\"17.005000\\\",\\\"amountOut\\\":\\\"16953985\\\",\\\"amountOutFormatted\\\":\\\"16.953985\\\",\\\"amountOutUsd\\\":\\\"16.953985\\\",\\\"deadline\\\":\\\"2026-11-11T23:54:49.000Z\\\",\\\"depositAddress\\\":\\\"07c7a62e89ca01427cd4c00f16d99058823bdbd316c17b1a1808b448fd176377\\\",\\\"minAmountIn\\\":\\\"4750000000000000000000000\\\",\\\"minAmountOut\\\":\\\"16869215\\\",\\\"refundFee\\\":\\\"0\\\",\\\"timeEstimate\\\":20,\\\"timeWhenInactive\\\":\\\"2026-11-11T23:54:49.000Z\\\"},\\\"quoteRequest\\\":{\\\"amount\\\":\\\"4750000000000000000000000\\\",\\\"customRecipientMsg\\\":\\\"trade:5\\\",\\\"deadline\\\":\\\"2026-11-11T00:04:49.000Z\\\",\\\"depositMode\\\":\\\"SIMPLE\\\",\\\"depositType\\\":\\\"ORIGIN_CHAIN\\\",\\\"destinationAsset\\\":\\\"nep141:usdc.fakes.testnet\\\",\\\"dry\\\":false,\\\"originAsset\\\":\\\"nep141:wrap.testnet\\\",\\\"quoteWaitingTimeMs\\\":0,\\\"recipient\\\":\\\"proxy.plinth-ol-spike-mwb6xcaj.testnet\\\",\\\"recipientType\\\":\\\"DESTINATION_CHAIN\\\",\\\"refundTo\\\":\\\"proxy.plinth-ol-spike-mwb6xcaj.testnet\\\",\\\"refundType\\\":\\\"ORIGIN_CHAIN\\\",\\\"slippageTolerance\\\":50,\\\"swapType\\\":\\\"EXACT_INPUT\\\"},\\\"signature\\\":\\\"ed25519:4RxZGdzJ65gFaxxC2hRd2KWDL55yN9BCmLdBRyoENhBSjNgwyBVTnT11DWXDYisHWUhyBBKaAgk2nqN51rPEEDGY\\\",\\\"timestamp\\\":\\\"2026-11-10T23:54:49.000Z\\\"}\"}"
+}

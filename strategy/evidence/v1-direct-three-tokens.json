@@ -1,0 +1,29 @@
+{
+  "mode": "direct",
+  "label": "three-tokens",
+  "tx": "Fjah22EZGwvX7wAqq7tbspRhFfH6KECJ6c9vfd3YZV3S",
+  "seconds": 10.594,
+  "input": "{\"fund\":\"f.testnet\",\"now\":1794354916,\"next_trade_id\":0,\"tokens\":[\"a.testnet\",\"b.testnet\",\"c.testnet\"],\"held\":[\"1\",\"2\",\"3\"],\"total_shares\":\"1\",\"max_trade_bps\":2500,\"max_cost_bps\":100,\"staking\":null}",
+  "status": "see decision",
+  "resources_used": {
+    "instructions": 4728877,
+    "time_ms": 740,
+    "compile_time_ms": null
+  },
+  "payment_charged": "1074000400000000000000",
+  "payment_refunded": "2926999600000000000000",
+  "compilation_note": "Cached WASM from 2026-11-10T23:54:21.356904+00:00",
+  "outlayer_log": "Execution completed successfully. Output: Json(105 bytes), Resources: { instructions: 4728877, time_ms: 740 }, Cost: 1074000400000000000000 yoctoNEAR, Refund: 2926999600000000000000 yoctoNEAR, Cached WASM from 2026-11-10T23:54:21.356904+00:00",
+  "gas_burnt": [
+    [
+      "outlayer",
+      3.758
+    ],
+    [
+      "outlayer",
+      3.099
+    ]
+  ],
+  "decision_len": 105,
+  "decision": "{\"action\":\"hold\",\"reason\":\"this strategy handles two-token funds (USD stable, wNEAR); this fund lists 3\"}"
+}

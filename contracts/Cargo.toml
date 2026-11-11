@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["plinth", "mock-ft"]
+members = ["plinth", "mock-ft", "factory"]
 
 [workspace.package]
 edition = "2021"

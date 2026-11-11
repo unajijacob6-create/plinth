@@ -29,6 +29,12 @@ impl Token {
         Self { balances: LookupMap::new(b"b"), price: price.0 }
     }
 
+    /// Test helper: publish the bytes passed as the call's raw input as a global contract by hash
+    /// (NEP-591), paid from this account's balance. Lets sandbox tests publish the fund code.
+    pub fn publish_global() -> Promise {
+        Promise::new(env::current_account_id()).deploy_global_contract(env::input().unwrap_or_default())
+    }
+
     // ---- wNEAR behaviour (wrap.near): near_deposit / near_withdraw
 
     #[payable]
@@ -52,7 +58,7 @@ impl Token {
     // ---- liquid-staking behaviour (Meta Pool style): deposit_and_stake / get_st_near_price
 
     #[payable]
-    pub fn deposit_and_stake(&mut self) {
+    pub fn deposit_and_stake(&mut self) -> U128 {
         require!(self.price > 0, "not a staking token");
         let amount = env::attached_deposit().as_yoctonear();
         require!(amount >= 1_000_000_000_000_000_000_000_000, "minimum deposit is 1 NEAR");
@@ -60,6 +66,7 @@ impl Token {
         let b = self.balances.get(&who).copied().unwrap_or(0);
         let minted = amount * 1_000_000 / (self.price / 1_000_000_000_000_000_000);
         self.balances.insert(who, b + minted);
+        U128(minted)
     }
 
     pub fn get_st_near_price(&self) -> U128 {

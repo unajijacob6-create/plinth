@@ -1,7 +1,18 @@
 {
- "note": "Code fingerprints (base58 sha256 of the wasm, as NEAR reports code_hash) of Plinth releases deployed by this repository. The verifier passes only these.",
+ "note": "Code fingerprints (base58 sha256 of the wasm, as NEAR reports code_hash or global_contract_hash) of Plinth releases deployed by this repository. The verifier passes only these. Optional per release: known_issue (verification fails unless --allow-known-issue), global (published as a global contract by hash), reproducible {image, image_digest, command}. factories: the factory account that creates funds, per network.",
  "releases": {
-  "9P39GJXvgFpsiPpcDYUyzYikajydDUwfYuHr9b2V9dMj": { "version": "0.1", "commit": "0e12944", "note": "first release: trades and in-kind exit, no staking route or fee" },
-  "82sC6iGvYGWL1kgSMDBb3rLhwRse9FtZa7ZcGEwG8RCA": { "version": "0.2", "commit": "4cad1b0", "note": "staking route, management fee, fixes from the second security review" }
- }
+  "9P39GJXvgFpsiPpcDYUyzYikajydDUwfYuHr9b2V9dMj": {
+   "version": "0.1",
+   "commit": "0e12944",
+   "note": "first release: trades and in-kind exit, no staking route or fee",
+   "known_issue": "counts bounced transfers as holdings; see README"
+  },
+  "82sC6iGvYGWL1kgSMDBb3rLhwRse9FtZa7ZcGEwG8RCA": {
+   "version": "0.2",
+   "commit": "4cad1b0",
+   "note": "staking route, management fee, fixes from the second security review",
+   "known_issue": "counts bounced transfers as holdings; see README"
+  }
+ },
+ "factories": {}
 }

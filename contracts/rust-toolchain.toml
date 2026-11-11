@@ -1,4 +1,4 @@
-# near-sdk 5.30 needs rustc >= 1.95; pinned to the release the contracts are tested with.
+# near-sdk 5.30 needs rustc >= 1.95; pinned to the release in the reproducible-build image (contracts/plinth/Cargo.toml).
 [toolchain]
-channel = "1.97.0"
+channel = "1.99.1"
 targets = ["wasm32-unknown-unknown"]

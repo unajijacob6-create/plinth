@@ -4,7 +4,7 @@
 //!     FunctionCall new) and has zero access keys;
 //!   - two depositors subscribe; a hostile quote (output to someone else) is refused and recorded;
 //!   - a quote inside the mandate is sent: the fund registers the (unregistered) deposit address and
-//!     transfers to it in one receipt; a "solver" plays 1Click and delivers the output; anyone settles;
+//!     transfers to it in one receipt; a "solver" plays 1Click and delivers the output; the output is pushed with the trade's message and settles it;
 //!   - a depositor redeems in kind; an unregistered redeemer's payout stays owed and is claimable.
 //! Build first: `bash contracts/test.sh` (or cargo near build for plinth and mock-ft).
 
@@ -39,12 +39,13 @@ fn iso(secs: u64) -> String {
 }
 
 /// A live 1Click-shaped quote signed with the test key, using the contract's own message rule.
-fn quote(sell: &AccountId, buy: &AccountId, amount: u128, out: u128, min_out: u128, recipient: &AccountId, deposit: &str, issued: u64) -> String {
+fn quote(sell: &AccountId, buy: &AccountId, amount: u128, out: u128, min_out: u128, recipient: &AccountId, deposit: &str, issued: u64, trade_id: u64) -> String {
     let req = json!({
         "dry": false, "depositMode": "SIMPLE", "swapType": "EXACT_INPUT", "slippageTolerance": 50,
         "originAsset": format!("nep141:{sell}"), "depositType": "ORIGIN_CHAIN", "destinationAsset": format!("nep141:{buy}"),
         "amount": amount.to_string(), "refundTo": recipient, "refundType": "ORIGIN_CHAIN", "recipient": recipient,
         "recipientType": "DESTINATION_CHAIN", "deadline": iso(issued + 600), "quoteWaitingTimeMs": 0,
+        "customRecipientMsg": format!("trade:{trade_id}"),
     });
     let q = json!({
         "amountIn": amount.to_string(), "amountInFormatted": "10.0", "amountInUsd": "10.000000", "minAmountIn": amount.to_string(),
@@ -154,7 +155,7 @@ async fn keyless_fund_end_to_end() -> anyhow::Result<()> {
 
     // ---- a hostile quote: output to the operator. Refused and recorded, nothing moves.
     let deposit = "d".repeat(64);
-    let evil = quote(usdc.id(), wnear.id(), 10_000_000, 2_700_000_000_000_000_000_000_000, 2_690_000_000_000_000_000_000_000, operator.id(), &deposit, now);
+    let evil = quote(usdc.id(), wnear.id(), 10_000_000, 2_700_000_000_000_000_000_000_000, 2_690_000_000_000_000_000_000_000, operator.id(), &deposit, now, 0);
     let ok: bool = operator.call(&fund_id, "propose_trade").args_json(json!({"quote": evil})).gas(Gas::from_tgas(150)).transact().await?.json()?;
     assert!(!ok);
     let rej: Value = worker.view(&fund_id, "get_rejections").args_json(json!({"from": 0, "limit": 5})).await?.json()?;
@@ -166,7 +167,7 @@ async fn keyless_fund_end_to_end() -> anyhow::Result<()> {
     assert!(r.is_failure());
 
     // ---- a trade inside the mandate: the deposit address is not registered on the token
-    let good = quote(usdc.id(), wnear.id(), 10_000_000, 2_700_000_000_000_000_000_000_000, 2_690_000_000_000_000_000_000_000, &fund_id, &deposit, now);
+    let good = quote(usdc.id(), wnear.id(), 10_000_000, 2_700_000_000_000_000_000_000_000, 2_690_000_000_000_000_000_000_000, &fund_id, &deposit, now, 0);
     let r = operator.call(&fund_id, "propose_trade").args_json(json!({"quote": good})).gas(Gas::from_tgas(200)).transact().await?;
     assert!(r.is_success(), "{:?}", r.failures());
     assert!(r.json::<bool>()?);
@@ -176,21 +177,24 @@ async fn keyless_fund_end_to_end() -> anyhow::Result<()> {
     assert_eq!(v["pending"]["status"], "Sent");
     assert_eq!(v["held"][0][1], "90000000");
 
-    // Settling before the output arrives leaves it pending.
-    let st: Value = carol.call(&fund_id, "settle").gas(Gas::from_tgas(100)).transact().await?.json()?;
-    assert_eq!(st, "Sent");
+    // Nothing can close the trade from a balance read: a refund check is not even allowed yet.
+    let r = carol.call(&fund_id, "settle_refund").args_json(json!({"trade_id": 0})).gas(Gas::from_tgas(100)).transact().await?;
+    assert!(r.is_failure());
 
-    // ---- "1Click" delivers the output (a plain ft_transfer to the fund)
+    // ---- "1Click" delivers the output the way the signed quote says: ft_transfer_call with the
+    // trade's message. The trade settles in that call; nobody has to do anything.
     let out: u128 = 2_695_000_000_000_000_000_000_000;
-    solver
-        .call(wnear.id(), "ft_transfer")
-        .args_json(json!({"receiver_id": fund_id, "amount": out.to_string()}))
+    let r = solver
+        .call(wnear.id(), "ft_transfer_call")
+        .args_json(json!({"receiver_id": fund_id, "amount": out.to_string(), "msg": "trade:0"}))
         .deposit(NearToken::from_yoctonear(1))
+        .gas(Gas::from_tgas(100))
         .transact()
-        .await?
-        .into_result()?;
-    let st: Value = carol.call(&fund_id, "settle").gas(Gas::from_tgas(100)).transact().await?.json()?;
-    assert_eq!(st, "Settled");
+        .await?;
+    assert!(r.is_success(), "{:?}", r.failures());
+    println!("output delivery (ft_transfer_call + settle) burnt {} TGas", r.total_gas_burnt.as_tgas());
+    assert_eq!(balance(&wnear, solver.id()).await?, NearToken::from_near(5).as_yoctonear() - out, "the fund kept all of it");
+    let _ = &carol;
     let v = fund_view(&worker, &fund_id).await?;
     assert!(v["pending"].is_null());
     assert_eq!(v["held"][1][1], out.to_string());
@@ -206,7 +210,7 @@ async fn keyless_fund_end_to_end() -> anyhow::Result<()> {
     let owed: Vec<String> = worker.view(&fund_id, "get_owed").args_json(json!({"account_id": bob.id()})).await?.json()?;
     assert_eq!(owed, vec!["0".to_string(), (out - out * 60 / 100).to_string()]);
     register(&bob, &wnear).await?;
-    bob.call(&fund_id, "claim").gas(Gas::from_tgas(100)).transact().await?.into_result()?;
+    bob.call(&fund_id, "claim").args_json(json!({})).gas(Gas::from_tgas(100)).transact().await?.into_result()?;
     assert_eq!(balance(&wnear, bob.id()).await?, out - out * 60 / 100);
     let owed: Vec<String> = worker.view(&fund_id, "get_owed").args_json(json!({"account_id": bob.id()})).await?.json()?;
     assert!(owed.is_empty());
@@ -269,7 +273,7 @@ async fn audit_c1_redeem_then_claims_pays_once() -> anyhow::Result<()> {
     // The whole batch reverted (claim panicked), so Mallory still has her shares; redeem alone:
     let r = mallory.call(&fund, "redeem").args_json(json!({"shares": "10000000"})).gas(Gas::from_tgas(100)).transact().await?;
     assert!(r.is_success(), "{:?}", r.failures());
-    let r = mallory.call(&fund, "claim").gas(Gas::from_tgas(60)).transact().await?;
+    let r = mallory.call(&fund, "claim").args_json(json!({})).gas(Gas::from_tgas(60)).transact().await?;
     assert!(r.is_failure());
     assert_eq!(balance(&usdc, mallory.id()).await? - before, 10_000_000);
     alice.call(&fund, "redeem").args_json(json!({"shares": "90000000"})).gas(Gas::from_tgas(100)).transact().await?.into_result()?;
@@ -300,8 +304,8 @@ async fn audit_h1_four_token_redeem_fits_in_one_transaction() -> anyhow::Result<
         .deposit(NearToken::from_yoctonear(1)).gas(Gas::from_tgas(150)).transact().await?.into_result()?;
     for (i, t) in toks.iter().enumerate().skip(1) {
         root.call(t.id(), "mint").args_json(json!({"account_id": donor.id(), "amount": "1000"})).transact().await?.into_result()?;
-        donor.call(t.id(), "ft_transfer").args_json(json!({"receiver_id": fund, "amount": "1000"})).deposit(NearToken::from_yoctonear(1)).transact().await?.into_result()?;
-        donor.call(&fund, "absorb").args_json(json!({"token_index": i})).gas(Gas::from_tgas(50)).transact().await?.into_result()?;
+        let _ = i;
+        donor.call(t.id(), "ft_transfer_call").args_json(json!({"receiver_id": fund, "amount": "1000", "msg": "donate"})).deposit(NearToken::from_yoctonear(1)).gas(Gas::from_tgas(100)).transact().await?.into_result()?;
     }
     let r = alice.call(&fund, "redeem").args_json(json!({"shares": "100000000"})).gas(Gas::from_tgas(300)).transact().await?;
     assert!(r.is_success(), "{:?}", r.failures());
@@ -353,11 +357,10 @@ async fn stake_idle_end_to_end_and_management_fee() -> anyhow::Result<()> {
     assert!(r.is_success(), "{:?}", r.failures());
     alice.call(usdc.id(), "ft_transfer_call").args_json(json!({"receiver_id": fund_id, "amount": "100000000", "msg": ""}))
         .deposit(NearToken::from_yoctonear(1)).gas(Gas::from_tgas(150)).transact().await?.into_result()?;
-    // 8 wNEAR reach the fund (as a settled trade would leave them) and are absorbed.
+    // 8 wNEAR are donated to the fund (pushed with ft_transfer_call, so they are counted).
     donor.call(wnear.id(), "near_deposit").deposit(NearToken::from_near(8)).transact().await?.into_result()?;
-    donor.call(wnear.id(), "ft_transfer").args_json(json!({"receiver_id": fund_id, "amount": NearToken::from_near(8).as_yoctonear().to_string()}))
-        .deposit(NearToken::from_yoctonear(1)).transact().await?.into_result()?;
-    donor.call(&fund_id, "absorb").args_json(json!({"token_index": 1})).gas(Gas::from_tgas(50)).transact().await?.into_result()?;
+    donor.call(wnear.id(), "ft_transfer_call").args_json(json!({"receiver_id": fund_id, "amount": NearToken::from_near(8).as_yoctonear().to_string(), "msg": "donate"}))
+        .deposit(NearToken::from_yoctonear(1)).gas(Gas::from_tgas(100)).transact().await?.into_result()?;
     while now_s(&worker).await? < close {
         worker.fast_forward(10).await?;
     }
@@ -367,14 +370,13 @@ async fn stake_idle_end_to_end_and_management_fee() -> anyhow::Result<()> {
     assert!(r.is_success(), "{:?}", r.failures());
     assert!(r.json::<bool>()?);
     let v = fund_view(&worker, &fund_id).await?;
-    assert_eq!(v["pending"]["status"], "Sent", "{v}");
+    assert!(v["pending"].is_null(), "the stake settles in its own callback: {v}");
     let minted: u128 = two * 2 / 3; // price 1.5
     assert_eq!(balance(&stnear, &fund_id).await?, minted);
     assert_eq!(balance(&wnear, &fund_id).await?, NearToken::from_near(6).as_yoctonear());
-    let st: Value = alice.call(&fund_id, "settle").gas(Gas::from_tgas(100)).transact().await?.json()?;
-    assert_eq!(st, "Settled");
-    let v = fund_view(&worker, &fund_id).await?;
-    assert_eq!(v["held"][2][1], minted.to_string());
+    let trades: Value = worker.view(&fund_id, "get_trades").args_json(json!({"from": 0, "limit": 5})).await?.json()?;
+    assert_eq!(trades[0]["status"], "Settled", "{trades}");
+    assert_eq!(v["held"][2][1], minted.to_string(), "counted from what deposit_and_stake returned");
     // A stake over the size cap (30% of 6 wNEAR) is refused on chain.
     let r: bool = operator.call(&fund_id, "stake_idle").args_json(json!({"amount": NearToken::from_near(2).as_yoctonear().to_string()})).gas(Gas::from_tgas(300)).transact().await?.json()?;
     assert!(!r);

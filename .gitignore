@@ -3,3 +3,8 @@ node_modules/
 *.log
 .env
 web/dist/
+
+# local key material (testnet stand-in signer seed for the strategy build)
+.keys/
+strategy/target/
+strategy/host-test/target/

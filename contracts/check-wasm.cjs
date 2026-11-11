@@ -4,7 +4,7 @@
 // check also covers a future build that links one in but never calls it. Over-approximates indirect calls and fails closed on unknown opcodes.
 const fs = require("fs");
 const { analyze } = require("./wasm-reach.cjs");
-const FORBIDDEN = /deploy|use_global_contract|add_key|delete_key|delete_account|stake|state_init/;
+const FORBIDDEN = /deploy|use_global_contract|add_key|delete_key|delete_account|stake|state_init|promise_batch_action_transfer/;
 let failed = false;
 for (const file of process.argv.slice(2)) {
   const a = analyze(fs.readFileSync(file));

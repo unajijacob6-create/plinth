@@ -2532,7 +2532,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "plinth"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bs58 0.5.1",
@@ -2540,6 +2540,19 @@ dependencies = [
  "near-sdk",
  "near-workspaces",
  "rand 0.8.8",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
+name = "plinth-factory"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "bs58 0.5.1",
+ "near-sdk",
+ "near-workspaces",
  "serde_json",
  "sha2 0.10.9",
  "tokio",

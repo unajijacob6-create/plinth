@@ -1,0 +1,39 @@
+{
+  "mode": "proxy",
+  "label": "in-band",
+  "tx": "ALQYZhvei98eyo8oZ4vTfNgv7jyjQpCvRVNQ2AUvvnkE",
+  "seconds": 13.152,
+  "input": "{\"fund\":\"proxy.plinth-ol-spike-mwb6xcaj.testnet\",\"now\":1794354902,\"next_trade_id\":1,\"tokens\":[\"usdc.fakes.testnet\",\"wrap.testnet\"],\"held\":[\"50000000\",\"14000000000000000000000000\"],\"total_shares\":\"74000000\",\"max_trade_bps\":2500,\"max_cost_bps\":100,\"staking\":null}",
+  "status": {
+    "SuccessValue": "ImtpbmQ9MSBsZW49MTI5Ig=="
+  },
+  "resources_used": {
+    "instructions": 4747355,
+    "time_ms": 759,
+    "compile_time_ms": null
+  },
+  "payment_charged": "1075900400000000000000",
+  "payment_refunded": "2925099600000000000000",
+  "compilation_note": "Cached WASM from 2026-11-10T23:54:21.356904+00:00",
+  "outlayer_log": "Execution completed successfully. Output: Json(129 bytes), Resources: { instructions: 4747355, time_ms: 759 }, Cost: 1075900400000000000000 yoctoNEAR, Refund: 2925099600000000000000 yoctoNEAR, Cached WASM from 2026-11-10T23:54:21.356904+00:00",
+  "gas_burnt": [
+    [
+      "proxy",
+      2.15
+    ],
+    [
+      "outlayer",
+      3.787
+    ],
+    [
+      "outlayer",
+      3.112
+    ],
+    [
+      "proxy",
+      1.451
+    ]
+  ],
+  "decision_len": 129,
+  "decision": "{\"action\":\"hold\",\"reason\":\"within the band: weights 49.94% stable / 50.05% wNEAR at NEAR $3.580000; rebalance only above 55.00%\"}"
+}

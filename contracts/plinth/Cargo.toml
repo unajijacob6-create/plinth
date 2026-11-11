@@ -1,7 +1,7 @@
 [package]
 name = "plinth"
 description = "A keyless NEAR fund: the mandate is fixed at launch, the manager can only propose 1Click-signed swaps, and every depositor can always exit in kind"
-version = "0.1.0"
+version = "0.3.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

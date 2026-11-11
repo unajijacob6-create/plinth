@@ -35,21 +35,49 @@ export function signedMessage(req: Record<string, any>, quote: Record<string, an
 }
 
 export function verifySignature(r: QuoteResponse, key = ONECLICK_KEY): boolean {
-  const msg = signedMessage(r.quoteRequest as any, r.quote as any, r.timestamp);
-  const sig = bs58.decode(r.signature.replace(/^ed25519:/, ""));
-  const pk = bs58.decode(key.replace(/^ed25519:/, ""));
   try {
+    const msg = signedMessage(r.quoteRequest as any, r.quote as any, r.timestamp);
+    const sig = bs58.decode(r.signature.replace(/^ed25519:/, ""));
+    const pk = bs58.decode(key.replace(/^ed25519:/, ""));
     return ed25519.verify(sig, new TextEncoder().encode(msg), pk);
   } catch {
     return false;
   }
 }
 
+/** The 32 bytes of an ed25519 public key written as base58 with or without the `ed25519:` prefix
+ *  (the contract accepts both: quote.rs `decode_public_key`). null if it is not such a key. */
+export function ed25519KeyBytes(key: unknown): Uint8Array | null {
+  if (typeof key !== "string") return null;
+  try {
+    const b = bs58.decode(key.replace(/^ed25519:/, ""));
+    return b.length === 32 ? b : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether two key strings are the same key, whatever their prefix. */
+export function sameEd25519Key(a: unknown, b: unknown): boolean {
+  const x = ed25519KeyBytes(a), y = ed25519KeyBytes(b);
+  return !!x && !!y && x.every((v, i) => v === y[i]);
+}
+
+/** The `customRecipientMsg` release 0.3 requires: 1Click then delivers the output with
+ *  `ft_transfer_call(msg = "trade:<id>")` and the trade settles inside that call. `tradeId` is the
+ *  fund's `get_fund().trades` at the time of the proposal (the id the new trade will get). */
+export const tradeMsg = (tradeId: number | bigint | string): string => {
+  if (!/^\d+$/.test(String(tradeId))) throw new Error(`trade id must be a non-negative integer, got ${tradeId}`);
+  return `trade:${BigInt(tradeId)}`;
+};
+
 export interface QuoteParams {
   fund: string;
   sellToken: string;
   buyToken: string;
   amount: string; // base units of sellToken
+  /** The fund's current `get_fund().trades` (the next trade id); signed into the quote as customRecipientMsg. */
+  tradeId: number;
   dry: boolean;
   slippageBps?: number;
   deadlineMinutes?: number;
@@ -71,6 +99,7 @@ export async function requestQuote(p: QuoteParams): Promise<QuoteResponse> {
     recipientType: "DESTINATION_CHAIN",
     deadline: new Date(Date.now() + (p.deadlineMinutes ?? 10) * 60_000).toISOString(),
     quoteWaitingTimeMs: 0,
+    customRecipientMsg: tradeMsg(p.tradeId),
   };
   const res = await fetch(`${ONECLICK_API}/v0/quote`, {
     method: "POST",
@@ -104,6 +133,27 @@ export function costBps(quote: Record<string, any>): bigint {
   return inUsd === 0n ? 10_000n : ((inUsd > worst ? inUsd - worst : 0n) * 10_000n) / inUsd;
 }
 
+/** A trade as the contract reports it (`Trade` in lib.rs). */
+export interface TradeView {
+  id: number;
+  stake: boolean;
+  sell: number;
+  buy: number;
+  amount_in: string;
+  quoted_out: string;
+  min_out: string;
+  refund_fee: string;
+  cost_bps: number;
+  deposit_address: string;
+  deposit_deadline: number;
+  sent_at: number;
+  status: "Sending" | "Sent" | "Settled" | "Refunded" | "Failed" | "Abandoned";
+  received_out: string;
+  received_refund: string;
+  closed_at: number | null;
+}
+
+/** `get_fund()` (FundView in lib.rs). Fields a release before 0.3 does not report are optional. */
 export interface FundState {
   config: {
     operator: string;
@@ -117,23 +167,42 @@ export interface FundState {
       max_quote_age_seconds: number;
       min_deadline_margin_seconds: number;
       subscription_closes_at: number;
-      staking?: { wrap_index: number; lst_index: number; min_stake: string } | null;
+      min_subscription?: string;
+      max_total_subscriptions?: string;
+      management_fee_bps?: number;
+      staking?: { wrap_index: number; lst_index: number; min_stake: string; price_method?: string; max_price_slippage_bps?: number } | null;
+      open_ended?: boolean;
+      strategy?: { outlayer: string; wasm_url: string; wasm_hash: string; max_instructions: number; max_execution_seconds: number; secrets_profile?: string | null; secrets_owner?: string | null; exclusive: boolean } | null;
     };
     storage_deposit?: string;
   };
   held: [string, string][];
-  pending: unknown | null;
+  total_shares?: string;
+  total_subscribed?: string;
+  pending: TradeView | null;
+  /** Number of trades so far = the id the next trade gets. */
+  trades: number;
+  rejections?: number;
   last_trade_at: number;
   registered?: boolean[];
   trades_today?: number;
   near_available_for_registrations?: string;
+  // Release 0.3:
+  version?: string;
+  owed_total?: string[];
+  basket_total?: string[];
+  near_free?: string;
+  max_daily_cost_bps?: number;
+  strategy_started?: number;
 }
 
-/** The contract's checks, off-chain. Returns the reasons it would refuse (empty = it would accept). */
+/** Why `propose_trade` / `stake_idle` would panic for the operator, if it would. */
+const noManager = (s: FundState) => (s.config.mandate.strategy?.exclusive ? ["this fund has no manager: only its strategy proposes (rebalance)"] : []);
+
 /** The contract's stake_idle checks, off-chain, so a stake the contract would refuse is never sent
  *  (a refusal is stored on chain and spends the fund's storage NEAR). */
 export function preflightStake(amount: string, s: FundState & { config: any }, nowS = Math.floor(Date.now() / 1000)): string[] {
-  const why: string[] = [];
+  const why: string[] = noManager(s);
   const m: any = s.config.mandate;
   const r = m.staking;
   if (!r) return ["this fund has no staking route"];
@@ -152,8 +221,10 @@ export function preflightStake(amount: string, s: FundState & { config: any }, n
   return why;
 }
 
+/** The contract's propose_trade checks (lib.rs `check_trade`), off-chain. Returns the reasons it
+ *  would refuse (empty = it would accept). Not mirrored: whether the deposit address was used before. */
 export function preflight(r: QuoteResponse, fund: string, s: FundState, nowS = Math.floor(Date.now() / 1000)): string[] {
-  const why: string[] = [];
+  const why: string[] = noManager(s);
   const m = s.config.mandate;
   const q = r.quote as any;
   const req = r.quoteRequest as any;
@@ -161,7 +232,9 @@ export function preflight(r: QuoteResponse, fund: string, s: FundState, nowS = M
   if (req.dry !== false) why.push("dry quote");
   if (req.swapType !== "EXACT_INPUT" || req.depositType !== "ORIGIN_CHAIN" || req.recipientType !== "DESTINATION_CHAIN") why.push("unsupported quote shape");
   if (req.recipient !== fund || req.refundTo !== fund || req.refundType !== "ORIGIN_CHAIN") why.push("must deliver to and refund to the fund");
-  if (truthy(req.customRecipientMsg)) why.push("customRecipientMsg not allowed");
+  // Release 0.3: the output must be pushed with ft_transfer_call and the id of the trade it pays.
+  if (!Number.isInteger(s.trades) || s.trades < 0) why.push("the fund reports no trade count, so the trade id cannot be checked");
+  else if (req.customRecipientMsg !== tradeMsg(s.trades)) why.push(`quote must set customRecipientMsg to "${tradeMsg(s.trades)}"`);
   for (const k of ["virtualChainRecipient", "virtualChainRefundRecipient"]) if (truthy(req[k])) why.push(`${k} not supported`);
   if (truthy(q.depositMemo)) why.push("depositMemo not supported");
   // trades_today counts the UTC day of the last trade; a new day starts at zero (as in the contract).

@@ -37,7 +37,8 @@ pub struct VerifiedQuote {
     pub deadline_seconds: u64,
     /// When 1Click issued the quote (signed `timestamp`), Unix seconds.
     pub issued_seconds: u64,
-    pub has_custom_recipient_msg: bool,
+    /// The signed `customRecipientMsg`: with it 1Click delivers by `ft_transfer_call` with this msg.
+    pub custom_recipient_msg: Option<String>,
     /// A signed field the fund does not handle (a deposit memo, or virtual-chain routing), if any.
     pub unsupported_field: Option<String>,
 }
@@ -101,7 +102,7 @@ pub fn verify_quote(raw: &str, public_key: &[u8; 32]) -> Result<VerifiedQuote, S
         // signed one. Never trust `quoteRequest.deadline` for anything.
         deadline_seconds: parse_rfc3339_seconds(&s(quote, "deadline")?).ok_or("quote deadline is not RFC 3339")?,
         issued_seconds: parse_rfc3339_seconds(timestamp).ok_or("quote timestamp is not RFC 3339")?,
-        has_custom_recipient_msg: req.get("customRecipientMsg").map(is_truthy).unwrap_or(false),
+        custom_recipient_msg: req.get("customRecipientMsg").filter(|v| is_truthy(v)).and_then(Value::as_str).map(str::to_string),
         unsupported_field: [("depositMemo", quote), ("virtualChainRecipient", req), ("virtualChainRefundRecipient", req)]
             .iter()
             .find(|(k, obj)| obj.get(*k).map(is_truthy).unwrap_or(false))
@@ -235,7 +236,7 @@ mod tests {
         assert_eq!(q.refund_type, "ORIGIN_CHAIN");
         assert_eq!(q.deadline_seconds, parse_rfc3339_seconds("2026-11-12T06:00:00.000Z").unwrap());
         assert_eq!(q.issued_seconds, parse_rfc3339_seconds("2026-11-08T20:25:36.811Z").unwrap());
-        assert!(!q.has_custom_recipient_msg);
+        assert!(q.custom_recipient_msg.is_none());
     }
 
     #[test]

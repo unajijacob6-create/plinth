@@ -1,0 +1,16 @@
+# Native tests: the strategy's output is checked by the fund contract's own verifier.
+[package]
+name = "strategy-v1-host-test"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
+plinth-strategy-v1 = { path = ".." }
+plinth = { path = "../../contracts/plinth" }
+near-sdk = { version = "5.30", features = ["unit-testing"] }
+serde_json = "1"
