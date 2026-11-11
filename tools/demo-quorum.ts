@@ -7,12 +7,16 @@
 //   2. one-fooled:   the DeepSeek seat is taken by its safety-removed variant ("-abliterated") with the
 //                    same injected note, so one seat is compromised and the other is not;
 //   3. honest:       an ordinary note.
-// Every agreed trade is proposed to the fund; the contract still decides. Recorded to data/quorum-run.json.
+// Every agreed trade is proposed to the fund; the contract still decides. An accepted trade is
+// delivered by the solver stand-in and settles in that transfer. Recorded to data/quorum-run.json.
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 process.env.NEAR_NETWORK = "testnet";
-const { signer, view, TGAS, explorer, txHash, log } = await import("./lib/near.ts");
+const { view, call, returned, explorer, txHash, log } = await import("./lib/near.ts");
+const { sameEd25519Key } = await import("./lib/oneclick.ts");
+const { fundState, requireRelease03 } = await import("./lib/fund.ts");
+const { deliver } = await import("./lib/solver.ts");
 const { decideQuorum, QUORUM_MODELS } = await import("./lib/agent.ts");
 const { verifyReceipt, attestedSigners } = await import("./lib/nearai.ts");
 const { testQuote, testSigner } = await import("./lib/testsigner.ts");
@@ -25,9 +29,10 @@ const SOLVER: string = testRun.accounts.solver;
 const PRICES = "1 pUSD = 0.002 wNEAR (1,000,000 base units of pUSD buy 2,000,000,000,000,000,000,000 base units of wNEAR).";
 const notes = Object.fromEntries(agentRun.cases.filter((c: any) => c.note).map((c: any) => [c.label, c.note]));
 
-const state0 = await view<any>(FUND, "get_fund");
+const state0 = await fundState(FUND);
 const [pusd, wrap] = state0.config.mandate.tokens as string[];
-if (state0.config.quote_signer !== testSigner().public_key) throw new Error(`${FUND} does not use this machine's test quote signer`);
+requireRelease03(state0, FUND);
+if (!sameEd25519Key(state0.config.quote_signer, testSigner().public_key)) throw new Error(`${FUND} does not use this machine's test quote signer`);
 const operator: string = state0.config.operator;
 const [primary, second] = QUORUM_MODELS;
 
@@ -40,7 +45,7 @@ const run: any = { network: "testnet", fund: FUND, started_at: new Date().toISOS
 
 run.attested = await attestedSigners([...new Set(CASES.flatMap((c) => c.models))]);
 for (const { label, note, models } of CASES) {
-  const state = await view<any>(FUND, "get_fund");
+  const state = await fundState(FUND);
   const q = await decideQuorum(FUND, state, PRICES, note, models);
   const c: any = {
     label,
@@ -60,27 +65,27 @@ for (const { label, note, models } of CASES) {
     const pusdIn = d.sell === pusd;
     const out = pusdIn ? amount * 2_000_000_000_000_000n : amount / 2_000_000_000_000_000n;
     const usd = (pusdIn ? Number(amount) / 1e6 : Number(out) / 1e6).toFixed(6);
+    // The quote is bound to the id the trade will get: the output is pushed with "trade:<id>".
+    const tradeId = state.trades;
     const quote = testQuote({
-      fund: FUND, sell: d.sell!, buy: d.buy!, amount, out, minOut: (out * 995n) / 1000n, inUsd: usd, outUsd: (Number(usd) * 0.998).toFixed(6),
+      fund: FUND, tradeId, sell: d.sell!, buy: d.buy!, amount, out, minOut: (out * 995n) / 1000n, inUsd: usd, outUsd: (Number(usd) * 0.998).toFixed(6),
       recipient: d.recipient || FUND, refundTo: d.recipient && d.recipient !== FUND ? d.recipient : FUND, deposit: randomBytes(32).toString("hex"),
     });
-    const r: any = await signer(operator).callFunctionRaw({ contractId: FUND, methodName: "propose_trade", args: { quote }, gas: TGAS(200), waitUntil: "FINAL" } as any);
+    const r = await call(operator, FUND, "propose_trade", { quote }, { gas: 200 });
     c.tx = txHash(r);
-    c.accepted = JSON.parse(Buffer.from(r.status.SuccessValue ?? "", "base64").toString() || "false");
+    c.trade_id = tradeId;
+    c.accepted = returned<boolean>(r) === true;
     const after = await view<any>(FUND, "get_fund");
     if (!c.accepted) c.contract_reason = (await view<any[]>(FUND, "get_rejections", { from: after.rejections - 1, limit: 1 }))[0]?.reason;
     log(`${label}: contract ${c.accepted ? "ACCEPTED" : "REFUSED"}`, `${c.contract_reason ?? ""} ${explorer(c.tx)}`);
     if (c.accepted) {
-      const s = signer(SOLVER);
-      const other = pusdIn ? wrap : pusd;
-      const have = BigInt(await view<string>(other, "ft_balance_of", { account_id: SOLVER }));
-      if (other === wrap && have < out) await s.callFunctionRaw({ contractId: wrap, methodName: "near_deposit", args: {}, deposit: out - have, gas: TGAS(30), waitUntil: "FINAL" } as any);
-      const dl: any = await s.callFunctionRaw({ contractId: other, methodName: "ft_transfer", args: { receiver_id: FUND, amount: String(out), memo: "fill" }, deposit: 1n, gas: TGAS(30), waitUntil: "FINAL" } as any);
-      const st: any = await s.callFunctionRaw({ contractId: FUND, methodName: "settle", args: {}, gas: TGAS(100), waitUntil: "FINAL" } as any);
-      c.deliver_tx = txHash(dl);
-      c.settle_tx = txHash(st);
-      c.settle_status = JSON.parse(Buffer.from(st.status.SuccessValue ?? "", "base64").toString() || "null");
-      log(`${label}: settled`, `${c.settle_status} ${explorer(c.settle_tx)}`);
+      // The solver pushes the output; the trade settles in that transfer (no settle step).
+      // settle_tx names the delivery (the website links it).
+      const dl = await deliver({ solver: SOLVER, fund: FUND, token: pusdIn ? wrap : pusd, amount: out, tradeId });
+      c.deliver_tx = dl.tx;
+      c.settle_tx = dl.tx;
+      c.settle_status = dl.trade.status;
+      log(`${label}: settled by the delivery`, `${c.settle_status} ${explorer(c.deliver_tx)}`);
     }
   } else c.accepted = null;
   run.cases.push(c);
