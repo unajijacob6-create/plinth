@@ -55,6 +55,8 @@ export interface Config {
 export const DEFAULT_STORAGE_DEPOSIT = 1_250_000_000_000_000_000_000n;
 /** factory `MIN_FUND_NEAR`: what a new fund must start with besides its token registrations. */
 export const MIN_FUND_NEAR = 500_000_000_000_000_000_000_000n;
+/** factory `LIST_FEE`: 0.003 NEAR the factory keeps from each creation for the fund's line in its list. */
+export const LIST_FEE = 3_000_000_000_000_000_000_000n;
 export const MAX_TOKENS = 4;
 export const MAX_MANAGEMENT_FEE_BPS = 200;
 /** lib.rs REDEEM_WAIT_SECONDS + 60. */
@@ -168,11 +170,12 @@ export function parseNear(v: string, flag = "--near"): bigint {
   return BigInt(m[1]) * 10n ** 24n + BigInt((m[2] ?? "").padEnd(24, "0"));
 }
 
-/** What `factory.create_fund` needs attached: `near` for the fund plus one registration per token. */
-export function creationDeposit(c: Config, near: bigint): { registrations: bigint; total: bigint } {
-  if (near < MIN_FUND_NEAR) throw new UsageError("the factory needs at least 0.5 NEAR for the fund (besides its token registrations)");
+/** What `factory.create_fund` needs attached: `near` for the fund, one registration per token, and
+ *  the factory's list fee. */
+export function creationDeposit(c: Config, near: bigint): { registrations: bigint; listFee: bigint; total: bigint } {
+  if (near < MIN_FUND_NEAR) throw new UsageError("the factory needs at least 0.5 NEAR for the fund (besides its token registrations and the 0.003 NEAR list fee)");
   const registrations = BigInt(c.storage_deposit) * BigInt(c.mandate.tokens.length);
-  return { registrations, total: near + registrations };
+  return { registrations, listFee: LIST_FEE, total: near + registrations + LIST_FEE };
 }
 
 const intFlag = (a: Args, flag: string, dflt?: number): number => {

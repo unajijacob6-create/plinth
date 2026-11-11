@@ -170,10 +170,11 @@ test("fund names follow the factory's rule", () => {
   assert.match(validateFundName("x".repeat(32), "a-very-long-factory-account-name.testnet").join(), /valid account id/);
 });
 
-test("the creation deposit is the fund's NEAR plus one registration per token, at least 0.5 NEAR", () => {
+test("the creation deposit is the fund's NEAR, one registration per token and the list fee; at least 0.5 NEAR for the fund", () => {
   const c = good();
-  assert.deepEqual(creationDeposit(c, parseNear("1")), { registrations: 3_750_000_000_000_000_000_000n, total: 1_003_750_000_000_000_000_000_000n });
-  assert.deepEqual(creationDeposit(c, MIN_FUND_NEAR).total, MIN_FUND_NEAR + 3_750_000_000_000_000_000_000n);
+  assert.deepEqual(creationDeposit(c, parseNear("1")), { registrations: 3_750_000_000_000_000_000_000n, listFee: 3_000_000_000_000_000_000_000n, total: 1_006_750_000_000_000_000_000_000n });
+  // The factory's minimum: 0.503 NEAR plus storage_deposit per token.
+  assert.deepEqual(creationDeposit(c, MIN_FUND_NEAR).total, parseNear("0.503") + 3_750_000_000_000_000_000_000n);
   assert.throws(() => creationDeposit(c, MIN_FUND_NEAR - 1n), /at least 0\.5 NEAR/);
   assert.equal(parseNear("0.75"), 750_000_000_000_000_000_000_000n);
   assert.equal(parseNear("0.000000000000000000000001"), 1n);

@@ -35,6 +35,8 @@ if ((await chainSeconds()) < f.config.mandate.subscription_closes_at) {
 } else {
   if (!f.config.mandate.open_ended) throw new Error(`${FUND}: the subscription window is closed and the fund does not take in-kind joins`);
   if (f.pending) throw new Error(`${FUND}: trade ${f.pending.id} is in flight; join when it has settled`);
+  if (BigInt(f.stranded_near ?? "0") > 0n) throw new Error(`${FUND}: NEAR from a failed stake is waiting to be wrapped (rewrap_stranded); join after that`);
+  if ((f.joins_blocked_until ?? 0) >= (await chainSeconds())) throw new Error(`${FUND}: in-kind joins are blocked until ${new Date(f.joins_blocked_until! * 1000).toISOString()} (a written-off trade can still be refunded)`);
   const want = 10_000_000n;
   const amounts = basketAmounts(f.held.map(([, v]) => BigInt(v)), BigInt(f.total_shares!), want);
   for (const [i, token] of tokens.entries()) {

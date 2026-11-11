@@ -1,11 +1,13 @@
 // "Launch a fund": a form that builds a fund's rules, checks them the way the contract will, and
 // asks the factory to create the fund from the connected wallet.
-import { view, account, factoryOf, isAccountId, shortAccount, explorer, ONECLICK_KEY } from "./chain.ts";
+import { view, account, factoryOf, isAccountId, isEd25519Key, shortAccount, short, explorer, ONECLICK_KEY } from "./chain.ts";
 import { currentAccount, onAccount, signIn, send, isCancel } from "./wallet.ts";
 import { loadMeta, readMeta, symbol, dec, units, parseUnits, pctOf, hasMeta } from "./tokens.ts";
 
 const NET = "testnet" as const;
 const MIN_FUND_NEAR = 5n * 10n ** 23n; // 0.5 NEAR, fixed by the factory
+const LIST_FEE = 3n * 10n ** 21n; // 0.003 NEAR, kept by the factory for its list of funds
+const WNEAR = "wrap.testnet";
 const DEFAULT_STORAGE = 1_250_000_000_000_000_000_000n; // 0.00125 NEAR
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -16,6 +18,39 @@ const KNOWN: { id: string; hint: string }[] = [
   { id: "meta-v2.pool.testnet", hint: "staked NEAR from Meta Pool" },
   { id: "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af", hint: "testnet USDC" },
 ];
+
+/** The program a manager-less testnet fund runs, when the repository has published one. */
+export interface StrategyFile {
+  outlayer: string;
+  wasm_url: string;
+  wasm_hash: string;
+  max_instructions: number;
+  max_execution_seconds: number;
+  exclusive: boolean;
+  quote_signer: string;
+}
+// Read only if the file exists: the page must build and work without it.
+const found = Object.values(import.meta.glob("../../data/strategy-testnet.json", { eager: true, import: "default" }))[0] as any;
+/** The same checks the contract makes on a strategy, so a bad file disables the option instead of failing a launch. */
+const strategyValid = (x: any): x is StrategyFile =>
+  !!x &&
+  typeof x === "object" &&
+  typeof x.outlayer === "string" &&
+  isAccountId(x.outlayer) &&
+  typeof x.wasm_url === "string" &&
+  x.wasm_url.startsWith("https://") &&
+  x.wasm_url.length <= 512 &&
+  typeof x.wasm_hash === "string" &&
+  /^[0-9a-f]{64}$/.test(x.wasm_hash) &&
+  Number.isSafeInteger(x.max_instructions) &&
+  x.max_instructions > 0 &&
+  Number.isInteger(x.max_execution_seconds) &&
+  x.max_execution_seconds >= 1 &&
+  x.max_execution_seconds <= 120 &&
+  x.exclusive === true &&
+  typeof x.quote_signer === "string" &&
+  isEd25519Key(x.quote_signer);
+export const STRATEGY: StrategyFile | null = strategyValid(found) ? found : null;
 
 interface Values {
   name: string;
@@ -31,10 +66,11 @@ interface Values {
   max: string;
   fee: string;
   openEnded: boolean;
-  manager: "me" | "other";
+  manager: "me" | "other" | "none";
   operator: string;
+  signer: string;
 }
-type Field = "name" | "tokens" | "custom" | "trade" | "cost" | "perDay" | "gap" | "closes" | "min" | "max" | "fee" | "operator";
+type Field = "name" | "tokens" | "custom" | "trade" | "cost" | "perDay" | "gap" | "closes" | "min" | "max" | "fee" | "operator" | "signer";
 
 /** "1.5" percent to hundredths of a percent; null if it is not a number with at most two decimals. */
 function hundredths(text: string): number | null {
@@ -86,7 +122,13 @@ export function build(v: Values, me: string, factory: string | null, customOk: b
   else if (min !== null && min > max) errors.max = "This cannot be less than the smallest deposit.";
   const fee = hundredths(v.fee);
   if (fee === null || fee > 200) errors.fee = "Enter a percent from 0 to 2, with at most two decimals.";
-  const operator = v.manager === "me" ? me : v.operator.trim().toLowerCase();
+  const operator = v.manager === "other" ? v.operator.trim().toLowerCase() : me;
+  const signer = v.signer.trim();
+  if (v.manager === "none") {
+    // The published program balances a dollar token against wNEAR and nothing else.
+    if (!STRATEGY) errors.tokens = "The program for funds without a manager is not published yet.";
+    else if (!errors.tokens && (tokens.length !== 2 || tokens[1] !== WNEAR || !hasMeta(tokens[0]) || dec(tokens[0]) !== 6)) errors.tokens = "A fund without a manager needs exactly two tokens: a dollar token with 6 decimal places as the base, and wNEAR.";
+  } else if (signer && !isEd25519Key(signer)) errors.signer = "That is not a signing key. Leave this empty to use NEAR Intents 1Click.";
   if (v.manager === "other") {
     if (!operator || !isAccountId(operator)) errors.operator = "Enter the manager's account name.";
     else if (fundId && operator === fundId) errors.operator = "The fund cannot manage itself.";
@@ -107,9 +149,12 @@ export function build(v: Values, me: string, factory: string | null, customOk: b
           max_total_subscriptions: max!.toString(),
           management_fee_bps: fee,
           open_ended: v.openEnded,
+          ...(v.manager === "none" && STRATEGY
+            ? { strategy: { outlayer: STRATEGY.outlayer, wasm_url: STRATEGY.wasm_url, wasm_hash: STRATEGY.wasm_hash, max_instructions: STRATEGY.max_instructions, max_execution_seconds: STRATEGY.max_execution_seconds, exclusive: true } }
+            : {}),
         },
         operator,
-        quote_signer: ONECLICK_KEY,
+        quote_signer: v.manager === "none" && STRATEGY ? STRATEGY.quote_signer : signer || ONECLICK_KEY,
         storage_deposit: storage.toString(),
       }
     : null;
@@ -160,8 +205,13 @@ export function mountLaunch(onCreated: (id: string) => void) {
           <label class="check"><input type="radio" name="manager" value="me" checked /><span>I manage it<small id="l-me">The connected account proposes trades. It can do nothing else.</small></span></label>
           <label class="check"><input type="radio" name="manager" value="other" /><span>Another account manages it</span></label>
           <div class="field" id="l-op-wrap" hidden><label for="l-operator" class="sub-label">Manager's account</label><input id="l-operator" name="operator" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="manager.testnet" aria-describedby="l-operator-e" /><p class="err" id="l-operator-e" role="alert"></p></div>
-          <label class="check off"><input type="radio" name="manager" value="none" disabled aria-describedby="l-none-h" /><span>No manager: run a strategy<small id="l-none-h">Not available here yet. The program a manager-less fund runs is not published for this form, and a fund's program can never be changed after launch.</small></span></label>
+          <label class="check ${STRATEGY ? "" : "off"}"><input type="radio" name="manager" value="none" ${STRATEGY ? "" : "disabled"} aria-describedby="l-none-h" /><span>No manager: run a strategy<small id="l-none-h">${
+            STRATEGY
+              ? `Anyone can ask a fixed program for a proposal. It keeps a two-token fund near half and half by value, using the NEAR price from 1Click's public list, and only trades when one side is above 55%. Needs a dollar token with 6 decimal places as the base, and wNEAR. You only receive the fee.`
+              : "Not available yet. The program a manager-less fund runs has not been published for testnet, and a fund's program can never be changed after launch."
+          }</small></span></label>
         </div>
+        <div class="field" id="l-signer-wrap"><label for="l-signer">Test signer key (optional)</label><input id="l-signer" name="signer" autocomplete="off" spellcheck="false" autocapitalize="none" aria-describedby="l-signer-h l-signer-e" /><p class="hint" id="l-signer-h">Leave empty to accept only quotes signed by NEAR Intents 1Click. 1Click does not run on testnet, so to trade here a fund needs a stand-in signer: paste its public key. The fund's card will say so.</p><p class="err" id="l-signer-e" role="alert"></p></div>
         <div class="field"><label for="l-fee">Yearly fee</label><div class="with-unit"><input id="l-fee" name="fee" inputmode="decimal" value="1" aria-describedby="l-fee-h l-fee-e" /><span>%</span></div><p class="hint" id="l-fee-h">From 0 to 2. Paid to the manager in new shares. There is no other fee.</p><p class="err" id="l-fee-e" role="alert"></p></div>
       </fieldset>
     </div>
@@ -198,8 +248,9 @@ export function mountLaunch(onCreated: (id: string) => void) {
       max: String(fd.get("max") ?? ""),
       fee: String(fd.get("fee") ?? ""),
       openEnded: fd.get("openEnded") === "on",
-      manager: fd.get("manager") === "other" ? "other" : "me",
+      manager: fd.get("manager") === "other" ? "other" : fd.get("manager") === "none" && STRATEGY ? "none" : "me",
       operator: String(fd.get("operator") ?? ""),
+      signer: String(fd.get("signer") ?? ""),
     };
   };
 
@@ -211,7 +262,7 @@ export function mountLaunch(onCreated: (id: string) => void) {
     root.querySelectorAll("[data-base]").forEach((e) => (e.textContent = symbol(v.base)));
   };
 
-  const ERR_IDS: Record<Field, [string, string]> = { name: ["l-name", "l-name-e"], tokens: ["l-custom", "l-tokens-e"], custom: ["l-custom", "l-custom-e"], trade: ["l-trade", "l-trade-e"], cost: ["l-cost", "l-cost-e"], perDay: ["l-perday", "l-perday-e"], gap: ["l-gap", "l-gap-e"], closes: ["l-closes", "l-closes-e"], min: ["l-min", "l-min-e"], max: ["l-max", "l-max-e"], fee: ["l-fee", "l-fee-e"], operator: ["l-operator", "l-operator-e"] };
+  const ERR_IDS: Record<Field, [string, string]> = { name: ["l-name", "l-name-e"], tokens: ["l-custom", "l-tokens-e"], custom: ["l-custom", "l-custom-e"], trade: ["l-trade", "l-trade-e"], cost: ["l-cost", "l-cost-e"], perDay: ["l-perday", "l-perday-e"], gap: ["l-gap", "l-gap-e"], closes: ["l-closes", "l-closes-e"], min: ["l-min", "l-min-e"], max: ["l-max", "l-max-e"], fee: ["l-fee", "l-fee-e"], operator: ["l-operator", "l-operator-e"], signer: ["l-signer", "l-signer-e"] };
 
   function paint(): Built {
     const v = read();
@@ -223,19 +274,22 @@ export function mountLaunch(onCreated: (id: string) => void) {
       if (field !== "tokens") $(inputId).setAttribute("aria-invalid", show ? "true" : "false");
     }
     $<HTMLElement>("l-op-wrap").hidden = v.manager !== "other";
+    $<HTMLElement>("l-signer-wrap").hidden = v.manager === "none";
     $<HTMLElement>("l-me").textContent = me ? `${shortAccount(me)} proposes trades. It can do nothing else.` : "The account you connect proposes trades. It can do nothing else.";
     const custom = v.custom.trim().toLowerCase();
     $<HTMLElement>("l-custom-ok").textContent = custom && customOk === true && customChecked === custom ? `Found on chain: ${symbol(custom)}, ${dec(custom)} decimal places.` : custom && customOk === null && isAccountId(custom) ? "Checking this token on chain…" : "";
 
     // ---- plain-language summary, from the same numbers that will be sent
     const n = b.tokens.length;
-    const cost = MIN_FUND_NEAR + storage * BigInt(n);
+    const cost = MIN_FUND_NEAR + LIST_FEE + storage * BigInt(n);
     const trade = hundredths(v.trade), costCap = hundredths(v.cost), perDay = whole(v.perDay), gap = whole(v.gap), fee = hundredths(v.fee);
     const closes = v.closes ? new Date(v.closes) : null;
     const d = dec(v.base);
     const min = parseUnits(v.min, d), max = parseUnits(v.max, d);
     const worst = trade !== null && costCap !== null && perDay !== null ? Math.min(10_000, Math.floor((trade * costCap * perDay) / 10_000)) : null;
-    const operator = v.manager === "me" ? me : v.operator.trim().toLowerCase();
+    const operator = v.manager === "other" ? v.operator.trim().toLowerCase() : me;
+    const who = operator && isAccountId(operator) ? esc(shortAccount(operator)) : v.manager === "other" ? "The manager" : "The account you connect";
+    const feeWords = fee !== null && !b.errors.fee ? (fee > 0 ? `${pctOf(fee)} of the fund a year, in new shares` : "") : "";
     const names = b.tokens.map((t) => (hasMeta(t) ? symbol(t) : shortAccount(t)));
     const lines = [
       `<li><b>${b.fundId ? esc(shortAccount(b.fundId)) : v.name.trim() && !b.errors.name ? esc(v.name.trim()) : "Your fund"}</b> holds and trades only ${esc(names.join(", "))}.</li>`,
@@ -244,11 +298,17 @@ export function mountLaunch(onCreated: (id: string) => void) {
       trade !== null && costCap !== null && perDay !== null && gap !== null && !b.errors.trade && !b.errors.cost && !b.errors.perDay && !b.errors.gap
         ? `<li>One trade moves at most ${pctOf(trade)} of a holding and costs at most ${pctOf(costCap)}. At most ${perDay} ${perDay === 1 ? "trade" : "trades"} a day, ${gap} minutes apart. The most trading can cost a holding in one day: ${pctOf(worst!)}.</li>`
         : "",
-      `<li>${operator && isAccountId(operator) ? esc(shortAccount(operator)) : "The manager"} can only propose trades. ${fee !== null && !b.errors.fee ? (fee > 0 ? `Pay: ${pctOf(fee)} of the fund a year, in new shares.` : "No fee.") : ""}</li>`,
-      `<li>Trades need a quote signed by NEAR Intents 1Click. 1Click does not run on testnet, so a fund launched here can take joins and exits but cannot trade.</li>`,
+      v.manager === "none" && STRATEGY
+        ? `<li>No manager. Anyone can ask a fixed program (fingerprint ${esc(short(STRATEGY.wasm_hash, 8, 6))}) for a proposal; it keeps the two tokens near half and half by value. The fund cannot check on chain that the program ran in a secure enclave, so its answer is checked like any manager's proposal. ${who} ${feeWords ? `receives ${feeWords}, and nothing else` : "receives nothing"}.</li>`
+        : `<li>${who} can only propose trades. ${feeWords ? `Pay: ${feeWords}.` : "No fee."}</li>`,
+      v.manager === "none" && STRATEGY
+        ? `<li>Test signer: the program signs its own stand-in quotes, because NEAR Intents 1Click does not run on testnet. The fund's card will say so.</li>`
+        : v.signer.trim() && !b.errors.signer
+          ? `<li>Test signer: quotes are signed by the key you pasted (${esc(short(v.signer.trim().replace(/^ed25519:/, ""), 6, 4))}), not by NEAR Intents. Testnet stand-in only; the fund's card will say so.</li>`
+          : `<li>Trades need a quote signed by NEAR Intents 1Click. 1Click does not run on testnet, so this fund can take joins and exits but cannot trade here.</li>`,
       `<li>Everyone can exit at any time with their slice of every token. Nobody, including you, holds a key to the fund, and none of these rules can be changed later.</li>`,
     ].filter(Boolean);
-    $<HTMLElement>("l-summary").innerHTML = `<ul class="plain">${lines.join("")}</ul><p class="cost">Cost: <b>${esc(units(cost, 24, 5))} NEAR</b> from your wallet, plus a small network fee.</p><p class="small muted">All of it goes to the fund: 0.5 NEAR for its storage and running costs, and ${esc(units(storage, 24, 5))} NEAR to set it up on each of its ${n} ${n === 1 ? "token" : "tokens"}. If the fund cannot be created, the NEAR comes back.</p>`;
+    $<HTMLElement>("l-summary").innerHTML = `<ul class="plain">${lines.join("")}</ul><p class="cost">Cost: <b>${esc(units(cost, 24, 5))} NEAR</b> from your wallet, plus a small network fee.</p><p class="small muted">0.5 NEAR goes to the fund for its storage and running costs, ${esc(units(storage, 24, 5))} NEAR sets it up on each of its ${n} ${n === 1 ? "token" : "tokens"}, and the factory keeps 0.003 NEAR for its list of funds. If the fund cannot be created, the NEAR comes back.</p>`;
     const btn = $<HTMLButtonElement>("l-submit");
     btn.disabled = busy || !factory;
     btn.textContent = !factory ? "Launching is not open yet" : busy ? "Working…" : me ? `Launch fund for ${units(cost, 24, 5)} NEAR` : "Connect a wallet to launch";
@@ -278,7 +338,7 @@ export function mountLaunch(onCreated: (id: string) => void) {
     paint();
   }
 
-  const fieldOf = (name: string): Field | null => (name === "others" || name === "base" ? "tokens" : name in ERR_IDS ? (name as Field) : null);
+  const fieldOf = (name: string): Field | null => (name === "others" || name === "base" || name === "manager" ? "tokens" : name in ERR_IDS ? (name as Field) : null);
   let timer = 0;
   const onEdit = (e: Event) => {
     const t = e.target as HTMLInputElement;
@@ -334,7 +394,7 @@ export function mountLaunch(onCreated: (id: string) => void) {
       const [taken, op, mine] = await Promise.all([account(NET, b.fundId), account(NET, b.config.operator), account(NET, me)]);
       if (taken) throw new Error(`the name ${read().name.trim()} is already taken; pick another`);
       if (!op) throw new Error("the manager's account does not exist on testnet");
-      const cost = MIN_FUND_NEAR + storage * BigInt(b.tokens.length);
+      const cost = MIN_FUND_NEAR + LIST_FEE + storage * BigInt(b.tokens.length);
       if (!mine || BigInt(mine.amount) < cost + 10n ** 23n) throw new Error(`your wallet holds ${mine ? units(mine.amount, 24, 3) : "0"} NEAR; this needs ${units(cost, 24, 5)} NEAR plus a little for the network fee`);
       if (b.config.mandate.subscription_closes_at < Math.floor(Date.now() / 1000) + 300) throw new Error("the join window must end at least 5 minutes from now");
       say("Waiting for your wallet…");

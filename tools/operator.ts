@@ -52,7 +52,7 @@ const { cmd, a, fund, deposit } = withUsage(USAGE, () => {
   if (cmd === "deliver" && a.values["--amount"] && !/^\d+$/.test(a.values["--amount"])) throw new UsageError("--amount is in base units, digits only");
   if (cmd === "rebalance" && !a.values["--as"]) throw new UsageError("rebalance needs --as <account> (it pays for the strategy run)");
   const deposit = cmd === "rebalance" ? parseNear(a.values["--near"] ?? "0.01") : 0n;
-  if (cmd === "rebalance" && deposit === 0n) throw new UsageError("--near must be more than 0: the contract needs NEAR attached for the strategy run");
+  if (cmd === "rebalance" && deposit < 5n * 10n ** 21n) throw new UsageError("--near must be at least 0.005: the contract refuses a strategy run with less attached");
   return { cmd, a, fund: a.values["--fund"], deposit };
 });
 if (a.values["--network"]) process.env.NEAR_NETWORK = a.values["--network"];

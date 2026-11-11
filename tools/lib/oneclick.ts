@@ -194,6 +194,9 @@ export interface FundState {
   near_free?: string;
   max_daily_cost_bps?: number;
   strategy_started?: number;
+  /** In-kind joins are refused until this time (Unix seconds; 0 = not blocked). */
+  joins_blocked_until?: number;
+  stranded_near?: string;
 }
 
 /** Why `propose_trade` / `stake_idle` would panic for the operator, if it would. */
@@ -258,6 +261,9 @@ export function preflight(r: QuoteResponse, fund: string, s: FundState, nowS = M
   if (nowS - issued > m.max_quote_age_seconds) why.push("quote too old");
   if (issued > nowS + 60) why.push("quote is dated in the future");
   if (s.near_available_for_registrations !== undefined && BigInt(s.near_available_for_registrations) < BigInt(s.config.storage_deposit ?? 0)) why.push("the fund has no NEAR left to register the deposit address");
-  if (Math.floor(Date.parse(q.deadline) / 1000) < nowS + m.min_deadline_margin_seconds) why.push("deposit address closes too soon");
+  const deadline = Math.floor(Date.parse(q.deadline) / 1000);
+  if (deadline < nowS + m.min_deadline_margin_seconds) why.push("deposit address closes too soon");
+  // lib.rs MAX_DEADLINE_SECONDS: the refund windows are counted from the deadline.
+  if (deadline > nowS + 14 * 86_400) why.push("the quote's deadline is more than 14 days away");
   return why;
 }

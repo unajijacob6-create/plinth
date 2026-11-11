@@ -7,7 +7,8 @@
   "license": "MIT",
   "author": "Unaji Jacob",
   "scripts": {
-    "test": "node --import tsx --test tools/test/*.test.ts",
+    "test": "node --import tsx --test tools/test/*.test.ts api/_test/*.test.ts",
+    "test:api": "node --import tsx --test api/_test/*.test.ts",
     "typecheck": "tsc --noEmit -p . && tsc --noEmit -p web",
     "contracts": "bash contracts/test.sh",
     "verify": "tsx tools/verify.ts",
@@ -26,7 +27,8 @@
     "demo:quorum": "NODE_USE_ENV_PROXY=1 tsx tools/demo-quorum.ts",
     "publish:code": "tsx tools/publish.ts",
     "factory:deploy": "tsx tools/factory.ts",
-    "demo:auto": "NODE_USE_ENV_PROXY=1 tsx tools/demo-auto.ts"
+    "demo:auto": "NODE_USE_ENV_PROXY=1 tsx tools/demo-auto.ts",
+    "faucet": "tsx tools/faucet.ts"
   },
   "engines": {
     "node": ">=22"

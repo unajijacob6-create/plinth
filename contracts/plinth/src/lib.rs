@@ -96,6 +96,7 @@ const GAS_REQUEST_EXECUTION: Gas = Gas::from_tgas(70);
 const GAS_ON_STRATEGY: Gas = Gas::from_tgas(205);
 /// A strategy run that has not answered after this long no longer blocks the next one.
 const STRATEGY_TIMEOUT_SECONDS: u64 = 600;
+const REWRAP_WAIT_SECONDS: u64 = 3600;
 /// A swap still `Sending` this long after it was sent can be moved on by anyone.
 const STUCK_TRADE_SECONDS: u64 = 86_400;
 
@@ -390,8 +391,9 @@ pub struct Plinth {
     basket_total: Vec<u128>,
     /// When the strategy run in flight was requested (0 = none).
     strategy_started: u64,
-    /// NEAR on its way back into wNEAR (`near_deposit` sent, result not in yet).
-    rewrapping: u128,
+    /// When NEAR was last sent back into wNEAR (`near_deposit`) with the result not in yet; 0 = none.
+    /// A time, not an amount: if the callback is ever lost, the wait it causes ends by itself.
+    rewrap_started: u64,
     /// In-kind joins wait until this time: an abandoned trade can still be refunded or delivered
     /// until then, and a joiner must not buy a share of that for nothing.
     joins_blocked_until: u64,
@@ -493,7 +495,7 @@ impl Plinth {
             baskets: LookupMap::new(StorageKey::Baskets),
             basket_total: vec![0; n],
             strategy_started: 0,
-            rewrapping: 0,
+            rewrap_started: 0,
             joins_blocked_until: 0,
             used_deposit_addresses: LookupSet::new(StorageKey::UsedDepositAddresses),
             trades: Vector::new(StorageKey::Trades),
@@ -648,7 +650,7 @@ impl Plinth {
         require!(self.config.mandate.open_ended, "this fund does not take in-kind joins");
         require!(now_seconds() >= self.config.mandate.subscription_closes_at, "the subscription window is open: subscribe in the base token");
         require!(self.pending.is_none(), "a trade is in flight; join when it has settled");
-        require!(self.stranded_near == 0 && self.rewrapping == 0, "NEAR from a failed stake is being wrapped back (rewrap_stranded); join after that");
+        require!(self.stranded_near == 0 && !self.rewrap_in_flight(), "NEAR from a failed stake is being wrapped back (rewrap_stranded); join after that");
         require!(now_seconds() > self.joins_blocked_until, "a written-off trade can still be refunded; joins reopen when that closes");
         self.accrue_fee();
         let who = env::predecessor_account_id();
@@ -906,7 +908,7 @@ impl Plinth {
         let wrap = self.config.mandate.tokens[t.sell as usize].clone();
         let p = call(&wrap, "near_deposit", json!({}), t.amount_in.0, GAS_WRAP);
         then_self(p, "on_rewrapped", json!({"trade_id": trade_id, "amount": t.amount_in}), GAS_CALLBACK);
-        self.rewrapping += t.amount_in.0;
+        self.rewrap_started = now_seconds();
         self.near_in_flight = 0;
     }
 
@@ -915,16 +917,19 @@ impl Plinth {
     pub fn on_rewrapped(&mut self, trade_id: u64, amount: U128) {
         self.flux += 1;
         let ok = promise_ok();
-        self.rewrapping = self.rewrapping.saturating_sub(amount.0);
         if trade_id != u64::MAX {
             let mut t = self.trades[trade_id as u32].clone();
             if !self.still_sending(&t) {
                 return;
             }
+            self.rewrap_started = 0;
             t.status = TradeStatus::Failed;
             t.closed_at = Some(now_seconds());
             self.pending = None;
             self.trades.replace(trade_id as u32, t);
+        }
+        if trade_id == u64::MAX {
+            self.rewrap_started = 0;
         }
         let w = self.config.mandate.staking.as_ref().map(|r| r.wrap_index as usize).unwrap_or(0);
         if ok {
@@ -945,7 +950,7 @@ impl Plinth {
         // free_near() already excludes the stranded NEAR: what is left must still cover the reserve.
         require!(self.free_near() >= NEAR_RESERVE, "the stranded NEAR is not in the account");
         self.stranded_near = 0;
-        self.rewrapping += amount;
+        self.rewrap_started = now_seconds();
         self.flux += 1;
         let w = self.config.mandate.staking.as_ref().map(|r| r.wrap_index as usize).unwrap_or(0);
         let p = call(&self.config.mandate.tokens[w], "near_deposit", json!({}), amount, GAS_WRAP);
@@ -1262,7 +1267,7 @@ impl Plinth {
             return Err("too late: refunds are counted for 14 days after the quote's deadline");
         }
         // Nothing of the fund's may be on its way out or in while the balance is read.
-        if self.near_in_flight > 0 || self.rewrapping > 0 || self.pending.map_or(false, |id| self.trades[id as u32].status == TradeStatus::Sending) {
+        if self.near_in_flight > 0 || self.rewrap_in_flight() || self.pending.map_or(false, |id| self.trades[id as u32].status == TradeStatus::Sending) {
             return Err("another trade is being sent; try again shortly");
         }
         Ok(t)
@@ -1415,6 +1420,12 @@ impl Plinth {
     #[private]
     pub fn on_registered(&mut self, token_index: u8) {
         self.registered[token_index as usize] = promise_ok();
+    }
+
+    /// Whether a re-wrap was sent and has not answered. A wrap answers within a few blocks; after
+    /// REWRAP_WAIT_SECONDS it is taken as lost, so it can never hold up joins or refunds for good.
+    fn rewrap_in_flight(&self) -> bool {
+        self.rewrap_started != 0 && now_seconds() <= self.rewrap_started + REWRAP_WAIT_SECONDS
     }
 
     /// A callback acts only on the trade that is still in flight and still `Sending`. One that

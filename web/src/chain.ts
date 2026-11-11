@@ -5,6 +5,19 @@ import bs58 from "bs58";
 export type Net = "testnet" | "mainnet";
 const RPC: Record<Net, string> = { testnet: "https://rpc.testnet.fastnear.com", mainnet: "https://rpc.mainnet.fastnear.com" };
 export const ONECLICK_KEY = "ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc";
+const keyBytes = (k: string): string | null => {
+  try {
+    const b = bs58.decode(String(k).replace(/^ed25519:/, ""));
+    return b.length === 32 ? Array.from(b).join(",") : null;
+  } catch {
+    return null;
+  }
+};
+/** True when this quote signer is NEAR Intents 1Click's key (compared as bytes, prefix or not). */
+export const isOneClick = (key: unknown): boolean => typeof key === "string" && keyBytes(key) !== null && keyBytes(key) === keyBytes(ONECLICK_KEY);
+/** True when the text is an ed25519 public key: base58 of 32 bytes, with or without the prefix. */
+export const isEd25519Key = (key: string): boolean => keyBytes(key) !== null;
+export const TEST_SIGNER_WORDS = "Test signer: quotes are signed by the fund's creator, not by NEAR Intents. Testnet stand-in only.";
 export const explorer = (net: Net, tx: string) => `https://${net === "mainnet" ? "" : "testnet."}nearblocks.io/txns/${tx}`;
 export const accountLink = (net: Net, id: string) => `https://${net === "mainnet" ? "" : "testnet."}nearblocks.io/address/${id}`;
 /** Long account names and fingerprints are never shown whole: "abcdef…wxyz". */
@@ -187,6 +200,8 @@ export interface Check {
   ok: boolean;
   /** A check that passes but carries a warning the reader must see. */
   warn?: boolean;
+  /** A neutral fact the reader must see (not a failure, not a clean pass). */
+  note?: boolean;
   label: string;
   detail: string;
 }
@@ -198,8 +213,10 @@ export interface Verification {
   state: any | null;
   codeHash: string;
   release: Release | null;
-  /** clean: everything holds. known-issue: keys and code check out, on a release with a known bug. failed: a check failed. */
-  status: "clean" | "known-issue" | "failed";
+  /** Quotes come from a stand-in signer instead of NEAR Intents 1Click (testnet). */
+  standIn: boolean;
+  /** clean: everything holds. test-signer: everything holds, but quotes come from a stand-in signer (testnet). known-issue: keys and code check out, on a release with a known bug. failed: a check failed. */
+  status: "clean" | "test-signer" | "known-issue" | "failed";
   ok: boolean;
 }
 
@@ -260,22 +277,28 @@ export async function verifyFund(net: Net, fund: string): Promise<Verification> 
     }
   }
   let state: any = null;
+  let standIn = false;
   try {
     state = await view(net, fund, "get_fund");
-    const real = state.config.quote_signer === ONECLICK_KEY;
     const m = state?.config?.mandate;
     const sane = !!m && Array.isArray(m.tokens) && m.tokens.length >= 1 && m.tokens.length <= 4 && m.max_trade_bps > 0 && m.max_trade_bps <= 10_000 && m.max_cost_bps <= 10_000 && m.max_trades_per_day > 0;
     const noManager = !!m?.strategy?.exclusive;
     checks.push({
       ok: sane,
       label: "Rules reported by the contract",
-      detail: `${noManager ? "No manager: only the fund's fixed program can propose trades." : `The manager, ${shortAccount(String(state.config.operator))}, can only propose trades.`} Quotes must be signed by ${real ? "NEAR Intents 1Click" : "a test signer, not 1Click"}.`,
+      detail: noManager ? "No manager: only the fund's fixed program can propose trades, and each proposal is checked against the rules." : `The manager, ${shortAccount(String(state.config.operator))}, can only propose trades, and each one is checked against the rules.`,
     });
+    if (isOneClick(state.config.quote_signer)) checks.push({ ok: true, label: "Quotes signed by NEAR Intents 1Click", detail: "A trade needs a quote signed by 1Click's own key." });
+    else if (net === "mainnet") checks.push({ ok: false, label: "Quotes are not signed by NEAR Intents", detail: "This fund accepts quotes signed by a key its creator chose, not by NEAR Intents 1Click. Whoever holds that key can make up prices." });
+    else {
+      standIn = true;
+      checks.push({ ok: true, note: true, label: "Test signer", detail: TEST_SIGNER_WORDS });
+    }
   } catch {
     checks.push({ ok: false, label: "Not a Plinth fund", detail: "This account does not answer like a Plinth fund." });
   }
   const allOk = checks.every((c) => c.ok);
   if (rel?.known_issue) checks.push({ ok: true, warn: true, label: `Known issue in release ${rel.version}`, detail: "This release can count tokens that are about to bounce back as if the fund owned them. A keyless fund cannot be fixed, so treat it as history, not as safe." });
-  const status = !allOk ? "failed" : rel?.known_issue ? "known-issue" : "clean";
-  return { fund, net, checks, state, codeHash: info.hash, release: rel, status, ok: status === "clean" };
+  const status = !allOk ? "failed" : rel?.known_issue ? "known-issue" : standIn ? "test-signer" : "clean";
+  return { fund, net, checks, state, codeHash: info.hash, release: rel, status, standIn, ok: status === "clean" };
 }

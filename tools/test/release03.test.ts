@@ -131,6 +131,10 @@ test("preflight says nothing about settle and still makes the other checks", () 
   assert.match(preflight(quote(), FUND, state({ pending: { id: 2 } as any }), NOW).join(), /in flight/);
   assert.match(preflight(quote({ secretHex: "07".repeat(32) }), FUND, state(), NOW).join(), /signature/);
   assert.match(preflight(quote(), FUND, state({ trades: undefined as any }), NOW).join(), /trade count/);
+  // The contract refuses a deposit deadline more than 14 days ahead; test quotes use 3 days.
+  const far = quote() as any;
+  far.quote.deadline = new Date((NOW + 14 * 86_400 + 1) * 1000).toISOString();
+  assert.match(preflight(far, FUND, state(), NOW).filter((r) => !/signature/.test(r)).join(), /^the quote's deadline is more than 14 days away$/);
   for (const s of [state(), state({ trades: 9 })]) assert.doesNotMatch(preflight(quote(), FUND, s, NOW).join(), /settle/);
 });
 

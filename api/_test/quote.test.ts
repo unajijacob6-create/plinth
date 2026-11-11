@@ -26,7 +26,7 @@ const request = {
   customRecipientMsg: "trade:7",
 };
 
-const upstream = (bytes: Uint8Array = LIVE, status = 201) => () => new Response(bytes, { status, headers: { "content-type": "application/json; charset=utf-8" } });
+const upstream = (bytes: Uint8Array = LIVE, status = 201) => () => new Response(bytes as any, { status, headers: { "content-type": "application/json; charset=utf-8" } });
 
 test("quote: forwards only allow-listed fields, to 1Click's quote endpoint", async () => {
   const deps = fakeDeps(upstream());

@@ -35,7 +35,7 @@ export interface Created {
   tx: string;
   /** The code hash the factory gives every fund (base58). */
   code_hash: string;
-  /** NEAR attached in total (the fund's NEAR plus its token registrations), yocto. */
+  /** NEAR attached in total (the fund's NEAR, its token registrations, the factory's list fee), yocto. */
   attached: string;
   access_keys: number;
   registered: boolean[];
@@ -44,7 +44,7 @@ export interface Created {
 
 /** Create `<name>.<factory>` through `factory.create_fund`, paid by `from`, and check the result:
  *  no access keys, the factory's code hash, registered on every token. `near` (yocto) is what the
- *  fund starts with besides its token registrations (at least 0.5 NEAR). */
+ *  fund starts with (at least 0.5 NEAR); registrations and the factory's 0.003 NEAR list fee are added. */
 export async function createFund(o: { from: string; factory: string; name: string; config: Config; near: bigint }): Promise<Created> {
   const fund = `${o.name}.${o.factory}`;
   const config = normaliseConfig(o.config);

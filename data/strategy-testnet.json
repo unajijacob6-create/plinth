@@ -1,0 +1,12 @@
+{
+ "note": "The strategy program of the manager-less testnet fund (npm run demo:auto), source in strategy/. `strategy` is the mandate's strategy object: OutLayer runs the wasm with this sha256 in a TEE. `quote_signer` is the stand-in 1Click key the program signs its testnet quotes with (1Click has no testnet); a fund using this strategy must be created with it. The fund's tokens must be [a 6-decimal dollar token, wNEAR]. The program parks a trade's input at the deposit address hex(sha256(\"plinth-strategy-deposit:<fund>:<trade id>\")) and expects a solver to push the output with msg trade:<id>.",
+ "quote_signer": "ed25519:8UL3S2m1rTjYVAF15EJR4KH7A8NaNnn9GYgnhHFx2r9",
+ "strategy": {
+  "outlayer": "outlayer.testnet",
+  "wasm_url": "https://test.fastfs.io/plinth-ol-spike-mwb6xcaj.testnet/outlayer.testnet/2646d24d0d6c604e3d5024431de92153b35856c9f3dfd4b97cc2fc29b5d0c12b.wasm",
+  "wasm_hash": "2646d24d0d6c604e3d5024431de92153b35856c9f3dfd4b97cc2fc29b5d0c12b",
+  "max_instructions": 1000000000,
+  "max_execution_seconds": 30,
+  "exclusive": true
+ }
+}

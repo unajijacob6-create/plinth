@@ -1,23 +1,27 @@
-// npm run demo:auto -- <strategy.json> [--near 0.01] [--as <account>] [--skip-wasm-check]
+// npm run demo:auto -- [<strategy.json>] [--quote-signer <key>] [--near 0.01] [--as <account>] [--skip-wasm-check]
 //
 // A fund with no manager on NEAR testnet (release 0.3), recorded to data/auto-run.json.
 //
-// <strategy.json> is the mandate's `strategy` object: {outlayer, wasm_url, wasm_hash,
-// max_instructions, max_execution_seconds, exclusive: true[, secrets_profile, secrets_owner]}. It
-// pins one strategy program by its sha256 for the life of the fund. With `exclusive` the operator
-// account cannot propose anything; it only receives the management fee (0 here).
+// <strategy.json> (default data/strategy-testnet.json) is {quote_signer, strategy}, or just the
+// mandate's `strategy` object: {outlayer, wasm_url, wasm_hash, max_instructions,
+// max_execution_seconds, exclusive: true[, secrets_profile, secrets_owner]}. It pins one strategy
+// program by its sha256 for the life of the fund. With `exclusive` the operator account cannot
+// propose anything; it only receives the management fee (0 here).
 //
 //   1. the script downloads wasm_url and checks its sha256 against wasm_hash (a mismatch would pin
 //      a program OutLayer can never run);
 //   2. a keyless fund with that strategy is created by the factory; Alice subscribes;
 //   3. after the window closes the operator tries to propose and is rejected (recorded);
 //   4. anyone (--as, default bob.<parent>) calls `rebalance` with --near NEAR for the OutLayer run
-//      and 300 TGas. OutLayer runs the program in a TEE; its answer goes through exactly the checks
-//      an operator's proposal does. The decision events and the resulting trade are printed;
+//      (at least 0.005) and 300 TGas. OutLayer runs the program in a TEE; its answer goes through
+//      exactly the checks an operator's proposal does. The decision events and the resulting trade
+//      are printed;
 //   5. if a swap was sent, the solver stand-in delivers its output (1Click has no testnet).
 //
-// The fund's quote signer is this machine's test key, so a strategy that trades on testnet must
-// return quotes signed by that key (OutLayer secrets); on mainnet it would return real 1Click quotes.
+// The quote signer: 1Click has no testnet, so the strategy program signs its testnet quotes with a
+// stand-in key, and the fund must be created with that key's public half (`quote_signer` in the
+// file, or --quote-signer; without either, this machine's test key). On mainnet a strategy would
+// return real 1Click quotes.
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -26,20 +30,25 @@ import { parseNear, validateConfig, type Config, type Strategy } from "./lib/con
 process.env.NEAR_NETWORK = "testnet";
 
 plainErrors();
-const USAGE = "usage: npm run demo:auto -- <strategy.json> [--near 0.01] [--as <account>] [--skip-wasm-check]";
-const { a, strategy, deposit } = withUsage(USAGE, () => {
-  const a = parseArgs(process.argv.slice(2), { values: ["--near", "--as"], switches: ["--skip-wasm-check"] });
-  if (a.positionals.length !== 1) throw new UsageError("give the path of the strategy JSON file");
-  let strategy: Strategy;
+const USAGE = "usage: npm run demo:auto -- [<strategy.json>] [--quote-signer <ed25519 key>] [--near 0.01] [--as <account>] [--skip-wasm-check]";
+const DEFAULT_STRATEGY_FILE = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../data/strategy-testnet.json");
+const { a, strategy, strategyFile, fileSigner, deposit } = withUsage(USAGE, () => {
+  const a = parseArgs(process.argv.slice(2), { values: ["--near", "--as", "--quote-signer"], switches: ["--skip-wasm-check"] });
+  if (a.positionals.length > 1) throw new UsageError("give at most one strategy JSON file");
+  const strategyFile = a.positionals[0] ?? DEFAULT_STRATEGY_FILE;
+  let strategy: Strategy, fileSigner: string | undefined;
   try {
-    strategy = JSON.parse(fs.readFileSync(a.positionals[0], "utf8"));
+    const j = JSON.parse(fs.readFileSync(strategyFile, "utf8"));
+    // Either {quote_signer, strategy} or the bare strategy object.
+    strategy = j?.strategy ?? j;
+    fileSigner = j?.strategy ? j.quote_signer : undefined;
   } catch (e) {
-    throw new UsageError(`${a.positionals[0]}: ${(e as Error).message}`);
+    throw new UsageError(`${strategyFile}: ${(e as Error).message}`);
   }
   if (strategy?.exclusive !== true) throw new UsageError("this demo is for a fund with no manager: the strategy must have \"exclusive\": true");
   const deposit = parseNear(a.values["--near"] ?? "0.01");
-  if (deposit === 0n) throw new UsageError("--near must be more than 0: the contract needs NEAR attached for the strategy run");
-  return { a, strategy, deposit };
+  if (deposit < 5n * 10n ** 21n) throw new UsageError("--near must be at least 0.005: the contract refuses a strategy run with less attached");
+  return { a, strategy, strategyFile, fileSigner, deposit };
 });
 const { view, accountExists, accessKeyCount, accountView, chainSeconds, call, callLong, returned, failure, logsOf, NEAR, formatNear, explorer, txHash, log } = await import("./lib/near.ts");
 const { ROOT, factoryFor, createFund, fundState, tradeById, plinthEvents, waitForChainTime } = await import("./lib/fund.ts");
@@ -52,7 +61,8 @@ const ALICE = `alice.${PARENT}`, OPERATOR = `operator.${PARENT}`, SOLVER = `solv
 const CALLER = a.values["--as"] ?? `bob.${PARENT}`;
 const STORAGE = 1_250_000_000_000_000_000_000n;
 const FACTORY = factoryFor("testnet");
-const run: any = { network: "testnet", started_at: new Date().toISOString(), accounts: { parent: PARENT, token: TOKEN, wrap: WRAP, alice: ALICE, operator: OPERATOR, solver: SOLVER, caller: CALLER, factory: FACTORY }, strategy, tx: {} };
+const QUOTE_SIGNER = a.values["--quote-signer"] ?? fileSigner ?? testSigner().public_key;
+const run: any = { network: "testnet", started_at: new Date().toISOString(), strategy_file: path.relative(ROOT, strategyFile), quote_signer: QUOTE_SIGNER, accounts: { parent: PARENT, token: TOKEN, wrap: WRAP, alice: ALICE, operator: OPERATOR, solver: SOLVER, caller: CALLER, factory: FACTORY }, strategy, tx: {} };
 const step = async (key: string, sent: Promise<any>) => {
   const r = await sent;
   run.tx[key] = txHash(r);
@@ -95,7 +105,7 @@ const config: Config = {
     strategy,
   },
   operator: OPERATOR,
-  quote_signer: testSigner().public_key,
+  quote_signer: QUOTE_SIGNER,
   storage_deposit: String(STORAGE),
 };
 const name = `auto-${Date.now().toString(36)}`;

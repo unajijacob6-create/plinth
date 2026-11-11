@@ -4,7 +4,8 @@
 // Create the keyless fund `<name>.<factory>` through the factory contract (`create_fund`): one
 // receipt with CreateAccount, Transfer, UseGlobalContract(hash) and new(config), and no AddKey. The
 // factory is read from data/releases.json (`factories.<network>`) unless --factory is given.
-// --from pays: --near NEAR for the fund (default 1, at least 0.5) plus storage_deposit per token.
+// --from pays: --near NEAR for the fund (default 1, at least 0.5), storage_deposit per token and
+// the factory's 0.003 NEAR list fee.
 //
 // Without --send nothing is signed: the config is built, checked against the contract's own rules
 // and printed. Mainnet also needs PLINTH_MAINNET=yes. Afterwards: `npm run verify -- <fund>`.
@@ -54,7 +55,7 @@ console.log(`fund ${fund} on ${NETWORK}, created by factory ${factory}, paid by 
 console.log(JSON.stringify(config, null, 1));
 console.log(`subscription window closes ${new Date(config.mandate.subscription_closes_at * 1000).toISOString()} (in ${config.mandate.subscription_closes_at - now} s)`);
 console.log(`quote signer: ${oneclick ? "NEAR Intents 1Click" : "NOT the 1Click key (a test signer)"}`);
-console.log(`attached: ${formatNear(deposit.total)} NEAR = ${formatNear(near)} for the fund + ${formatNear(deposit.registrations)} for ${config.mandate.tokens.length} token registration(s)`);
+console.log(`attached: ${formatNear(deposit.total)} NEAR = ${formatNear(near)} for the fund + ${formatNear(deposit.registrations)} for ${config.mandate.tokens.length} token registration(s) + ${formatNear(deposit.listFee)} the factory keeps for its list`);
 if (problems.length) {
   console.error(`\nthe contract would refuse this fund:\n  - ${problems.join("\n  - ")}`);
   process.exit(1);

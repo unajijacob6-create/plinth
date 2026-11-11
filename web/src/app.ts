@@ -1,6 +1,6 @@
 // Live fund cards and wallet actions (testnet): the list of funds, what each holds, joining,
 // exiting, joining in kind, and the buttons anyone can press.
-import { view, rpc, explorer, accountLink, releaseOf, factoryOf, factoryFunds, shortAccount, short, ONECLICK_KEY, type CodeInfo, type FactoryEntry } from "./chain.ts";
+import { view, rpc, explorer, accountLink, releaseOf, factoryOf, factoryFunds, shortAccount, short, isOneClick, TEST_SIGNER_WORDS, type CodeInfo, type FactoryEntry } from "./chain.ts";
 import { onAccount, restore, signIn, signOut, send, isCancel, currentAccount, canBatch, ChainFailure, type Call } from "./wallet.ts";
 import { loadMeta, hasMeta, fmt, symbol, dec, units, plain, parseUnits, pct, pctOf, loadPrices, havePrices, usd, money } from "./tokens.ts";
 
@@ -82,6 +82,8 @@ function humanFailure(e: unknown): string {
     [/no basket/, "you have no tokens waiting in this fund"],
     [/does not take in-kind joins/, "this fund does not take new joiners after its window"],
     [/subscription window is open/, "the join window is still open; join with the base token"],
+    [/failed stake is being wrapped back/, "in-kind joins are paused while NEAR from a failed stake is wrapped back into the fund"],
+    [/written-off trade can still be refunded/, "in-kind joins are paused while a written-off trade can still be refunded"],
     [/no shares to price a join|holds nothing to join/, "the fund is empty, so there is nothing to join in proportion to"],
     [/refund can be counted an hour/, "a refund can only be checked an hour after the trade was sent"],
     [/not waiting for a refund/, "this trade is not waiting for a refund"],
@@ -269,7 +271,7 @@ function strategyBlock(f: FundCard, s: any, me: string | null): string {
   const st = s.config.mandate.strategy;
   if (!st) return "";
   const only = !!st.exclusive;
-  const testSigner = s.config.quote_signer !== ONECLICK_KEY;
+  const testSigner = !isOneClick(s.config.quote_signer);
   const running = Number(s.strategy_started) > 0 && now() < Number(s.strategy_started) + STRATEGY_TIMEOUT_SECONDS;
   let host = "its published address";
   try {
@@ -311,15 +313,25 @@ function kindNeedHtml(f: FundCard): string {
   return `<ul class="needs">${rows}</ul><p class="small">You get about <b>${esc(units(plan.shares, shareDec(s), 6))}</b> shares, ${esc(pct(plan.shares, total + plan.shares))} of the fund after you join. Anything left over comes straight back to you.</p>`;
 }
 
+/** Why in-kind joins are paused right now, in plain words; "" when they are open. */
+function joinsPaused(s: any): string {
+  if (big(s.stranded_near) > 0n) return "In-kind joins are paused while NEAR from a failed stake is wrapped back into the fund.";
+  const until = Number(s.joins_blocked_until ?? 0);
+  if (until >= now()) return `In-kind joins are paused until ${new Date((until + 1) * 1000).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" })}: a written-off trade can still be refunded until then, and joins reopen when that closes.`;
+  return "";
+}
+
 function kindBlock(f: FundCard, s: any): string {
   const tokens: string[] = s.config.mandate.tokens;
+  const paused = joinsPaused(s);
   const basket = f.mine?.basket;
   const waiting = basket && basket.some((x) => x > 0n);
   const stepsHtml = f.ui.steps.length ? `<ol class="progress">${f.ui.steps.map((p) => `<li class="${p.state}"><span class="dot" aria-hidden="true"></span>${esc(p.label)}<span class="sr"> (${p.state === "done" ? "done" : p.state === "doing" ? "in progress" : p.state === "failed" ? "failed" : "to do"})</span></li>`).join("")}</ol>` : "";
   const resume = waiting
-    ? `<div class="notice"><p class="small"><b>You have tokens waiting in this fund:</b> ${esc(sliceText(tokens.map((t, i) => [t, basket![i] ?? 0n])))}. They are still yours.</p><div class="actions"><button class="btn primary sm" data-act="kind-finish" ${f.busy || s.pending ? "disabled" : ""}>Finish joining</button><button class="btn ghost sm" data-act="kind-back" ${f.busy ? "disabled" : ""}>Take my tokens back</button></div></div>`
+    ? `<div class="notice"><p class="small"><b>You have tokens waiting in this fund:</b> ${esc(sliceText(tokens.map((t, i) => [t, basket![i] ?? 0n])))}. They are still yours.</p><div class="actions"><button class="btn primary sm" data-act="kind-finish" ${f.busy || s.pending || paused ? "disabled" : ""}>Finish joining</button><button class="btn ghost sm" data-act="kind-back" ${f.busy ? "disabled" : ""}>Take my tokens back</button></div></div>`
     : "";
-  if (!f.ui.kindOpen && !waiting && !f.ui.steps.length) return `<div class="actions"><button class="btn primary sm" data-act="kind-open" ${f.busy ? "disabled" : ""}>Join in kind</button><span class="small muted">The join window has closed. You can still join by adding every token the fund holds.</span></div>`;
+  if (!paused && !f.ui.kindOpen && !waiting && !f.ui.steps.length) return `<div class="actions"><button class="btn primary sm" data-act="kind-open" ${f.busy ? "disabled" : ""}>Join in kind</button><span class="small muted">The join window has closed. You can still join by adding every token the fund holds.</span></div>`;
+  if (paused) return `<div class="panel kind"><p class="eyebrow">Join in kind</p>${resume}<p class="small">${esc(paused)}</p></div>`;
   const k = esc(f.id);
   const approvals = canBatch() ? "Your wallet asks you to approve once." : "Your wallet asks you to approve each step.";
   return `<div class="panel kind">
@@ -378,6 +390,7 @@ function render(f: FundCard) {
     f.keyCount === undefined ? "" : `<span class="chip ${f.keyCount === 0 ? "ok" : "bad"}">${f.keyCount} keys</span>`,
     rel ? `<span class="chip ${legacy ? "warn" : ""}">release ${esc(rel.version)}</span>` : unknown ? `<span class="chip bad">unlisted code</span>` : "",
     m.strategy ? `<span class="chip">${m.strategy.exclusive ? "No manager" : "program + manager"}</span>` : "",
+    isOneClick(s.config.quote_signer) ? "" : `<span class="chip note">test signer</span>`,
     `<span class="chip">${open ? `joins open until ${esc(day(m.subscription_closes_at))}` : "trading"}</span>`,
     s.pending ? `<span class="chip warn">trade in flight</span>` : "",
   ].join("");
@@ -436,7 +449,7 @@ function render(f: FundCard) {
       <div class="chips">${chips}</div>
     </header>
     ${known}
-    <p class="muted small">${esc(f.blurb)}</p>
+    <p class="muted small">${esc(f.blurb)}${isOneClick(s.config.quote_signer) ? "" : ` ${esc(TEST_SIGNER_WORDS)}`}</p>
     <div class="fund-grid">
       <div class="kv"><span>The fund holds</span><b>${s.held.map(([t, v]: [string, string]) => esc(fmt(t, v))).join("<br/>")}</b></div>
       <div class="kv"><span>${total > 0n ? `${unitLabel} ${unit === 1n ? "share holds" : "shares hold"}` : "Shares"}</span><b>${total > 0n ? unitParts.filter(([, v]) => v > 0n).map(([t, v]) => esc(fmt(t, v))).join("<br/>") || "nothing yet" : "none issued yet"}</b></div>
@@ -523,6 +536,7 @@ async function kindJoin(f: FundCard, me: string, s: any) {
   if (!isV03(s) || !m.open_ended) throw new Error("this fund does not take new joiners after its window");
   if (s.subscription_open) throw new Error("the join window is still open; join with the base token");
   if (s.pending) throw new Error("a trade is in flight; join once it has settled");
+  if (joinsPaused(s)) throw new Error(joinsPaused(s).replace(/\.$/, "").replace(/^./, (c) => c.toLowerCase()));
   if (!tokens.every(hasMeta)) throw new Error("the details of one of the fund's tokens could not be read");
   const plan = kindPlan(f);
   if (!plan) throw new Error("enter how much to put in");
@@ -689,6 +703,7 @@ async function act(f: FundCard, kind: string) {
       await kindJoin(f, me, s);
     } else if (kind === "kind-finish") {
       if (s.pending) throw new Error("a trade is in flight; join once it has settled");
+      if (joinsPaused(s)) throw new Error(joinsPaused(s).replace(/\.$/, "").replace(/^./, (c) => c.toLowerCase()));
       const b = await view<string[] | null>(NET, f.id, "get_basket", { account_id: me });
       if (!b) throw new Error("you have no tokens waiting in this fund");
       const worth = basketShares(s, b.map(big));

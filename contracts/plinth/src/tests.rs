@@ -2308,7 +2308,7 @@ fn v3_join_in_kind_needs_shares_and_holdings_to_price_against() {
     set(ANYONE, Q::default().deadline + ABANDON_AFTER_SECONDS + 1);
     g.abandon();
     fill_basket(&mut g, CAROL, 10_000_000, 5, Q::default().deadline + ABANDON_AFTER_SECONDS + 2);
-    set(CAROL, Q::default().deadline + ABANDON_AFTER_SECONDS + 3);
+    set(CAROL, Q::default().deadline + REFUND_CLOSES_SECONDS + 1);
     assert!(panics(|| g.join_in_kind(U128(0))).contains("holds nothing to join"));
 }
 
@@ -3209,7 +3209,7 @@ fn v3_join_in_kind_waits_while_near_is_stranded() {
     assert_eq!(push(&mut f, USDC, CAROL, 10_000_010, "basket", now), 0);
     assert_eq!(push(&mut f, WNEAR, CAROL, 2 * 10u128.pow(24), "basket", now), 0);
     set(CAROL, now + 1);
-    assert!(panics(|| f.join_in_kind(U128(0))).contains("NEAR from a failed stake is waiting to be wrapped"));
+    assert!(panics(|| f.join_in_kind(U128(0))).contains("NEAR from a failed stake is being wrapped back"));
     assert_eq!(f.get_shares(acct(CAROL)).0, 0);
     // Redeeming is not blocked by it.
     set(BOB, now + 2);
@@ -3233,10 +3233,10 @@ fn v3_join_in_kind_waits_while_near_is_stranded() {
     assert!(panics(|| g.join_in_kind(U128(0))).contains("NEAR from a failed stake"));
 }
 
-// ------------------------------------------------------------------ v3: suspected contract bugs (pass 2)
+// ------------------------------------------------------------------ v3: regressions for pass-2 findings
 //
-// Each test below asserts the behaviour the fund SHOULD have and fails against lib.rs as it is.
-// They are #[ignore]d so the suite is green; run them with `cargo test -- --ignored`.
+// BUG 5-8 below were found in the second pass and are fixed in lib.rs; the tests assert the fixed
+// behaviour. Their comments describe the bug as it was.
 
 /// BUG 5 (medium). `rewrap_stranded` sets `stranded_near = 0` when it SENDS the NEAR to be
 /// wrapped; `held[wNEAR]` grows only two blocks later in `on_rewrapped`. In between the fund's
@@ -3249,7 +3249,6 @@ fn v3_join_in_kind_waits_while_near_is_stranded() {
 /// 100 USDC + 17.5 wNEAR. Expected: the join is refused until the re-wrap has resolved (or she
 /// gets back at most what she put in). Actual: she takes 2.5 wNEAR from the existing holders.
 #[test]
-#[ignore = "contract bug: join_in_kind between rewrap_stranded and on_rewrapped dilutes holders"]
 fn v3_bug_join_while_a_rewrap_is_in_flight_must_not_take_a_share_of_the_stranded_near() {
     let mut f = stranded_fund();
     let now = CLOSE + 100;
@@ -3279,7 +3278,6 @@ fn v3_bug_join_while_a_rewrap_is_in_flight_must_not_take_a_share_of_the_stranded
 /// Mallory joins with 90 USDC (half the shares), then calls `settle_refund(0)`, then redeems:
 /// 94.99775 USDC. Expected: at most the 90 she put in. Actual: +4.99775 USDC from the holders.
 #[test]
-#[ignore = "contract bug: join_in_kind before an abandoned trade's refund is counted takes a share of it"]
 fn v3_bug_join_before_an_abandoned_trades_refund_is_counted_must_not_take_a_share_of_it() {
     let mut f = fund_from(open_config());
     assert_eq!(subscribe(&mut f, ALICE, 60_000_000, T0 + 10).0, 0);
@@ -3289,13 +3287,22 @@ fn v3_bug_join_before_an_abandoned_trades_refund_is_counted_must_not_take_a_shar
     let at = Q::default().deadline + ABANDON_AFTER_SECONDS + 1;
     set(ANYONE, at);
     f.abandon();
-    // The refund (9.9955 USDC) is in the fund's balance. Mallory joins before anyone counts it.
+    // The refund (9.9955 USDC) is in the fund's balance. Mallory tries to join before it is counted.
     fill_basket(&mut f, "mallory.test.near", 90_000_000, 0, at + 1);
-    let shares = join(&mut f, "mallory.test.near", 0, at + 2);
+    set("mallory.test.near", at + 2);
+    assert!(panics(|| f.join_in_kind(U128(0))).contains("a written-off trade can still be refunded"));
+    // Counting the refund first does not reopen joins early either; the holders keep all of it.
     let flux = request_refund(&mut f, 0, at + 3);
-    // Balance: 90 held + 90 joined + the refund.
     assert_eq!(refund_cb(&mut f, 0, flux, 180_000_000 + REFUND, at + 4), TradeStatus::Refunded);
+    assert_eq!(held(&f, 0), 90_000_000 + REFUND);
     set("mallory.test.near", at + 5);
+    assert!(panics(|| f.join_in_kind(U128(0))).contains("a written-off trade can still be refunded"));
+    // When refunds for that trade have closed she joins at the full price and gains nothing.
+    let open = Q::default().deadline + REFUND_CLOSES_SECONDS + 1;
+    let (h, total) = (held(&f, 0), f.get_fund().total_shares.0);
+    let shares = join(&mut f, "mallory.test.near", 0, open);
+    assert_eq!(shares, mul_div(90_000_000, total, h).unwrap());
+    set("mallory.test.near", open + 1);
     f.redeem(U128(shares));
     let out = f.get_fund().in_flight_payouts[0].0;
     assert!(out <= 90_000_000, "Mallory put in 90000000 USDC and took out {out}");
@@ -3309,7 +3316,6 @@ fn v3_bug_join_before_an_abandoned_trades_refund_is_counted_must_not_take_a_shar
 /// Scenario: fee 200 bps, subscriptions of 2e36 base units (the mandate's cap allows it). One
 /// second after the window closes every `redeem` panics, for ever. Expected: redeem pays out.
 #[test]
-#[ignore = "contract bug: fee accrual overflows for total_shares > u128::MAX / bps and blocks every redeem"]
 fn v3_bug_fee_accrual_must_not_overflow_and_block_redemptions() {
     let mut c = config();
     c.mandate.management_fee_bps = 200;
@@ -3335,7 +3341,6 @@ fn v3_bug_fee_accrual_must_not_overflow_and_block_redemptions() {
 /// (The stake variant is worse: a late `on_staked`/`on_rewrapped` sets `pending = None` whatever
 /// trade is in flight by then.)
 #[test]
-#[ignore = "contract bug (theoretical): a callback arriving after recover_stuck_* is applied to a trade that has moved on"]
 fn v3_bug_a_callback_arriving_after_recovery_must_not_be_applied_twice() {
     let mut f = funded();
     assert!(propose(&mut f, &Q::default(), CLOSE + 20));
@@ -3408,8 +3413,11 @@ fn v3_strategy_rebalance_preconditions() {
     assert_eq!(plain.get_fund().strategy_started, 0);
 
     let mut f = strategy_fund(false);
-    set_rebalance(CLOSE + 20, 0, 300);
-    assert!(panics(|| f.rebalance()).contains("attach NEAR for the strategy run"));
+    for too_little in [0, 1, BASKET_DEPOSIT - 1] {
+        set_rebalance(CLOSE + 20, too_little, 300);
+        assert!(panics(|| f.rebalance()).contains("attach at least 0.005 NEAR for the strategy run"), "{too_little}");
+    }
+    assert_eq!(f.get_fund().strategy_started, 0);
     set_rebalance(CLOSE + 20, 10u128.pow(23), 294);
     assert!(panics(|| f.rebalance()).contains("attach 300 TGas"));
     // The window is still open.
@@ -3417,7 +3425,8 @@ fn v3_strategy_rebalance_preconditions() {
     assert!(panics(|| f.rebalance()).contains("trading starts when the subscription window closes"));
     assert_eq!(f.get_fund().strategy_started, 0, "a refused call starts nothing");
     // 295 TGas is enough.
-    set_rebalance(CLOSE + 20, 1, 295);
+    // Exactly 0.005 NEAR and 295 TGas are enough.
+    set_rebalance(CLOSE + 20, BASKET_DEPOSIT, 295);
     f.rebalance();
     assert_eq!(f.get_fund().strategy_started, CLOSE + 20);
     assert!(near_sdk::test_utils::get_created_receipts().iter().any(|r| r.receiver_id.as_str() == OUTLAYER), "request_execution on OutLayer");
@@ -3685,4 +3694,405 @@ fn v3_strategy_settings_are_checked_at_launch() {
     let mut j = serde_json::to_value(config()).unwrap();
     j["mandate"].as_object_mut().unwrap().remove("strategy");
     assert_eq!(serde_json::from_value::<Config>(j).unwrap().mandate.strategy, None);
+}
+
+// ------------------------------------------------------------------ v3: round-3 changes
+
+#[test]
+fn v3_a_quote_whose_deposit_address_stays_open_over_14_days_is_refused() {
+    let now = CLOSE + 20;
+    let mut f = funded();
+    assert!(!propose(&mut f, &Q { deadline: now + MAX_DEADLINE_SECONDS + 1, ..Default::default() }, now));
+    assert_eq!(last_reason(&f), "the quote's deposit address stays open too long");
+    assert_eq!(f.get_rejections(0, 1)[0].deposit_address, Some("a".repeat(64)));
+    assert!(f.get_fund().pending.is_none());
+    assert_eq!(held(&f, 0), 100_000_000);
+    // A far-future deadline (what made a lost trade impossible to write off) is refused as well.
+    assert!(!propose(&mut f, &Q { deadline: now + 1_000 * 365 * 86_400, ..Default::default() }, now));
+    assert_eq!(last_reason(&f), "the quote's deposit address stays open too long");
+    // Exactly 14 days ahead is accepted, and such a trade can be written off 7 days after that.
+    assert!(propose(&mut f, &Q { deadline: now + MAX_DEADLINE_SECONDS, ..Default::default() }, now));
+    ok_sent(&mut f, 0, now + 1);
+    set(ANYONE, now + MAX_DEADLINE_SECONDS + ABANDON_AFTER_SECONDS + 1);
+    f.abandon();
+    assert_eq!(f.get_fund().joins_blocked_until, now + MAX_DEADLINE_SECONDS + REFUND_CLOSES_SECONDS);
+}
+
+#[test]
+fn v3_joins_are_blocked_after_an_abandon_until_refunds_for_it_close() {
+    let mut f = fund_from(open_config());
+    assert_eq!(subscribe(&mut f, ALICE, 100_000_000, T0 + 10).0, 0);
+    assert_eq!(f.get_fund().joins_blocked_until, 0);
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    ok_sent(&mut f, 0, CLOSE + 21);
+    assert_eq!(f.get_fund().joins_blocked_until, 0, "only a write-off blocks joins");
+    let at = Q::default().deadline + ABANDON_AFTER_SECONDS + 1;
+    set(ANYONE, at);
+    f.abandon();
+    let until = Q::default().deadline + REFUND_CLOSES_SECONDS;
+    assert_eq!(f.get_fund().joins_blocked_until, until);
+    fill_basket(&mut f, CAROL, 9_000_000, 0, at + 1);
+    for now in [at + 2, until - 1, until] {
+        set(CAROL, now);
+        assert!(panics(|| f.join_in_kind(U128(0))).contains("a written-off trade can still be refunded; joins reopen when that closes"), "{now}");
+    }
+    // Everything else goes on: redeem, baskets in and out, the next trade.
+    set(ALICE, at + 3);
+    f.redeem(U128(1_000_000));
+    let q = Q { deposit: "c".repeat(64), amount: 1_000_000, in_usd: "1.000000", out_usd: "0.999000", issued: at, deadline: at + 86_400, ..Default::default() };
+    assert!(propose(&mut f, &q, at + 4));
+    ok_sent(&mut f, 1, at + 5);
+    assert_eq!(push(&mut f, WNEAR, SOLVER, MIN_OUT, "trade:1", at + 6), 0);
+    // A later trade settling normally does not move the block either way.
+    assert_eq!(f.get_fund().joins_blocked_until, until);
+    // One second after refunds close, joins reopen (with every token now held).
+    assert_eq!(push(&mut f, WNEAR, CAROL, MIN_OUT, "basket", until), 0);
+    let s = join(&mut f, CAROL, 0, until + 1);
+    assert!(s > 0);
+    assert_eq!(f.get_shares(acct(CAROL)).0, s);
+}
+
+#[test]
+fn v3_joins_are_not_blocked_in_funds_without_a_written_off_trade() {
+    // Settled, refunded and failed trades do not block joins.
+    let mut f = open_fund();
+    assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+    ok_sent(&mut f, 0, CLOSE + 21);
+    let flux = request_refund(&mut f, 0, REFUND_AT);
+    assert_eq!(refund_cb(&mut f, 0, flux, 90_000_000 + REFUND, REFUND_AT + 1), TradeStatus::Refunded);
+    let now = REFUND_AT + 700;
+    let q = |dep: &str, at: u64| Q { deposit: dep.repeat(64), issued: at - 5, deadline: at + 86_400, ..Default::default() };
+    assert!(propose(&mut f, &q("c", now), now));
+    set_with_results(now + 1, vec![PromiseResult::Failed]);
+    f.on_trade_sent(1);
+    assert!(propose(&mut f, &q("d", now + 700), now + 700));
+    ok_sent(&mut f, 2, now + 701);
+    assert_eq!(push(&mut f, WNEAR, SOLVER, MIN_OUT, "trade:2", now + 702), 0);
+    assert_eq!(f.get_fund().joins_blocked_until, 0);
+    fill_basket(&mut f, CAROL, 10_000_000, WNEAR_20, now + 703);
+    assert!(join(&mut f, CAROL, 0, now + 704) > 0);
+}
+
+#[test]
+fn v3_a_second_abandon_never_shortens_the_join_block() {
+    let mut f = fund_from(open_config());
+    assert_eq!(subscribe(&mut f, ALICE, 100_000_000, T0 + 10).0, 0);
+    // Trade 0 has a long deadline (14 days), trade 1 a short one that is written off later.
+    let first = CLOSE + 20;
+    assert!(propose(&mut f, &Q { deadline: first + MAX_DEADLINE_SECONDS, ..Default::default() }, first));
+    ok_sent(&mut f, 0, first + 1);
+    set(ANYONE, first + MAX_DEADLINE_SECONDS + ABANDON_AFTER_SECONDS + 1);
+    f.abandon();
+    let until0 = first + MAX_DEADLINE_SECONDS + REFUND_CLOSES_SECONDS;
+    assert_eq!(f.get_fund().joins_blocked_until, until0);
+    let second = first + MAX_DEADLINE_SECONDS + ABANDON_AFTER_SECONDS + 10;
+    let q = Q { deposit: "c".repeat(64), issued: second - 5, deadline: second + 700, ..Default::default() };
+    assert!(propose(&mut f, &q, second));
+    ok_sent(&mut f, 1, second + 1);
+    set(ANYONE, second + 700 + ABANDON_AFTER_SECONDS + 1);
+    f.abandon();
+    let until1 = second + 700 + REFUND_CLOSES_SECONDS;
+    assert!(until1 > until0);
+    assert_eq!(f.get_fund().joins_blocked_until, until1, "the later of the two");
+}
+
+#[test]
+fn v3_rewrapping_is_tracked_from_dispatch_to_callback_on_every_path() {
+    // on_staked failure -> rewrap -> on_rewrapped (ok).
+    let mut f = staking_fund(0);
+    assert!(stake(&mut f, FIVE, CLOSE + 20));
+    assert_eq!(f.rewrapping, 0);
+    unwrapped(&mut f, 0, CLOSE + 21);
+    staked(&mut f, 0, None, CLOSE + 22);
+    assert_eq!((f.rewrapping, f.near_in_flight), (FIVE, 0));
+    assert_eq!(f.get_fund().pending.unwrap().status, TradeStatus::Sending, "the legitimate chain is not a late callback");
+    set_with_results(CLOSE + 23, vec![PromiseResult::Successful(vec![])]);
+    f.on_rewrapped(0, U128(FIVE));
+    assert!(!get_logs().iter().any(|l| l.contains("late callback")));
+    assert_eq!((f.rewrapping, held(&f, 1), trade(&f, 0).status), (0, WNEAR_20, TradeStatus::Failed));
+    assert!(f.get_fund().pending.is_none());
+    // on_unwrapped without a price -> rewrap -> on_rewrapped (fails) -> stranded -> rewrap_stranded.
+    let mut g = staking_fund(0);
+    assert!(stake(&mut g, FIVE, CLOSE + 20));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
+    g.on_unwrapped(0);
+    assert!(!get_logs().iter().any(|l| l.contains("late callback")));
+    assert_eq!((g.rewrapping, g.near_in_flight), (FIVE, 0));
+    set_with_results(CLOSE + 22, vec![PromiseResult::Failed]);
+    g.on_rewrapped(0, U128(FIVE));
+    assert!(!get_logs().iter().any(|l| l.contains("late callback")));
+    assert_eq!((g.rewrapping, g.get_fund().stranded_near.0, trade(&g, 0).status), (0, FIVE, TradeStatus::Failed));
+    with_balance(ANYONE, CLOSE + 30, 20_000);
+    g.rewrap_stranded();
+    assert_eq!((g.rewrapping, g.get_fund().stranded_near.0), (FIVE, 0));
+    // The retry fails: stranded again, nothing in flight.
+    set_with_results(CLOSE + 31, vec![PromiseResult::Failed]);
+    g.on_rewrapped(u64::MAX, U128(FIVE));
+    assert_eq!((g.rewrapping, g.get_fund().stranded_near.0, held(&g, 1)), (0, FIVE, 15 * 10u128.pow(24)));
+    with_balance(ANYONE, CLOSE + 32, 20_000);
+    g.rewrap_stranded();
+    set_with_results(CLOSE + 33, vec![PromiseResult::Successful(vec![])]);
+    g.on_rewrapped(u64::MAX, U128(FIVE));
+    assert_eq!((g.rewrapping, g.get_fund().stranded_near.0, held(&g, 1)), (0, 0, WNEAR_20));
+    // A failed unwrap never starts a re-wrap.
+    let mut h = staking_fund(0);
+    assert!(stake(&mut h, FIVE, CLOSE + 20));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Failed, PromiseResult::Failed]);
+    h.on_unwrapped(0);
+    assert_eq!(h.rewrapping, 0);
+}
+
+#[test]
+fn v3_settle_refund_waits_while_near_is_being_wrapped_back() {
+    // A written-off wNEAR -> USDC swap, then a stake that fails and strands its NEAR.
+    let mut f = staking_fund(0);
+    let q = Q { sell: WNEAR, buy: USDC, amount: FIVE, out: 10_000_000, min_out: 9_990_000, ..Default::default() };
+    assert!(propose(&mut f, &q, CLOSE + 20));
+    ok_sent(&mut f, 0, CLOSE + 21);
+    let at = q.deadline + ABANDON_AFTER_SECONDS + 1;
+    set(ANYONE, at);
+    f.abandon();
+    let three = 3 * 10u128.pow(24);
+    assert!(stake(&mut f, three, at + 1));
+    set_with_results(at + 2, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
+    f.on_unwrapped(1);
+    // The stake's own re-wrap is in flight (and the stake is still pending).
+    set(ANYONE, at + 3);
+    assert!(panics(|| f.settle_refund(0)).contains("another trade is being sent"));
+    set_with_results(at + 4, vec![PromiseResult::Failed]);
+    f.on_rewrapped(1, U128(three));
+    assert_eq!((f.rewrapping, f.get_fund().stranded_near.0), (0, three));
+    assert!(f.get_fund().pending.is_none());
+    // Stranded but nothing moving: the refund check may run.
+    let stale = request_refund(&mut f, 0, at + 5);
+    // Someone starts the retry: the wNEAR balance is about to grow by 3, which is not a refund.
+    with_balance(ANYONE, at + 6, 20_000);
+    f.rewrap_stranded();
+    assert_eq!(f.rewrapping, three);
+    set(ANYONE, at + 7);
+    assert!(panics(|| f.settle_refund(0)).contains("another trade is being sent"));
+    // 12 wNEAR held; the read saw 12 + 3 re-wrapped. Neither the stale nor a current flux counts it.
+    let wrapped_balance = 12 * 10u128.pow(24) + three;
+    assert_eq!(refund_cb(&mut f, 0, stale, wrapped_balance + FIVE, at + 7), TradeStatus::Abandoned);
+    assert_eq!(refund_now(&mut f, 0, wrapped_balance + FIVE, at + 7), TradeStatus::Abandoned);
+    assert_eq!(held(&f, 1), 12 * 10u128.pow(24));
+    // The re-wrap lands: 15 wNEAR held, and the check works again against the honest balance.
+    set_with_results(at + 8, vec![PromiseResult::Successful(vec![])]);
+    f.on_rewrapped(u64::MAX, U128(three));
+    assert_eq!((f.rewrapping, held(&f, 1)), (0, 15 * 10u128.pow(24)));
+    let flux = request_refund(&mut f, 0, at + 9);
+    assert_eq!(refund_cb(&mut f, 0, flux, 15 * 10u128.pow(24), at + 10), TradeStatus::Abandoned, "no refund there");
+    assert_eq!(refund_cb(&mut f, 0, flux, 15 * 10u128.pow(24) + FIVE - 4_500, at + 10), TradeStatus::Refunded);
+}
+
+/// Everything a late callback could disturb.
+fn snapshot(f: &Plinth) -> (Vec<u128>, Option<u64>, Vec<Trade>, u128, u128, u128, u64, u128) {
+    let v = f.get_fund();
+    (v.held.iter().map(|h| h.1 .0).collect(), v.pending.map(|t| t.id), f.get_trades(0, u64::MAX), f.near_in_flight, v.stranded_near.0, f.rewrapping, v.last_trade_at, v.total_shares.0)
+}
+
+#[test]
+fn v3_late_swap_callbacks_are_ignored_after_recover_stuck_trade() {
+    for late_ok in [true, false] {
+        // Recovered, still Sent and pending.
+        let mut f = funded();
+        assert!(propose(&mut f, &Q::default(), CLOSE + 20));
+        let day = CLOSE + 20 + 86_401;
+        set(ANYONE, day);
+        f.recover_stuck_trade();
+        let before = snapshot(&f);
+        set_with_results(day + 1, vec![if late_ok { PromiseResult::Successful(vec![]) } else { PromiseResult::Failed }]);
+        f.on_trade_sent(0);
+        assert!(get_logs().iter().any(|l| l.contains("late callback for trade 0 ignored")));
+        assert_eq!(snapshot(&f), before, "late_ok {late_ok}");
+        // Recovered, settled by output, and a NEWER trade is in flight.
+        assert_eq!(push(&mut f, WNEAR, SOLVER, MIN_OUT, "trade:0", day + 2), 0);
+        let q = Q { deposit: "c".repeat(64), issued: day, deadline: day + 86_400, ..Default::default() };
+        assert!(propose(&mut f, &q, day + 3));
+        let before = snapshot(&f);
+        assert_eq!(before.1, Some(1));
+        set_with_results(day + 4, vec![if late_ok { PromiseResult::Successful(vec![]) } else { PromiseResult::Failed }]);
+        f.on_trade_sent(0);
+        assert_eq!(snapshot(&f), before, "late_ok {late_ok}: trade 1 is untouched");
+        // Trade 1's own callback is not "late".
+        ok_sent(&mut f, 1, day + 5);
+        assert!(!get_logs().iter().any(|l| l.contains("late callback")));
+        assert_eq!(trade(&f, 1).status, TradeStatus::Sent);
+    }
+}
+
+#[test]
+fn v3_a_duplicate_on_trade_sent_is_ignored() {
+    let mut f = sent_fund();
+    let before = snapshot(&f);
+    set_with_results(CLOSE + 30, vec![PromiseResult::Failed]);
+    f.on_trade_sent(0);
+    assert_eq!(snapshot(&f), before, "a sent trade's input is not restored by a second callback");
+    // Nor after it failed once.
+    let mut g = funded();
+    assert!(propose(&mut g, &Q::default(), CLOSE + 20));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Failed]);
+    g.on_trade_sent(0);
+    set_with_results(CLOSE + 22, vec![PromiseResult::Failed]);
+    g.on_trade_sent(0);
+    assert_eq!(held(&g, 0), 100_000_000);
+}
+
+/// A stake stuck and recovered after a day, then a newer trade in flight: a swap (trade 1) or
+/// another stake (trade 1).
+fn recovered_stake_then(newer_is_stake: bool, unwrapped_first: bool) -> (Plinth, u64) {
+    let mut f = staking_fund(0);
+    with_balance(OPERATOR, CLOSE + 20, 20_000);
+    assert!(f.stake_idle(U128(FIVE)));
+    if unwrapped_first {
+        unwrapped(&mut f, 0, CLOSE + 21); // quoted_out and min_out are set; on_staked never came
+    }
+    with_balance(ANYONE, DAY_AFTER_STAKE, 20_000);
+    f.recover_stuck_stake();
+    assert_eq!((trade(&f, 0).status, f.get_fund().stranded_near.0), (TradeStatus::Failed, 0));
+    let now = DAY_AFTER_STAKE + 10;
+    if newer_is_stake {
+        assert!(stake(&mut f, 3 * 10u128.pow(24), now));
+        assert_eq!(f.near_in_flight, 3 * 10u128.pow(24));
+    } else {
+        assert!(propose(&mut f, &Q { issued: now - 5, deadline: now + 86_400, ..Default::default() }, now));
+    }
+    assert_eq!(f.get_fund().pending.unwrap().id, 1);
+    (f, now)
+}
+
+#[test]
+fn v3_late_stake_callbacks_are_ignored_after_recover_stuck_stake() {
+    let minted = format!("\"{}\"", expected_mint()).into_bytes();
+    let price = format!("\"{PRICE}\"").into_bytes();
+    // (name, the late callback for stake 0)
+    let late: Vec<(&str, Box<dyn Fn(&mut Plinth, u64)>)> = vec![
+        ("on_unwrapped, unwrap ok", Box::new({
+            let price = price.clone();
+            move |f, now| {
+                set_with_results(now, vec![PromiseResult::Successful(vec![]), PromiseResult::Successful(price.clone())]);
+                f.on_unwrapped(0);
+            }
+        })),
+        ("on_unwrapped, unwrap failed", Box::new(move |f, now| {
+            set_with_results(now, vec![PromiseResult::Failed, PromiseResult::Successful(price.clone())]);
+            f.on_unwrapped(0);
+        })),
+        ("on_unwrapped, no price", Box::new(|f, now| {
+            set_with_results(now, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
+            f.on_unwrapped(0);
+        })),
+        ("on_staked, success", Box::new(move |f, now| staked(f, 0, Some(&minted), now))),
+        ("on_staked, failure", Box::new(|f, now| staked(f, 0, None, now))),
+        ("on_rewrapped, ok", Box::new(|f, now| {
+            set_with_results(now, vec![PromiseResult::Successful(vec![])]);
+            f.on_rewrapped(0, U128(FIVE));
+        })),
+        ("on_rewrapped, failed", Box::new(|f, now| {
+            set_with_results(now, vec![PromiseResult::Failed]);
+            f.on_rewrapped(0, U128(FIVE));
+        })),
+    ];
+    for (what, callback) in &late {
+        for newer_is_stake in [false, true] {
+            for unwrapped_first in [false, true] {
+                let (mut f, now) = recovered_stake_then(newer_is_stake, unwrapped_first);
+                let before = snapshot(&f);
+                callback(&mut f, now + 1);
+                let tag = format!("{what}, newer stake {newer_is_stake}, unwrapped {unwrapped_first}");
+                assert!(get_logs().iter().any(|l| l.contains("late callback for trade 0 ignored")), "{tag}");
+                assert!(near_sdk::test_utils::get_created_receipts().is_empty(), "{tag}: a late callback sends nothing");
+                assert_eq!(snapshot(&f), before, "{tag}: the newer trade, holdings and NEAR books are untouched");
+                // The newer trade still completes normally afterwards.
+                if newer_is_stake {
+                    unwrapped(&mut f, 1, now + 2);
+                    staked(&mut f, 1, Some(b"\"7\""), now + 3);
+                    assert_eq!((trade(&f, 1).status, held(&f, 2), f.near_in_flight), (TradeStatus::Settled, 7, 0), "{tag}");
+                } else {
+                    ok_sent(&mut f, 1, now + 2);
+                    assert_eq!(trade(&f, 1).status, TradeStatus::Sent, "{tag}");
+                }
+                assert_eq!(trade(&f, 0).status, TradeStatus::Failed, "{tag}");
+            }
+        }
+        // With nothing newer in flight it is ignored just the same.
+        let mut f = staking_fund(0);
+        with_balance(OPERATOR, CLOSE + 20, 20_000);
+        assert!(f.stake_idle(U128(FIVE)));
+        with_balance(ANYONE, DAY_AFTER_STAKE, 20_000);
+        f.recover_stuck_stake();
+        let before = snapshot(&f);
+        callback(&mut f, DAY_AFTER_STAKE + 1);
+        assert_eq!(snapshot(&f), before, "{what}, nothing pending");
+    }
+}
+
+#[test]
+fn v3_fee_accrual_skips_instead_of_overflowing() {
+    // Shares so many that total + minted cannot be represented: the accrual is skipped, the clock
+    // moves on, and people can still leave.
+    let mut c = config();
+    c.mandate.management_fee_bps = 200;
+    c.mandate.max_total_subscriptions = U128(u128::MAX);
+    let mut f = fund_from(c);
+    let huge = u128::MAX - 5;
+    assert_eq!(subscribe(&mut f, ALICE, huge, T0 + 10).0, 0);
+    set(ANYONE, CLOSE + YEAR_SECONDS as u64);
+    f.accrue();
+    let v = f.get_fund();
+    assert_eq!((v.operator_shares.0, v.total_shares.0, v.fee_accrued_at), (0, huge, CLOSE + YEAR_SECONDS as u64));
+    set(ALICE, CLOSE + YEAR_SECONDS as u64 + 1);
+    f.redeem(U128(huge));
+    assert_eq!(f.get_fund().in_flight_payouts[0].0, huge);
+    // Large but representable (2e36, where bps * total overflows): the fee is still minted, about
+    // 2% a year, and the operator's shares add up.
+    let mut c = config();
+    c.mandate.management_fee_bps = 200;
+    c.mandate.max_total_subscriptions = U128(u128::MAX / 4);
+    let mut g = fund_from(c);
+    let big = 2 * 10u128.pow(36);
+    assert_eq!(subscribe(&mut g, ALICE, big, T0 + 10).0, 0);
+    set(ANYONE, CLOSE + YEAR_SECONDS as u64);
+    g.accrue();
+    let v = g.get_fund();
+    assert_eq!(v.total_shares.0, big + v.operator_shares.0);
+    let ppm = mul_div(v.operator_shares.0, 1_000_000, v.total_shares.0).unwrap();
+    assert!((19_999..=20_000).contains(&ppm), "operator holds {ppm} ppm after a year at 2%");
+    // A second accrual in the same second mints nothing more.
+    g.accrue();
+    assert_eq!(g.get_fund().operator_shares.0, v.operator_shares.0);
+}
+
+// ------------------------------------------------------------------ v3: suspected contract bugs (pass 3)
+
+/// BUG 9 (low probability, permanent). `rewrapping` is reduced only in `on_rewrapped`
+/// (lib.rs ~918). If that callback never completes (the case `recover_stuck_stake` exists for: a
+/// callback out of gas), nothing ever reduces it: `recover_stuck_stake` closes the stake but leaves
+/// `rewrapping` at the stake's amount. From then on `join_in_kind` (lib.rs ~651) and every
+/// `settle_refund` (`refundable`, lib.rs ~1265) are refused for good, with no permissionless exit.
+/// The same holds for a `rewrap_stranded` retry whose `on_rewrapped` is lost.
+///
+/// Scenario: a 5 NEAR stake, no price -> re-wrap dispatched, `on_rewrapped` never runs. A day
+/// later anyone calls `recover_stuck_stake`. Expected: `rewrapping` is back to 0 (the recovery
+/// already decides from the balance whether the NEAR is there), so refunds and joins work.
+/// Actual: `rewrapping` stays 5 NEAR; a later trade's refund can never be counted.
+#[test]
+#[ignore = "contract bug: rewrapping stays non-zero for ever when on_rewrapped is lost; blocks settle_refund and joins"]
+fn v3_bug_a_lost_on_rewrapped_must_not_block_refunds_and_joins_for_ever() {
+    let mut f = staking_fund(0);
+    with_balance(OPERATOR, CLOSE + 20, 20_000);
+    assert!(f.stake_idle(U128(FIVE)));
+    set_with_results(CLOSE + 21, vec![PromiseResult::Successful(vec![]), PromiseResult::Failed]);
+    f.on_unwrapped(0); // re-wrap dispatched; its callback is lost
+    assert_eq!(f.rewrapping, FIVE);
+    with_balance(ANYONE, DAY_AFTER_STAKE, 20_000);
+    f.recover_stuck_stake();
+    assert!(f.get_fund().pending.is_none());
+    // Trading goes on: a swap is sent and 1Click refunds it.
+    let now = DAY_AFTER_STAKE + 10;
+    assert!(propose(&mut f, &Q { issued: now - 5, deadline: now + 86_400, ..Default::default() }, now));
+    ok_sent(&mut f, 1, now + 1);
+    set(ANYONE, now + REFUND_WAIT_SECONDS);
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.settle_refund(1))).is_err();
+    assert!(!refused && f.rewrapping == 0, "rewrapping is still {} a day after the stake was closed: no refund can ever be counted", f.rewrapping);
 }
