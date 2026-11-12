@@ -990,7 +990,6 @@ export async function mountApp(opt: AppOptions): Promise<App> {
 
   // ---- first paint: skeletons for everything we know about, then the chain fills them in
   for (const l of opt.legacy) addCard(l, "legacy");
-  for (const k of opt.known) if (!opt.legacy.some((l) => l.id === k.id)) addCard(k, "new");
   let first: FundCard[] = [];
   if (factory) {
     try {
@@ -1004,6 +1003,8 @@ export async function mountApp(opt: AppOptions): Promise<App> {
   } else {
     note.textContent = "No release 0.3 fund is live on testnet yet. New funds will be listed here, read from the factory, as soon as it is. Until then the earlier funds below show how joining and exiting work.";
   }
+  // The funds named in the data files come after the factory's list, so nothing jumps when it arrives.
+  for (const k of opt.known) if (!opt.legacy.some((l) => l.id === k.id)) addCard(k, "new");
   note.hidden = !note.textContent;
   // With nothing newer to show, the earlier funds are the page: open the group.
   if (!newestId && !opt.known.length) legacyWrap.open = true;

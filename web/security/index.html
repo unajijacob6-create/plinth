@@ -22,7 +22,7 @@
     </section>
     <main id="main" class="wrap pull-up sec-page">
       <article class="known-card" id="limit-known" aria-labelledby="known-h">
-        <p class="badge warn">Known issue · releases 0.1 and 0.2</p>
+        <p class="known-k">Known issue · releases 0.1 and 0.2</p>
         <h2 id="known-h">The bug in our <em>earlier funds.</em></h2>
         <div class="two">
           <div>
@@ -43,7 +43,22 @@
           <h2 id="rule-h">A fund counts a token only <em>when it is handed it.</em></h2>
           <p class="lead">Release 0.3 never trusts a balance it reads. Tokens count only when they arrive with a message the fund recognises, or when one of the fund's own calls brings them back.</p>
         </div>
-        <div class="table-scroll soft" data-reveal>
+        <figure class="diagram relay-diagram" data-reveal aria-label="How a refund reaches the fund">
+          <div class="relay-row">
+            <div class="node"><span class="node-t">1Click</span><span class="node-s">refunds a failed trade</span></div>
+            <div class="wire" aria-hidden="true"><span class="dot"></span></div>
+            <div class="node mid"><span class="node-t">Refund account</span><span class="node-s">no keys, holds nothing else</span></div>
+            <div class="wire" aria-hidden="true"><span class="dot d2"></span></div>
+            <div class="node end"><span class="node-t">The fund</span><span class="node-s">counts it when it is handed over</span></div>
+          </div>
+          <div class="relay-row stray">
+            <div class="node"><span class="node-t">Anyone</span><span class="node-s">sends a plain transfer</span></div>
+            <div class="wire blocked" aria-hidden="true"><span class="dot d3"></span><span class="stop"></span></div>
+            <div class="node end muted-node"><span class="node-t">The fund</span><span class="node-s">never counts it</span></div>
+          </div>
+          <figcaption>A refund can only reach the fund through its own refund account, and anyone can press the button that hands it over.</figcaption>
+        </figure>
+        <div class="table-card soft" data-reveal>
           <table class="plain-table">
             <thead><tr><th scope="col">What arrives</th><th scope="col">How the fund counts it</th></tr></thead>
             <tbody>

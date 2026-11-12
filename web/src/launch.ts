@@ -176,16 +176,19 @@ export function mountLaunch(onCreated: (id: string) => void) {
   const base0 = KNOWN[0].id;
   const tokenLabel = (t: string) => symbol(t);
   root.innerHTML = `
-    <div class="form-grid">
-      <fieldset>
-        <legend>Name and tokens</legend>
+    <ol class="lprog" aria-label="Steps">
+      ${["Name and tokens", "Trading rules", "Joining", "Manager and fee", "Review and launch"].map((t, i) => `<li><button type="button" data-go="${i}"><span class="lp-n" aria-hidden="true">${i + 1}</span><span class="lp-t">${t}</span></button></li>`).join("")}
+    </ol>
+    <div class="lstage">
+      <fieldset class="lstep" data-step="0">
+        <legend><span class="ls-n">Step 1 of 5</span>Name and tokens</legend>
         <div class="field"><label for="l-name">Fund name</label><input id="l-name" name="name" autocomplete="off" spellcheck="false" autocapitalize="none" maxlength="30" placeholder="my-fund" aria-describedby="l-name-h l-name-e" /><p class="hint" id="l-name-h">Becomes the fund's account. Lowercase letters, digits and dashes.</p><p class="err" id="l-name-e" role="alert"></p></div>
         <div class="field"><label for="l-base">Base token</label><select id="l-base" name="base" aria-describedby="l-base-h">${KNOWN.map((t) => `<option value="${t.id}">${esc(tokenLabel(t.id))}: ${esc(t.hint)}</option>`).join("")}</select><p class="hint" id="l-base-h">People join with this token during the join window.</p></div>
         <div class="field" role="group" aria-labelledby="l-others-l"><span class="label" id="l-others-l">Other tokens the fund may hold (up to 3)</span><div class="checks" id="l-others"></div>
           <label for="l-custom" class="sub-label">Another token, by account name (optional)</label><input id="l-custom" name="custom" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="token.testnet" aria-describedby="l-custom-e l-tokens-e" /><p class="hint" id="l-custom-ok"></p><p class="err" id="l-custom-e" role="alert"></p><p class="err" id="l-tokens-e" role="alert"></p></div>
       </fieldset>
-      <fieldset>
-        <legend>Trading rules</legend>
+      <fieldset class="lstep" data-step="1" hidden>
+        <legend><span class="ls-n">Step 2 of 5</span>Trading rules</legend>
         <div class="pair">
           <div class="field"><label for="l-trade">Largest trade</label><div class="with-unit"><input id="l-trade" name="trade" inputmode="decimal" value="25" aria-describedby="l-trade-h l-trade-e" /><span>%</span></div><p class="hint" id="l-trade-h">Of the fund's holding of the token sold.</p><p class="err" id="l-trade-e" role="alert"></p></div>
           <div class="field"><label for="l-cost">Cost cap per trade</label><div class="with-unit"><input id="l-cost" name="cost" inputmode="decimal" value="1" aria-describedby="l-cost-h l-cost-e" /><span>%</span></div><p class="hint" id="l-cost-h">The most a trade may lose to fees and price.</p><p class="err" id="l-cost-e" role="alert"></p></div>
@@ -193,8 +196,8 @@ export function mountLaunch(onCreated: (id: string) => void) {
           <div class="field"><label for="l-gap">Minutes between trades</label><input id="l-gap" name="gap" inputmode="numeric" value="11" aria-describedby="l-gap-h l-gap-e" /><p class="hint" id="l-gap-h">At least 11.</p><p class="err" id="l-gap-e" role="alert"></p></div>
         </div>
       </fieldset>
-      <fieldset>
-        <legend>Joining</legend>
+      <fieldset class="lstep" data-step="2" hidden>
+        <legend><span class="ls-n">Step 3 of 5</span>Joining</legend>
         <div class="field"><label for="l-closes">Join window ends</label><input id="l-closes" name="closes" type="datetime-local" aria-describedby="l-closes-h l-closes-e" /><p class="hint" id="l-closes-h">Your local time. Trading starts when the window ends.</p><p class="err" id="l-closes-e" role="alert"></p></div>
         <div class="pair">
           <div class="field"><label for="l-min">Smallest deposit</label><div class="with-unit"><input id="l-min" name="min" inputmode="decimal" value="1" aria-describedby="l-min-e" /><span data-base></span></div><p class="err" id="l-min-e" role="alert"></p></div>
@@ -202,8 +205,8 @@ export function mountLaunch(onCreated: (id: string) => void) {
         </div>
         <label class="check"><input type="checkbox" id="l-open" name="openEnded" checked /><span>Open to in-kind joins after the window<small>Later joiners add every token the fund holds, in its proportions. No price is used.</small></span></label>
       </fieldset>
-      <fieldset>
-        <legend>Manager and pay</legend>
+      <fieldset class="lstep" data-step="3" hidden>
+        <legend><span class="ls-n">Step 4 of 5</span>Manager and fee</legend>
         <div class="radios" role="radiogroup" aria-label="Who proposes trades">
           <label class="check"><input type="radio" name="manager" value="me" checked /><span>I manage it<small id="l-me">The connected account proposes trades. It can do nothing else.</small></span></label>
           <label class="check"><input type="radio" name="manager" value="other" /><span>Another account manages it</span></label>
@@ -214,16 +217,25 @@ export function mountLaunch(onCreated: (id: string) => void) {
               : "Not available yet. The program a manager-less fund runs has not been published for testnet, and a fund's program can never be changed after launch."
           }</small></span></label>
         </div>
+        <p class="err" id="l-mgr-e" role="alert"></p>
         <div class="field" id="l-signer-wrap"><label for="l-signer">Test signer key (optional)</label><input id="l-signer" name="signer" autocomplete="off" spellcheck="false" autocapitalize="none" aria-describedby="l-signer-h l-signer-e" /><p class="hint" id="l-signer-h">Leave empty to accept only quotes signed by NEAR Intents 1Click. 1Click does not run on testnet, so to trade here a fund needs a stand-in signer: paste its public key. The fund's card will say so.</p><p class="err" id="l-signer-e" role="alert"></p></div>
         <div class="field"><label for="l-fee">Yearly fee</label><div class="with-unit"><input id="l-fee" name="fee" inputmode="decimal" value="1" aria-describedby="l-fee-h l-fee-e" /><span>%</span></div><p class="hint" id="l-fee-h">From 0 to 2. Paid to the manager in new shares. There is no other fee.</p><p class="err" id="l-fee-e" role="alert"></p></div>
       </fieldset>
+      <section class="lstep review" data-step="4" hidden aria-labelledby="l-review-h">
+        <h3 class="legend" id="l-review-h"><span class="ls-n">Step 5 of 5</span>Review and launch</h3>
+        <div class="summary" aria-live="polite">
+          <p class="summary-h">What you are about to create</p>
+          <div id="l-summary"></div>
+          <div class="actions"><button class="btn primary" type="submit" id="l-submit"></button></div>
+          <p class="status small" id="l-status" role="status"></p>
+        </div>
+      </section>
     </div>
-    <aside class="summary" aria-live="polite">
-      <p class="eyebrow">What you are about to create</p>
-      <div id="l-summary"></div>
-      <div class="actions"><button class="btn primary" type="submit" id="l-submit"></button></div>
-      <p class="status small" id="l-status" role="status"></p>
-    </aside>`;
+    <div class="lnav">
+      <button type="button" class="btn ghost sm" id="l-back">← Back</button>
+      <p class="ln-count" id="l-count">Step 1 of 5</p>
+      <button type="button" class="btn primary sm" id="l-next">Next <span class="arr" aria-hidden="true">→</span></button>
+    </div>`;
 
   const $ = <T extends HTMLElement = HTMLInputElement>(id: string) => root.querySelector(`#${id}`) as T;
   const touched = new Set<Field>();
@@ -279,6 +291,7 @@ export function mountLaunch(onCreated: (id: string) => void) {
       if (field !== "tokens") $(inputId).setAttribute("aria-invalid", show ? "true" : "false");
     }
     $<HTMLElement>("l-op-wrap").hidden = v.manager !== "other";
+    $<HTMLElement>("l-mgr-e").textContent = v.manager === "none" && b.errors.tokens ? b.errors.tokens : "";
     $<HTMLElement>("l-signer-wrap").hidden = v.manager === "none";
     $<HTMLElement>("l-me").textContent = me ? `${shortAccount(me)} proposes trades. It can do nothing else.` : "The account you connect proposes trades. It can do nothing else.";
     const custom = v.custom.trim().toLowerCase();
@@ -375,8 +388,93 @@ export function mountLaunch(onCreated: (id: string) => void) {
     if (html) st.insertAdjacentHTML("beforeend", ` ${html}`);
   };
 
+  // ---- one step at a time
+  const STEPS: Field[][] = [["name", "tokens", "custom"], ["trade", "cost", "perDay", "gap"], ["closes", "min", "max"], ["operator", "signer", "fee", "tokens"]];
+  const panels = [...root.querySelectorAll<HTMLElement>(".lstep")];
+  const progress = [...root.querySelectorAll<HTMLButtonElement>(".lprog button")];
+  const backBtn = $<HTMLButtonElement>("l-back");
+  const nextBtn = $<HTMLButtonElement>("l-next");
+  let step = 0;
+  const badIn = (i: number, b: Built) => STEPS[i]?.find((f) => b.errors[f]);
+  const stepOf = (f: Field) => (f === "tokens" || f === "custom" || f === "name" ? 0 : STEPS.findIndex((x) => x.includes(f)));
+  const focusField = (f: Field) => {
+    const id = f === "tokens" && step === 3 ? "" : ERR_IDS[f][0];
+    const el = id ? $(id) : root.querySelector<HTMLElement>('input[name=manager][value=none]');
+    el?.focus({ preventScroll: false });
+  };
+  function go(i: number) {
+    const dir = i >= step ? "in-r" : "in-l";
+    step = Math.max(0, Math.min(panels.length - 1, i));
+    panels.forEach((p, j) => {
+      p.hidden = j !== step;
+      p.classList.remove("in-r", "in-l");
+    });
+    const p = panels[step];
+    void p.offsetWidth;
+    p.classList.add(dir);
+    progress.forEach((b, j) => {
+      b.setAttribute("aria-current", j === step ? "step" : "false");
+      b.classList.toggle("done", j < step);
+    });
+    backBtn.hidden = step === 0;
+    nextBtn.hidden = step === panels.length - 1;
+    $<HTMLElement>("l-count").textContent = `Step ${step + 1} of ${panels.length}`;
+    if (step === panels.length - 1) {
+      paint();
+      // The summary lines come in one by one, each time the review opens.
+      const sum = $<HTMLElement>("l-summary");
+      sum.classList.remove("play");
+      void sum.offsetWidth;
+      sum.classList.add("play");
+    }
+    const top = root!.getBoundingClientRect().top;
+    if (top < 0 || top > innerHeight * 0.6) root!.scrollIntoView({ block: "start" });
+  }
+  async function next() {
+    STEPS[step]?.forEach((f) => touched.add(f));
+    let b = paint();
+    // Only a custom token still being looked up needs the chain before moving on; the cost
+    // read runs in the background and the review shows its result.
+    const custom = read().custom.trim().toLowerCase();
+    if (step === 0 && custom && customChecked !== custom) {
+      await Promise.race([checkChain().catch(() => {}), new Promise((r) => setTimeout(r, 8000))]);
+      b = paint();
+    } else if (step === 0) void checkChain().catch(() => {});
+    const bad = badIn(step, b);
+    if (bad) {
+      const p = panels[step];
+      p.classList.remove("nudge");
+      void p.offsetWidth;
+      p.classList.add("nudge");
+      focusField(bad);
+      return;
+    }
+    go(step + 1);
+  }
+  nextBtn.addEventListener("click", () => void next());
+  backBtn.addEventListener("click", () => go(step - 1));
+  progress.forEach((b, j) =>
+    b.addEventListener("click", () => {
+      if (j <= step) return go(j);
+      // Forward only past steps that are already in order.
+      const built = paint();
+      for (let k = step; k < j; k++) {
+        if (badIn(k, built)) {
+          STEPS[k].forEach((f) => touched.add(f));
+          paint();
+          go(k);
+          return;
+        }
+      }
+      go(j);
+    }),
+  );
+  go(0);
+
   root.addEventListener("submit", async (e) => {
     e.preventDefault();
+    // Enter in a field before the last step means "Next".
+    if (step < panels.length - 1) return void next();
     if (busy || !factory) return;
     submitted = true;
     let me = currentAccount();
@@ -392,7 +490,10 @@ export function mountLaunch(onCreated: (id: string) => void) {
       const b = paint();
       if (!b.config || !b.fundId) {
         const firstBad = (Object.keys(ERR_IDS) as Field[]).find((f) => b.errors[f]);
-        if (firstBad) $(ERR_IDS[firstBad][0]).focus();
+        if (firstBad) {
+          go(stepOf(firstBad));
+          focusField(firstBad);
+        }
         throw new Error("fix the fields marked above first");
       }
       // The same things the contract would refuse, asked before any NEAR moves.
@@ -413,6 +514,7 @@ export function mountLaunch(onCreated: (id: string) => void) {
       submitted = false;
       touched.clear();
       paintOthers();
+      go(0);
     } catch (err) {
       const raw = String((err as Error)?.message ?? err);
       say(isCancel(err) ? "Cancelled. Nothing was sent." : `Did not go through: ${/[{}_()"]/.test(raw) || raw.length > 160 ? "the chain refused the request" : raw}.`);

@@ -60,6 +60,11 @@
           <h2 id="ref-h">What the contract <em>said no to.</em></h2>
           <p class="lead">Each refusal is kept in the fund's own log on chain, with its reason.</p>
         </div>
+        <figure class="diagram checks-diagram" data-reveal aria-label="A proposal goes through each check in turn">
+          <div class="lane ok"><p class="lane-h">An honest proposal</p><ol class="gates"><li class="gate pass" style="--g: 0"><span class="g-light" aria-hidden="true"></span><span class="g-t">Signed by 1Click</span></li><li class="gate pass" style="--g: 1"><span class="g-light" aria-hidden="true"></span><span class="g-t">Pays only the fund</span></li><li class="gate pass" style="--g: 2"><span class="g-light" aria-hidden="true"></span><span class="g-t">Within the limits</span></li><li class="gate pass" style="--g: 3"><span class="g-light" aria-hidden="true"></span><span class="g-t">Fresh, never used</span></li></ol><p class="lane-end ok-end"><span class="oc-ic" aria-hidden="true"></span>Sent to 1Click</p></div>
+          <div class="lane bad"><p class="lane-h">A proposal that pays someone else</p><ol class="gates"><li class="gate pass" style="--g: 0"><span class="g-light" aria-hidden="true"></span><span class="g-t">Signed by 1Click</span></li><li class="gate fail" style="--g: 1"><span class="g-light" aria-hidden="true"></span><span class="g-t">Pays only the fund</span></li><li class="gate idle" style="--g: 2"><span class="g-light" aria-hidden="true"></span><span class="g-t">Within the limits</span></li><li class="gate idle" style="--g: 3"><span class="g-light" aria-hidden="true"></span><span class="g-t">Fresh, never used</span></li></ol><p class="lane-end bad-end"><span class="oc-ic" aria-hidden="true"></span>Refused, and recorded on chain</p></div>
+          <figcaption>Every proposal goes through the same checks, in the contract, in turn. The first one it fails ends it.</figcaption>
+        </figure>
         <div class="cases" id="refusal-cards"></div>
       </section>
 

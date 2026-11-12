@@ -69,6 +69,8 @@ async function common(page, errors, name) {
   check(small.length === 0, `${name}: controls are at least 44px tall${small.length ? ": " + small.join(" | ") : ""}`);
   const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
   check(over <= 0, `${name}: no horizontal overflow (${over}px)`);
+  const inner = await page.$$eval("body *", (els) => els.filter((e) => { const cs = getComputedStyle(e); return (cs.overflowX === "auto" || cs.overflowX === "scroll") && e.scrollWidth > e.clientWidth + 1 && cs.scrollbarWidth !== "none"; }).map((e) => String(e.className || e.tagName).slice(0, 40)));
+  check(inner.length === 0, `${name}: no inner scrollbars${inner.length ? ": " + inner.join(" | ") : ""}`);
   check(errors.length === 0, `${name}: no console errors${errors.length ? ": " + errors.join(" | ").slice(0, 300) : ""}`);
 }
 const allLoaded = () => document.querySelectorAll(".fund").length > 0 && [...document.querySelectorAll(".fund")].every((e) => !e.classList.contains("loading"));
@@ -233,17 +235,36 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   {
     const { page, errors } = await open("app/launch/", w, h);
     const name = `${dev} launch`;
-    check((await page.$$("#launch-form fieldset")).length === 4, `${name}: the launch form renders`);
+    check((await page.$$("#launch-form fieldset")).length === 4 && (await page.$$("#launch-form .lstep")).length === 5, `${name}: the launch form renders as five steps`);
+    const visibleStep = () => page.$eval("#launch-form .lstep:not([hidden])", (e) => Number(e.dataset.step));
+    check((await visibleStep()) === 0, `${name}: it opens on step 1`);
+    await page.click("#l-next");
+    await page.waitForTimeout(300);
+    check((await visibleStep()) === 0 && (await page.textContent("#l-name-e")).length > 10, `${name}: Next without a name stays on step 1 and says why`);
     await page.fill("#l-name", "Bad Name!");
     check((await page.textContent("#l-name-e")).length > 10, `${name}: a bad fund name is refused as you type`);
     await page.fill("#l-name", "my-fund");
     check((await page.textContent("#l-name-e")) === "", `${name}: a good fund name is accepted`);
+    await page.click("#l-next");
+    await page.waitForFunction(() => document.querySelector('#launch-form .lstep[data-step="1"]:not([hidden])'), null, { timeout: 15000 }).catch(() => {});
+    check((await visibleStep()) === 1, `${name}: Next moves to the trading rules`);
     await page.fill("#l-gap", "5");
     check((await page.textContent("#l-gap-e")).includes("11"), `${name}: fewer than 11 minutes between trades is refused`);
+    await page.click("#l-next");
+    await page.waitForTimeout(200);
+    check((await visibleStep()) === 1, `${name}: a broken rule keeps you on its step`);
     await page.fill("#l-gap", "11");
+    await page.click("#l-next");
+    await page.click("#l-next");
+    check((await visibleStep()) === 3, `${name}: on to the manager and fee`);
     await page.fill("#l-fee", "3");
     check((await page.textContent("#l-fee-e")).length > 10, `${name}: a fee above 2% is refused`);
     await page.fill("#l-fee", "1");
+    await page.click("#l-next");
+    check((await visibleStep()) === 4, `${name}: the last step is the review`);
+    await page.click("#l-back");
+    check((await visibleStep()) === 3, `${name}: Back goes back one step`);
+    await page.click("#l-next");
     const summary = await page.textContent("#l-summary");
     check(summary.includes("refund account") && /Cost: 0\.5\d+ NEAR/.test(summary) && summary.includes("my-fund"), `${name}: the summary shows the exact NEAR cost`);
     check((await page.locator("#l-submit").isDisabled()) === !factory, `${name}: launching is ${factory ? "open" : "closed until the factory is live"}`);
@@ -261,7 +282,12 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
     check(receipts.length > 0 && receipts.every(Boolean), `${name}: ${receipts.length} NEAR AI receipts verify in the browser`);
     check((await page.$$(".quorum-case")).length === 3, `${name}: three quorum cases render`);
     check((await page.textContent("#quorum-cases")).includes("Quorum: hold"), `${name}: the quorum held on the injected note`);
-    check((await page.$$(".quorum-case table.votes")).length === 3, `${name}: model votes are shown as tables`);
+    check((await page.$$(".quorum-case .vote")).length === 6, `${name}: each quorum case shows both model votes`);
+    check((await page.$$(".carousel")).length === 2, `${name}: the cases are carousels`);
+    const before = await page.$eval("#quorum-cases", (e) => e.scrollLeft);
+    await page.locator("#quorum .car-btn").last().click();
+    const moved = await settle(async () => ({ ok: (await page.$eval("#quorum-cases", (e) => e.scrollLeft)) > before + 50 }), 5000);
+    check(moved.ok, `${name}: Next moves the quorum carousel`);
     await common(page, errors, name);
     await page.close();
   }
