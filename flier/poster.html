@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Plinth poster</title>
+  <link rel="stylesheet" href="poster.css" />
+</head>
+<!-- Product posters, v2. poster.html?v=a | b | c | b-wide (render.mjs sets it).
+     Device mockups are drawn in CSS; the screens are live screenshots of the site (shoot.mjs). -->
+<body>
+  <template id="plinth-mark"><svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="20" width="22" height="6" rx="1.5" class="b1" /><rect x="9" y="12" width="14" height="6" rx="1.5" class="b2" /><rect x="13" y="4" width="6" height="6" rx="1.5" class="b3" /></svg></template>
+
+  <!-- ===================================================== A: browser window, light curtains -->
+  <main class="poster pa" data-v="a">
+    <div class="bg"><svg class="curtains" aria-hidden="true"></svg><div class="vignette"></div><div class="grain"></div></div>
+    <h1 class="hl"><span class="dim">This</span> <span class="ac">NEAR HACKATHON,</span> I built a fund <span class="ac">nobody can change.</span></h1>
+    <p class="sub">Plinth is a shared fund on NEAR: the rules are locked when it’s made, a manager can only suggest trades, and anyone can take their share out at any time.</p>
+    <p class="cta"><b>TESTNET</b>Try it today, with test tokens</p>
+    <div class="browser">
+      <i class="lights"><b></b><b></b><b></b></i>
+      <div class="chrome"><span class="url"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 7V5a3 3 0 0 1 6 0v2M4 7h8v6H4z"/></svg>unajijacob6-create.github.io/plinth/app/</span></div>
+      <img src="assets/shots/app-desktop-full.png" alt="" />
+    </div>
+    <div class="near-badge"><span>Built on</span><img src="assets/near-logo-white.svg" alt="NEAR" /></div>
+    <div class="foot">
+      <div class="lockup" data-mark>Plinth</div>
+      <p class="lk">unajijacob6-create.github.io/plinth</p>
+      <p class="lk">github.com/unajijacob6-create/plinth</p>
+    </div>
+  </main>
+
+  <!-- ===================================================== B: tilted phone -->
+  <main class="poster pb" data-v="b">
+    <div class="bg"><div class="glow"></div><div class="vignette"></div><div class="grain"></div></div>
+    <header class="bar"><span class="lockup small" data-mark>Plinth</span><span>NEAR HACKATHON 2026</span></header>
+    <div class="phone-wrap"><div class="phone">
+      <i class="btn b1"></i><i class="btn b2"></i><i class="btn b3"></i>
+      <div class="screen">
+        <div class="status"><span>9:41</span><i class="island"></i><span class="sig"><b></b><b></b><b></b><b></b></span></div>
+        <img src="assets/shots/app-phone-holdings.png" alt="" />
+      </div>
+    </div></div>
+    <div class="copy">
+      <h1 class="hl">What if nobody could <em>freeze your fund?</em></h1>
+      <p class="sub">A Plinth fund has no keys and no pause switch. Its rules are locked when it’s made, and anyone can take their share out at any time.</p>
+      <p class="cta"><b>TESTNET</b>Try it today<span class="url">unajijacob6-create.github.io/plinth</span></p>
+    </div>
+    <footer class="foot">
+      <div class="marks"><span class="lockup" data-mark>Plinth</span><span class="near"><span>Built on</span><img src="assets/near-logo-white.svg" alt="NEAR" /></span></div>
+      <p class="fine">Plinth is a shared fund on NEAR testnet, with test tokens. Nobody holds its keys; a manager can only suggest trades the rules allow. Built at the NEAR HACKATHON by Unaji Jacob. Code: <b>github.com/unajijacob6-create/plinth</b></p>
+    </footer>
+  </main>
+
+  <!-- ===================================================== C: laptop on a plinth -->
+  <main class="poster pc" data-v="c">
+    <div class="bg"><div class="glow"></div><div class="vignette"></div><div class="grain"></div></div>
+    <div class="lockup big" data-mark>Plinth</div>
+    <h1 class="hl">Trust <span class="ac">the rules,</span><br />not a person</h1>
+    <p class="spaced">A shared fund on NEAR</p>
+    <div class="stage">
+      <svg class="pedestal" viewBox="0 0 1080 560" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <div class="laptop">
+        <div class="lid"><i class="cam"></i><div class="scr"><img src="assets/shots/home-desktop.png" alt="" /></div></div>
+        <div class="base"><i></i></div>
+      </div>
+    </div>
+    <p class="pill">Built at NEAR HACKATHON · testnet</p>
+    <div class="near"><span>Built on</span><img src="assets/near-logo-white.svg" alt="NEAR" /></div>
+  </main>
+
+  <script src="poster.js"></script>
+</body>
+</html>

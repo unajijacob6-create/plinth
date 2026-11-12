@@ -54,3 +54,41 @@
 | unajijacob6-create.github.io/plinth, github.com/unajijacob6-create/plinth | README "Try it" and "Credits" |
 | by Unaji Jacob | README: "by Unaji Jacob"; "Copyright (c) 2026 Unaji Jacob" |
 | #NEARHackathon | Hashtag asked for in the brief |
+
+---
+
+# v2 posters (A, B, C and the 16:9 version of B)
+
+Files: `poster.html`, `poster.css` and `poster.js`. They are rendered by `render.mjs` to
+`out/plinth-flier-a.png`, `-b.png`, `-c.png` and `-b-16x9.png`. The v1 info sheet is kept as
+`out/plinth-flier-*-v1.png`; `node render.mjs v1-4x5 v1-16x9 v1-story` rebuilds it.
+
+## Screens inside the device mockups
+
+- The laptop, phone and browser frames are drawn in CSS and SVG. No mockup images or templates
+  from anyone else are used.
+- Every screen is a real screenshot of the live site,
+  `https://unajijacob6-create.github.io/plinth/`. `shoot.mjs` took them on 2026-11-12 with
+  Playwright at device scale factor 2, with no wallet connected. Each shot waited until the fund
+  cards had loaded from NEAR testnet.
+  - A: `app/` at 1440 px wide (`assets/shots/app-desktop-full.png`). It shows "5 funds created
+    through the factory · 0 access keys across those funds · 8 trades · 4 proposals refused" and
+    the fund card for `auto-mwc5tnnh`.
+  - B: `app/` at 390 × 844 (`assets/shots/app-phone-holdings.png`). It shows the
+    `auto-mwc5tnnh` card: the tags "0 keys · release 0.3 · No manager · test signer"; "The fund
+    holds 45.75 pUSD · 3.7886 wNEAR"; and "10 shares hold 7.625 pUSD · 0.6314 wNEAR".
+  - C: the home page hero at 1440 × 900 (`assets/shots/home-desktop.png`).
+- The "9:41" and the signal bars on the phone are drawn decoration, not part of the site.
+
+## Claims on the v2 posters
+
+| Text | Source |
+|---|---|
+| A: "This NEAR HACKATHON, I built a fund nobody can change." | README: "Built at the NEAR HACKATHON (November 2026) by Unaji Jacob"; 0 access keys; code pinned by hash; "A keyless contract cannot be upgraded" (Limits) |
+| A: "the rules are locked when it's made, a manager can only suggest trades, and anyone can take their share out at any time" | README: the mandate "is fixed in `new()` and has no setter"; "can only **propose**"; `redeem` pays the same fraction of every token. The last clause is the site's own hero wording (`web/index.html`) |
+| B: "What if nobody could freeze your fund?" / "no keys and no pause switch" | `contracts/plinth/src/lib.rs` line 256: the operator "cannot withdraw, pause or change anything"; the contract has no pause method; 0 access keys |
+| B, small print: "Nobody holds its keys; a manager can only suggest trades the rules allow. Built at the NEAR HACKATHON by Unaji Jacob." | README |
+| C: "Trust the rules, not a person" / "A shared fund on NEAR" | `web/index.html`, "Plinth trusts *the rules*"; site meta description |
+| "TESTNET", "with test tokens", "NEAR testnet, with test tokens", "· testnet" | README: "Everything here is on NEAR testnet"; pUSD is a test token |
+| "NEAR HACKATHON 2026", "Built at NEAR HACKATHON" | README (November 2026) |
+| Site and GitHub URLs | README |
