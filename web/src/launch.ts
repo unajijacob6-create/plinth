@@ -1,6 +1,7 @@
 // "Launch a fund": a form that builds a fund's rules, checks them the way the contract will, and
 // asks the factory to create the fund from the connected wallet.
-import { view, account, factoryOf, isAccountId, isEd25519Key, shortAccount, short, explorer, ONECLICK_KEY } from "./chain.ts";
+import { view, account, settle, factoryOf, isAccountId, isEd25519Key, shortAccount, short, explorer, ONECLICK_KEY } from "./chain.ts";
+import { UserError } from "./app.ts";
 import { currentAccount, onAccount, signIn, send, isCancel } from "./wallet.ts";
 import { loadMeta, readMeta, symbol, dec, units, parseUnits, pctOf, hasMeta } from "./tokens.ts";
 
@@ -95,7 +96,8 @@ export function build(v: Values, me: string, factory: string | null, customOk: b
   const name = v.name.trim();
   if (!/^[a-z0-9-]{2,30}$/.test(name) || name.startsWith("-") || name.endsWith("-")) errors.name = "Use 2 to 30 lowercase letters, digits or dashes. It cannot start or end with a dash.";
   const fundId = factory && !errors.name ? `${name}.${factory}` : null;
-  if (fundId && fundId.length + 2 > 64) errors.name = "That name is too long for an account under the factory.";
+  if (!errors.name && !isAccountId(name)) errors.name = "Use letters and digits, with single dashes between them.";
+  if (fundId && (fundId.length + 2 > 64 || !isAccountId(fundId) || !isAccountId(fundId.replace(".", "-r.")))) errors.name = errors.name ?? "That name does not make a valid account under the factory.";
   const custom = v.custom.trim().toLowerCase();
   const tokens = [v.base, ...v.others.filter((t) => t !== v.base), ...(custom ? [custom] : [])];
   if (tokens.length > 4) errors.tokens = "A fund holds at most 4 tokens, the base token included.";
@@ -476,14 +478,20 @@ export function mountLaunch(onCreated: (id: string) => void) {
     // Enter in a field before the last step means "Next".
     if (step < panels.length - 1) return void next();
     if (busy || !factory) return;
+    // Set before anything is awaited, so a double click sends one request.
+    busy = true;
+    $<HTMLButtonElement>("l-submit").disabled = true;
     submitted = true;
     let me = currentAccount();
     if (!me) {
       say("Connect a testnet wallet to launch.");
       me = await signIn().catch(() => "");
-      if (!me) return;
+      if (!me) {
+        busy = false;
+        paint();
+        return;
+      }
     }
-    busy = true;
     try {
       say("Checking the rules against the chain…");
       await checkChain();
@@ -494,19 +502,22 @@ export function mountLaunch(onCreated: (id: string) => void) {
           go(stepOf(firstBad));
           focusField(firstBad);
         }
-        throw new Error("fix the fields marked above first");
+        throw new UserError("fix the fields marked above first");
       }
       // The same things the contract would refuse, asked before any NEAR moves.
       const [taken, relayTaken, op, mine] = await Promise.all([account(NET, b.fundId), account(NET, b.fundId.replace(".", "-r.")), account(NET, b.config.operator), account(NET, me)]);
-      if (taken || relayTaken) throw new Error(`the name ${read().name.trim()} is already taken; pick another`);
-      if (!op) throw new Error("the manager's account does not exist on testnet");
+      if (taken || relayTaken) throw new UserError(`the name ${read().name.trim()} is already taken; pick another`);
+      if (!op) throw new UserError("the manager's account does not exist on testnet");
       const cost = totalCost(b.tokens.length);
-      if (!mine || BigInt(mine.amount) < cost + 10n ** 23n) throw new Error(`your wallet holds ${mine ? units(mine.amount, 24, 3) : "0"} NEAR; this needs ${units(cost, 24, 5)} NEAR plus a little for the network fee`);
-      if (b.config.mandate.subscription_closes_at < Math.floor(Date.now() / 1000) + 300) throw new Error("the join window must end at least 5 minutes from now");
+      if (!mine || BigInt(mine.amount) < cost + 10n ** 23n) throw new UserError(`your wallet holds ${mine ? units(mine.amount, 24, 3) : "0"} NEAR; this needs ${units(cost, 24, 5)} NEAR plus a little for the network fee`);
+      if (b.config.mandate.subscription_closes_at < Math.floor(Date.now() / 1000) + 300) throw new UserError("the join window must end at least 5 minutes from now");
       say("Waiting for your wallet…");
       const r = await send([{ receiverId: factory, methodName: "create_fund", args: { name: read().name.trim(), config: b.config }, deposit: cost.toString(), gas: "300000000000000" }]);
-      const made = await account(NET, b.fundId);
-      if (!made) throw new Error("the fund was not created and your NEAR was sent back; the chain refused one of the rules");
+      // The factory answers with the new fund's name, or nothing when the chain refused it (and the NEAR
+      // went back). A fresh account can take a few blocks to show up, so wait for it.
+      if (r.value === null) throw new UserError("the fund was not created and your NEAR was sent back; the chain refused one of the rules");
+      const made = await settle(() => account(NET, b.fundId!, "optimistic"), (x) => !!x);
+      if (!made && r.value !== b.fundId) throw new UserError("the fund was not created and your NEAR was sent back; the chain refused one of the rules");
       say(`Created ${shortAccount(b.fundId)}. It has no keys. Checking it now.`, r.hashes[0] ? `<a href="${explorer(NET, r.hashes[0])}" target="_blank" rel="noopener">View transaction ↗</a>` : "");
       onCreated(b.fundId);
       root.reset();
@@ -517,7 +528,7 @@ export function mountLaunch(onCreated: (id: string) => void) {
       go(0);
     } catch (err) {
       const raw = String((err as Error)?.message ?? err);
-      say(isCancel(err) ? "Cancelled. Nothing was sent." : `Did not go through: ${/[{}_()"]/.test(raw) || raw.length > 160 ? "the chain refused the request" : raw}.`);
+      say(isCancel(err) ? "Cancelled. Nothing was sent." : `Did not go through: ${err instanceof UserError ? raw : /[{}_()"]/.test(raw) || raw.length > 160 ? "the chain refused the request" : raw}.`);
     } finally {
       busy = false;
       paint();

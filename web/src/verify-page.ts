@@ -49,7 +49,8 @@ async function runVerify() {
           : v.status === "known-issue"
             ? `<div class="verdict warn">Keys and code check out, but this release has a known accounting bug. Treat this fund as history, not as safe.${v.standIn ? " Its quotes are signed by a test signer, a testnet stand-in." : ""}</div>`
           : `<div class="verdict bad">Not verified: see the failed checks above.</div>`;
-    out.innerHTML = lines + kv + tag + verdict;
+    const relayFor = v.relayFor ? `<p class="relay-hint">This is the refund account of <b>${esc(shortAccount(v.relayFor))}</b>. <a href="?fund=${encodeURIComponent(v.relayFor)}">Verify that fund</a></p>` : "";
+    out.innerHTML = lines + kv + tag + relayFor + verdict;
   } catch (e) {
     if (seq !== verifySeq) return;
     out.innerHTML = `<div class="verdict bad">Could not read ${esc(shortAccount(id))}: ${esc((e as Error).message)}.</div>`;

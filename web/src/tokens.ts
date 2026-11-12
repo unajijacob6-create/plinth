@@ -38,6 +38,8 @@ export function loadMeta(net: Net, tokens: string[]): Promise<void> {
           key,
           readMeta(net, t).then((m) => {
             if (m) META[t] = m;
+            // A failed read is not remembered: the next call asks the token again.
+            else asked.delete(key);
           }),
         );
       return asked.get(key)!;

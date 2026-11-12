@@ -27,11 +27,11 @@
         <div class="two">
           <div>
             <h3>What happened</h3>
-            <p>Every fund created before release 0.3 has it, including the earlier funds in the app. Those releases counted a token transfer that was about to bounce back as if the fund owned it. Anyone could use that to take more than their share, or to mark a trade settled before anything was delivered. A test in the repository proves both. Two earlier reviews did not find it.</p>
+            <p>Every fund created before release 0.3 has it, including the earlier funds in the app. Those releases counted a token transfer that was about to bounce back as if the fund owned it. Anyone could use that to take more than their share, or to mark a trade settled before anything was delivered. A proof of concept, <a href="https://github.com/unajijacob6-create/plinth/commit/0094ff0" rel="noopener">commit 0094ff0</a>, showed both. Two earlier reviews did not find it.</p>
           </div>
           <div>
             <h3>What we did</h3>
-            <p>Those funds have no keys, so they cannot be fixed. They hold test tokens only. The app keeps them in a separate group with a warning on each, and the verifier will not call them safe. Release 0.3 removes the cause.</p>
+            <p>Those funds have no keys, so they cannot be fixed. They hold test tokens only. The app keeps them in a separate group with a warning on each, and the verifier will not call them safe. Release 0.3 removes the cause; <a href="https://github.com/unajijacob6-create/plinth/blob/main/contracts/plinth/tests/regression.rs" rel="noopener">tests in the repository</a> replay both tricks and show they do nothing on 0.3.</p>
             <p class="replay" id="replay"></p>
           </div>
         </div>

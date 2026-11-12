@@ -60,7 +60,7 @@ export async function rpc<T = any>(net: Net, method: string, params: unknown): P
   for (let attempt = 0; ; attempt++) {
     let res: Response;
     try {
-      res = await fetch(RPC[net], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+      res = await fetch(RPC[net], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(10_000) });
     } catch {
       // A rate-limited node answers 429 without CORS headers, which the browser reports as a failed
       // fetch (a TypeError), not as a status: back off and retry it like a 429.
@@ -74,7 +74,14 @@ export async function rpc<T = any>(net: Net, method: string, params: unknown): P
       await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
       continue;
     }
-    const j = await res.json().catch(() => ({ error: { cause: { name: "TIMEOUT_ERROR" } } }));
+    const j = await res.json().catch(() => null);
+    if (j === null) {
+      if (attempt < 4) {
+        await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
+        continue;
+      }
+      throw new RpcError("TIMEOUT_ERROR", RPC_WORDS.TIMEOUT_ERROR);
+    }
     if (j.error) {
       const code = String(j.error?.cause?.name ?? j.error?.name ?? "ERROR");
       throw new RpcError(code, RPC_WORDS[code] ?? "the network node refused the request");
@@ -85,15 +92,75 @@ export async function rpc<T = any>(net: Net, method: string, params: unknown): P
   }
 }
 
-export async function view<T = any>(net: Net, account: string, method: string, args: object = {}): Promise<T> {
-  const r = await rpc<{ result: number[] }>(net, "query", { request_type: "call_function", finality: "final", account_id: account, method_name: method, args_base64: btoa(JSON.stringify(args)) });
+export type Finality = "final" | "optimistic";
+export async function view<T = any>(net: Net, account: string, method: string, args: object = {}, finality: Finality = "final"): Promise<T> {
+  const r = await rpc<{ result: number[] }>(net, "query", { request_type: "call_function", finality, account_id: account, method_name: method, args_base64: btoa(JSON.stringify(args)) });
   return JSON.parse(new TextDecoder().decode(new Uint8Array(r.result)));
 }
 
+/**
+ * Right after a transaction the "final" view of the chain lags the wallet by a few blocks. Read the
+ * latest ("optimistic") state until `done` says the expected change is there, for up to `ms`.
+ * Returns the last value read either way, so the caller can say what it saw.
+ */
+export async function settle<T>(read: () => Promise<T>, done: (v: T) => boolean, ms = 15_000): Promise<T> {
+  const until = Date.now() + ms;
+  let v = await read();
+  while (!done(v) && Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 1_200));
+    v = await read().catch(() => v);
+  }
+  return v;
+}
+
+/** A keyless account cannot gain a key, so "no keys" is read once per session (fewer requests while polling). */
+const keyless = new Set<string>();
+export async function keyCount(net: Net, id: string): Promise<number> {
+  if (keyless.has(`${net}:${id}`)) return 0;
+  const k = await rpc<any>(net, "query", { request_type: "view_access_key_list", finality: "final", account_id: id });
+  if (k.keys.length === 0) keyless.add(`${net}:${id}`);
+  return k.keys.length;
+}
+
+export interface Totals {
+  /** Funds the factory has created. */
+  funds: number;
+  /** How many of them were read (the newest ones, up to 100). */
+  read: number;
+  keys: number;
+  trades: number;
+  refusals: number;
+}
+/**
+ * The live numbers shown on Home and in the app: across the funds created through the factory
+ * (release 0.3), read at view time. Both pages use this one function, so they always agree.
+ */
+export async function factoryTotals(net: Net): Promise<Totals> {
+  const factory = factoryOf(net);
+  if (!factory) throw new RpcError("NO_FACTORY", "no factory is recorded for this network");
+  const { count, funds } = await factoryFunds(net, factory, 0, 100);
+  let keys = 0, trades = 0, refusals = 0;
+  // A few at a time, to be kind to the public node.
+  for (let i = 0; i < funds.length; i += 4) {
+    const part = await Promise.all(
+      funds.slice(i, i + 4).map(async (f) => {
+        const [st, k] = await Promise.all([view<any>(net, f.account_id, "get_fund"), keyCount(net, f.account_id)]);
+        return { trades: Number(st.trades), refusals: Number(st.rejections), keys: k };
+      }),
+    );
+    for (const x of part) {
+      keys += x.keys;
+      trades += x.trades;
+      refusals += x.refusals;
+    }
+  }
+  return { funds: count, read: funds.length, keys, trades, refusals };
+}
+
 /** The account record, or null when the account does not exist. */
-export async function account(net: Net, id: string): Promise<any | null> {
+export async function account(net: Net, id: string, finality: Finality = "final"): Promise<any | null> {
   try {
-    return await rpc<any>(net, "query", { request_type: "view_account", finality: "final", account_id: id });
+    return await rpc<any>(net, "query", { request_type: "view_account", finality, account_id: id });
   } catch (e) {
     if (e instanceof RpcError && e.code === "UNKNOWN_ACCOUNT") return null;
     throw e;
@@ -221,6 +288,8 @@ export interface Verification {
   standIn: boolean;
   /** clean: everything holds. test-signer: everything holds, but quotes come from a stand-in signer (testnet). known-issue: keys and code check out, on a release with a known bug. failed: a check failed. */
   status: "clean" | "test-signer" | "known-issue" | "failed";
+  /** When the account is a fund's refund account rather than a fund: the fund it serves. */
+  relayFor?: string;
   ok: boolean;
 }
 
@@ -321,6 +390,11 @@ export async function verifyFund(net: Net, fund: string): Promise<Verification> 
       checks.push({ ok: true, note: true, label: "Test signer", detail: TEST_SIGNER_WORDS });
     }
   } catch {
+    const serves = await view<string>(net, fund, "relay_fund").catch(() => null);
+    if (typeof serves === "string" && isAccountId(serves)) {
+      checks.push({ ok: false, label: "This is a refund account, not a fund", detail: `It is the refund account of ${shortAccount(serves)}: it holds refunds for that fund and can only pass them on to it. Verify the fund itself.` });
+      return { fund, net, checks, state: null, codeHash: info.hash, release: rel, status: "failed", standIn: false, ok: false, relayFor: serves };
+    }
     checks.push({ ok: false, label: "Not a Plinth fund", detail: "This account does not answer like a Plinth fund." });
   }
   const allOk = checks.every((c) => c.ok);

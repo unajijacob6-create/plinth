@@ -107,7 +107,8 @@ export function reveal(root: ParentNode = document) {
 export function countUp(el: HTMLElement, value: number) {
   const done = () => (el.textContent = value.toLocaleString("en"));
   if (reduced() || value === 0 || !("IntersectionObserver" in window)) return done();
-  el.textContent = "0";
+  // The skeleton stays until the number is in view and starts counting: never a false "0".
+  el.dataset.value = String(value);
   const io = new IntersectionObserver((entries) => {
     if (!entries.some((e) => e.isIntersecting)) return;
     io.disconnect();

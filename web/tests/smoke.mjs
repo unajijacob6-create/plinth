@@ -157,12 +157,15 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
       check(await page.locator("#funds-note").isVisible(), `${name}: the page says no release 0.3 fund is live yet`);
     }
     const sum = await settle(async () => {
-      const v = await page.$$eval("#dash-summary b", (els) => els.map((e) => e.textContent.trim()));
+      const v = await page.$$eval("#dash-summary dd", (els) => els.map((e) => e.textContent.trim()));
       return { ok: v.length === 4 && v.every((x) => /^\d[\d,]*$/.test(x)), v };
     }, 30000);
     check(sum.ok, `${name}: four live numbers above the funds (${(sum.v || []).join(", ")})`);
-    const cardTrades = await page.$$eval(".fund .kv", (els) => els.filter((e) => /Trades/.test(e.querySelector("span")?.textContent || "")).map((e) => Number(e.querySelector("b").textContent.split("·")[0])));
-    check(Number((sum.v || [])[2]) === cardTrades.reduce((a, b) => a + b, 0), `${name}: the trades total equals the sum on the cards`);
+    // Same scope as Home: the funds created through the factory. When they are all on the page, the
+    // trades total is the sum over their cards (the earlier funds are not counted).
+    const newCards = await page.$$eval("#funds-new .fund .kv", (els) => els.filter((e) => /Trades/.test(e.querySelector("span")?.textContent || "")).map((e) => Number(e.querySelector("b").textContent.split("·")[0])));
+    if (newCards.length === Number((sum.v || [])[0])) check(Number((sum.v || [])[2]) === newCards.reduce((a, b) => a + b, 0), `${name}: the trades total equals the sum on the factory funds' cards`);
+    else check(true, `${name}: more factory funds than cards on the page; totals compared on Home`);
     await common(page, errors, name);
     await page.close();
   }
@@ -243,6 +246,8 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
     check((await visibleStep()) === 0 && (await page.textContent("#l-name-e")).length > 10, `${name}: Next without a name stays on step 1 and says why`);
     await page.fill("#l-name", "Bad Name!");
     check((await page.textContent("#l-name-e")).length > 10, `${name}: a bad fund name is refused as you type`);
+    await page.fill("#l-name", "a--b");
+    check((await page.textContent("#l-name-e")).length > 10, `${name}: a name with two dashes in a row is refused, as the chain would`);
     await page.fill("#l-name", "my-fund");
     check((await page.textContent("#l-name-e")) === "", `${name}: a good fund name is accepted`);
     await page.click("#l-next");
@@ -300,6 +305,116 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
     check((await page.textContent("#limit-known")).includes("0.1 and 0.2"), `${name}: it names the affected releases`);
     check((await page.$$("#limits .limits li")).length >= 8, `${name}: the limits are listed`);
     await common(page, errors, name);
+    await page.close();
+  }
+}
+
+// ---- wallet actions, with a stand-in wallet that records what the page asks for and sends nothing.
+// Chain reads are real, except a few answers about the stand-in account, rewritten in flight.
+{
+  const MOCK = fs.readFileSync(new URL("./mock-wallet.js", import.meta.url), "utf8");
+  const ME = "alice.plinthfund.testnet";
+  const openNew = data("open-fund.json").fund;
+  async function mocked(path, { shares = {}, delayShares = 0, mock = {} } = {}) {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors = [];
+    page.on("console", (m) => m.type() === "error" && !rpcWeather(m.text()) && errors.push(m.text()));
+    page.on("pageerror", (e) => errors.push(e.message));
+    let sentAt = 0;
+    await page.exposeFunction("__mockSent", () => (sentAt = Date.now()));
+    await page.addInitScript((m) => (window.__mock = Object.assign({ account: "alice.plinthfund.testnet", signedIn: true, batch: false, txs: [], calls: 0, delay: 0 }, m)), mock);
+    await page.addInitScript(MOCK);
+    const val = (v) => ({ jsonrpc: "2.0", id: 1, result: { result: [...Buffer.from(JSON.stringify(v))], logs: [], block_height: 1 } });
+    await page.route(/rpc\.testnet\.fastnear\.com/, async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}");
+      const p = body.params || {};
+      const args = p.args_base64 ? JSON.parse(Buffer.from(p.args_base64, "base64").toString() || "{}") : {};
+      const json = (v) => route.fulfill({ status: 200, headers: { "access-control-allow-origin": "*", "content-type": "application/json" }, body: JSON.stringify(v) });
+      // A look-alike: answers like a fund (by borrowing a real fund's answers) but runs unlisted code.
+      if (p.account_id === "lookalike.testnet") {
+        if (p.request_type === "view_account") return json({ jsonrpc: "2.0", id: 1, result: { amount: "1", code_hash: "5ZgNnNcrCk5qrfqLDomHbSo7Hxw8QPHJ6mGvJDjQh8LG", storage_usage: 1 } });
+        if (p.request_type === "view_access_key_list") return json({ jsonrpc: "2.0", id: 1, result: { keys: [] } });
+        return route.fulfill({ response: await route.fetch({ postData: JSON.stringify({ ...body, params: { ...p, account_id: openNew } }) }) });
+      }
+      if (p.method_name === "get_shares" && args.account_id === ME && p.account_id in shares) {
+        // The "final" view lags: right after a transaction it still shows the old number; the latest view
+        // shows the new one after `delayShares`.
+        const [before, after] = shares[p.account_id];
+        const fresh = sentAt && p.finality === "optimistic" && Date.now() - sentAt > delayShares;
+        return json(val(fresh ? after : before));
+      }
+      if (p.method_name === "ft_balance_of" && args.account_id === ME) return json(val("1000000000000"));
+      if (p.method_name === "storage_balance_of" && args.account_id === ME) return json(val({ total: "1250000000000000000000", available: "0" }));
+      return route.continue();
+    });
+    await page.goto(base + path, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => document.querySelectorAll(".fund").length > 0 && [...document.querySelectorAll(".fund")].every((e) => !e.classList.contains("loading")), null, { timeout: 60000 }).catch(() => {});
+    return { page, errors, txs: () => page.evaluate(() => window.__mock.txs) };
+  }
+  const cardSel = (id) => `.fund:has(h3 a[title="${id}"])`;
+
+  // H3: a look-alike fund gets no wallet actions at all.
+  {
+    const { page, errors } = await mocked("app/?fund=lookalike.testnet");
+    const card = page.locator(cardSel("lookalike.testnet"));
+    await card.waitFor({ timeout: 30000 }).catch(() => {});
+    const text = (await card.textContent().catch(() => "")) || "";
+    check(text.includes("Not a verified Plinth fund"), "wallet: an unlisted look-alike is marked as not verified");
+    check((await card.locator("[data-act=join], [data-act=exit], [data-act=kind-open], [data-act=claim]").count()) === 0, "wallet: the look-alike offers no join, exit or claim");
+    check(errors.length === 0, `wallet: no console errors on the look-alike${errors.length ? ": " + errors.join(" | ").slice(0, 200) : ""}`);
+    await page.close();
+  }
+  // M10: an old release keeps its way out but takes no new money.
+  {
+    const { page } = await mocked(`app/?fund=${legacyFund}`);
+    const card = page.locator(cardSel(legacyFund));
+    await card.waitFor({ timeout: 30000 }).catch(() => {});
+    check((await card.locator("[data-act=join], [data-act=kind-open]").count()) === 0, `wallet: ${legacyFund} (old release) offers no join`);
+    check(((await card.textContent()) || "").includes("Joining is off for this old release"), "wallet: it says joining is off, and that leaving still works");
+    check((await page.locator(cardSel("open.plinthfund.testnet")).count()) === 1, "wallet: all four earlier funds are listed, open.plinthfund.testnet included");
+    await page.close();
+  }
+  // H1: the "final" view lags the wallet; the page waits for the latest view and reports success.
+  {
+    const { page, txs } = await mocked(`app/?fund=${openNew}`, { shares: { [openNew]: ["0", "10000000"] }, delayShares: 3000 });
+    const card = page.locator(cardSel(openNew));
+    const joinable = (await card.locator("[data-act=join]").count()) === 1;
+    if (joinable) {
+      await card.locator("[data-in=joinAmt]").fill("10");
+      await card.locator("[data-act=join]").click();
+      const msg = await settle(async () => {
+        const t = (await card.locator(".status").textContent().catch(() => "")) || "";
+        return { ok: /^Joined/.test(t) || /Did not go through|No new shares/.test(t), t };
+      }, 30000);
+      check(/^Joined: 10 new shares/.test(msg.t || ""), `wallet: a join whose shares show up late still reports success ("${(msg.t || "").slice(0, 60)}")`);
+      check((await txs()).length === 1, "wallet: the join sent exactly one transaction");
+    } else check(true, `wallet: ${openNew} is not open for joins any more; late-read join check skipped`);
+    await page.close();
+  }
+  // M8: an empty exit amount is not "everything"; 100% fills the exact amount.
+  {
+    const { page, txs } = await mocked(`app/?fund=${openNew}`, { shares: { [openNew]: ["5000000", "5000000"] } });
+    const card = page.locator(cardSel(openNew));
+    const exitField = card.locator("[data-in=exitAmt]");
+    if ((await exitField.count()) === 1) {
+      await exitField.fill("");
+      await card.locator("[data-act=exit]").click();
+      const msg = await settle(async () => ({ ok: /Did not go through/.test((await card.locator(".status").textContent()) || ""), t: await card.locator(".status").textContent() }), 15000);
+      check(msg.ok && /how many shares/.test(msg.t || ""), "wallet: an empty exit amount is refused, not read as everything");
+      check((await txs()).length === 0, "wallet: and nothing was sent");
+      await card.locator("[data-act=pct-100]").click();
+      check((await card.locator("[data-in=exitAmt]").inputValue()) === "5", "wallet: 100% fills in the exact number of shares");
+    } else check(false, "wallet: the exit form did not render for a holder");
+    await page.close();
+  }
+  // L2: a double click on the faucet sends one request.
+  {
+    const { page, txs } = await mocked("app/", { mock: { delay: 800 } });
+    const faucet = page.locator('#wallet-bar [data-w="faucet"]');
+    await faucet.waitFor({ timeout: 30000 }).catch(() => {});
+    await faucet.dblclick().catch(() => {});
+    await page.waitForTimeout(2500);
+    check((await txs()).length === 1, `wallet: a double click on the faucet sends one request (${(await txs()).length})`);
     await page.close();
   }
 }

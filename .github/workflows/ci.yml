@@ -52,7 +52,7 @@ jobs:
       - name: Site smoke test (phone + desktop, live testnet reads, receipts verified in the browser)
         run: |
           npx playwright install --with-deps chromium
-          PLINTH_BASE=/ npm run web:build
+          PLINTH_BASE=/ VITE_PLINTH_TEST_WALLET=1 npm run web:build
           (PLINTH_BASE=/ npx vite preview web --port 4173 --strictPort &)
           sleep 3
           npm run test:web

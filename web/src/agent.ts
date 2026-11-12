@@ -13,7 +13,7 @@ const enc = (s: string) => new TextEncoder().encode(s);
 // "enclave": NEAR AI's own TEE models sign model:sha256(req):sha256(resp) with the model's enclave key.
 // "gateway": external providers (Gemini) are signed sha256(req):sha256(resp) by a NEAR AI gateway key;
 // NEAR AI says these models run outside its TEE, so the receipt proves only what NEAR AI relayed.
-export function verifyReceipt(r: any): { ok: boolean; why: string; kind: "enclave" | "gateway" } {
+export function verifyReceipt(r: any, attested?: { enclave?: Record<string, string[]>; gateway?: string[] }): { ok: boolean; why: string; kind: "enclave" | "gateway" } {
   const kind = String(r.signed_text ?? "").startsWith(`${r.model}:`) ? "enclave" : "gateway";
   try {
     const hashes = `${hex(sha256(enc(r.request)))}:${hex(sha256(enc(r.response)))}`;
@@ -26,9 +26,15 @@ export function verifyReceipt(r: any): { ok: boolean; why: string; kind: "enclav
     rec[0] = sig[64] >= 27 ? sig[64] - 27 : sig[64];
     rec.set(sig.subarray(0, 64), 1);
     const pub = secp256k1.Point.fromBytes(secp256k1.recoverPublicKey(rec, hash, { prehash: false })).toBytes(false);
-    const addr = "0x" + hex(keccak_256(pub.subarray(1)).subarray(12));
-    const who = kind === "enclave" ? "Signed inside the model's secure enclave" : "Signed by NEAR AI's gateway (this model runs outside NEAR AI's secure enclave)";
-    return addr.toLowerCase() === String(r.signing_address).toLowerCase() ? { ok: true, kind, why: who } : { ok: false, kind, why: "the signature does not match" };
+    const addr = ("0x" + hex(keccak_256(pub.subarray(1)).subarray(12))).toLowerCase();
+    if (addr !== String(r.signing_address).toLowerCase()) return { ok: false, kind, why: "the signature does not match" };
+    // The signer must be one NEAR AI attested when the run was recorded: the model's own enclave key,
+    // or the gateway's key. Only then does the label say who signed.
+    const lc = (xs: unknown) => (Array.isArray(xs) ? xs.map((x) => String(x).toLowerCase()) : []);
+    const inEnclave = kind === "enclave" && lc(attested?.enclave?.[r.model]).includes(addr);
+    const inGateway = kind === "gateway" && lc(attested?.gateway).includes(addr);
+    if (!inEnclave && !inGateway) return { ok: false, kind, why: "the signature checks out, but the signer is not one NEAR AI attested for this run" };
+    return { ok: true, kind, why: inEnclave ? "Signed inside the model's secure enclave" : "Signed by NEAR AI's gateway (this model runs outside NEAR AI's secure enclave)" };
   } catch (e) {
     return { ok: false, kind, why: (e as Error).message };
   }
@@ -59,10 +65,11 @@ function decisionText(d: any, fund: string): { text: string; danger: boolean } {
 }
 const reasonOf = (d: any) => (d?.reason ? `<p class="said">“${esc(d.reason)}”</p>` : "");
 /** One short line about the signed receipt: who signed it and whether your browser agrees. */
+let ATTESTED: any = null;
 const receiptCell = (r: any) => {
   if (!r) return `<span class="muted">no receipt</span>`;
-  const v = verifyReceipt(r);
-  const who = v.kind === "enclave" ? "Model's secure enclave" : "NEAR AI gateway";
+  const v = verifyReceipt(r, ATTESTED);
+  const who = !v.ok ? "Not proven" : v.kind === "enclave" ? "Model's secure enclave" : "NEAR AI gateway";
   return `<span class="sig ${v.ok ? "okc" : "bad"}" title="${esc(v.why)}"><span class="sig-ic" aria-hidden="true">${v.ok ? "✓" : "✗"}</span>${esc(who)}<span class="sig-note">${v.ok ? "signature checked in your browser" : "signature does not check out"}</span></span>`;
 };
 /** One calm outcome line: a small icon carries the meaning, the words stay in ink. */
@@ -79,6 +86,7 @@ const TITLES: Record<string, [string, string]> = {
 export function mountAgent(run: any) {
   const el = document.getElementById("agent-cases");
   if (!el || !run?.cases) return;
+  ATTESTED = run.attested ?? null;
   const sub = document.getElementById("agent-sub");
   if (sub) sub.textContent = `Recorded ${String(run.started_at).slice(0, 10)} on NEAR testnet. The model runs on NEAR AI Cloud and each answer is signed there. Your browser checks every signature on this page.`;
   el.innerHTML = run.cases
@@ -120,6 +128,7 @@ const QTITLES: Record<string, [string, string]> = {
 export function mountQuorum(run: any) {
   const el = document.getElementById("quorum-cases");
   if (!el || !run?.cases) return;
+  ATTESTED = run.attested ?? null;
   const sub = document.getElementById("quorum-sub");
   if (sub) sub.textContent = `Recorded ${String(run.started_at).slice(0, 10)} on NEAR testnet. The manager proposes a trade only when every model says trade, with the same tokens and the same recipient, at the smallest amount any of them asked for. Anything else is a hold, before the contract is even asked.`;
   el.innerHTML = run.cases

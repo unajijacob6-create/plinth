@@ -2,7 +2,7 @@
 import { mountShell, riseWords, countUp, reveal } from "./shell.ts";
 import { mountSky } from "./sky.ts";
 import "./home.css";
-import { view, rpc, factoryOf, factoryFunds, explorer } from "./chain.ts";
+import { factoryTotals, explorer } from "./chain.ts";
 import testnetRun from "../../data/testnet-run.json";
 import agentRun from "../../data/agent-run.json";
 
@@ -66,30 +66,9 @@ if (proofsEl) {
 // ---------------------------------------------------------------- live numbers
 // Read at view time across every fund the factory made. If the chain cannot be read, the panel goes
 // away rather than show numbers that might be stale or wrong.
-async function totals() {
-  const factory = factoryOf("testnet");
-  if (!factory) throw new Error("no factory");
-  const { count, funds } = await factoryFunds("testnet", factory, 0, 100);
-  let keys = 0, trades = 0, refusals = 0;
-  // A few at a time, to be kind to the public node.
-  for (let i = 0; i < funds.length; i += 4) {
-    const part = await Promise.all(
-      funds.slice(i, i + 4).map(async (f) => {
-        const [s, k] = await Promise.all([view<any>("testnet", f.account_id, "get_fund"), rpc<any>("testnet", "query", { request_type: "view_access_key_list", finality: "final", account_id: f.account_id })]);
-        return { trades: Number(s.trades), refusals: Number(s.rejections), keys: k.keys.length };
-      }),
-    );
-    for (const p of part) {
-      keys += p.keys;
-      trades += p.trades;
-      refusals += p.refusals;
-    }
-  }
-  return { funds: count, keys, trades, refusals, read: funds.length };
-}
 const live = document.getElementById("live");
 if (live) {
-  totals().then(
+  factoryTotals("testnet").then(
     (t) => {
       for (const el of live.querySelectorAll<HTMLElement>(".num")) countUp(el, (t as any)[el.dataset.k!]);
       live.setAttribute("aria-busy", "false");

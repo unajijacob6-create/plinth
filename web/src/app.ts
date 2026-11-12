@@ -1,7 +1,8 @@
 // Live fund cards and wallet actions (testnet): the list of funds, what each holds, joining,
 // exiting, joining in kind, and the buttons anyone can press.
-import { view, rpc, explorer, accountLink, releaseOf, factoryOf, factoryFunds, shortAccount, short, isOneClick, TEST_SIGNER_WORDS, type CodeInfo, type FactoryEntry } from "./chain.ts";
-import { onAccount, restore, signIn, signOut, send, isCancel, currentAccount, canBatch, ChainFailure, type Call } from "./wallet.ts";
+import { view, settle, keyCount, explorer, accountLink, releaseOf, factoryOf, factoryFunds, shortAccount, short, isOneClick, TEST_SIGNER_WORDS, type CodeInfo, type FactoryEntry } from "./chain.ts";
+import { onAccount, restore, signIn, signOut, send, isCancel, currentAccount, canBatch, ChainFailure, PartlySent, type Call } from "./wallet.ts";
+import autoRun from "../../data/auto-run.json";
 import { loadMeta, hasMeta, fmt, symbol, dec, units, plain, parseUnits, pct, pctOf, loadPrices, havePrices, usd, money } from "./tokens.ts";
 
 export { fmt, loadMeta } from "./tokens.ts";
@@ -15,6 +16,8 @@ const TGAS = (n: number) => `${n}000000000000`;
 const REDEEM_WAIT_SECONDS = 600;
 const STRATEGY_TIMEOUT_SECONDS = 600;
 const PAGE = 6;
+/** What one trade's record costs the fund in storage, on top of the deposit-address registration. */
+const TRADE_RECORD_NEAR = 3_500_000_000_000_000_000_000n; // ~0.0035 NEAR (300 to 370 bytes)
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const now = () => Math.floor(Date.now() / 1000);
 const tail = (n: number, k: number) => ({ from: Math.max(0, n - k), limit: Math.min(n, k) });
@@ -26,6 +29,9 @@ export function shareUrl(id: string): string {
   if (typeof api === "string") return `${api.replace(/\/$/, "") || location.origin}/f/${encodeURIComponent(id)}`;
   return `${location.origin}${import.meta.env.BASE_URL}app/?fund=${encodeURIComponent(id)}`;
 }
+
+/** A message this page wrote itself: shown as it is. */
+export class UserError extends Error {}
 
 /** Text that reads like code is never shown: the chain keeps the exact words. */
 const codeLike = (s: string) => /[{}_()"]|\d{8,}/.test(s);
@@ -75,7 +81,7 @@ function humanFailure(e: unknown): string {
   const raw = String((e as any)?.message ?? e ?? "");
   const rules: [RegExp, string][] = [
     [/not enough shares/, "you do not have that many shares"],
-    [/a trade is in flight; settle it or wait/, "a trade is in flight; exits open once it settles, or 10 minutes after it was sent"],
+    [/a trade is in flight; settle it or wait|a trade is in flight; wait for it to close/, "a trade is in flight; exits open once it closes, or 10 minutes after it was sent"],
     [/a trade is in flight; join when/, "a trade is in flight; join once it has settled"],
     [/basket is too small/, "the fund's holdings changed, so what you added no longer covers the shares you asked for"],
     [/no basket/, "you have no tokens waiting in this fund"],
@@ -96,6 +102,7 @@ function humanFailure(e: unknown): string {
     [/Exceeded the prepaid gas|GasExceeded/i, "the transaction ran out of gas"],
     [/NotEnoughBalance|LackBalanceForState|not enough balance/i, "your account does not hold enough NEAR for this"],
   ];
+  if (e instanceof UserError) return raw;
   for (const [re, words] of rules) if (re.test(raw)) return words;
   if (e instanceof ChainFailure) return codeLike(raw) ? "the transaction failed on chain" : raw;
   return !raw || codeLike(raw) || raw.length > 140 ? "something went wrong; nothing was changed by this page" : raw;
@@ -153,14 +160,30 @@ interface FundCard {
   };
 }
 
+/**
+ * What this page lets you do with a fund's code, decided from the chain:
+ * "full" for a listed release with no known issue, published once and fixed by its fingerprint;
+ * "exit" for a listed old release with a known issue (your way out must stay open);
+ * "none" for anything else: shown read-only, no wallet action can send it your tokens.
+ */
+type Trust = "full" | "exit" | "none";
+function trustOf(f: FundCard): Trust {
+  const info = f.info;
+  if (!info || !info.release) return "none";
+  if (info.release.known_issue) return "exit";
+  return info.how === "published" && info.release.global ? "full" : "none";
+}
+const EXIT_ACTIONS = new Set(["exit", "claim", "pct-25", "pct-50", "pct-100"]);
+
 /** Exit is blocked by the contract for 10 minutes after a trade is sent, until it settles. */
 function exitWait(s: any): number {
   return s.pending ? Math.max(0, Number(s.pending.sent_at) + REDEEM_WAIT_SECONDS - now()) : 0;
 }
 const isV03 = (s: any) => typeof s?.version === "string";
+/** The most trading can cost a holding in a day, rounded up: it is an upper bound. */
 const worstDay = (s: any) => {
   const m = s.config.mandate;
-  return Number.isFinite(s.max_daily_cost_bps) ? Number(s.max_daily_cost_bps) : Math.min(10_000, Math.floor((m.max_trade_bps * m.max_cost_bps * m.max_trades_per_day) / 10_000));
+  return Math.min(10_000, Math.ceil((m.max_trade_bps * m.max_cost_bps * m.max_trades_per_day) / 10_000));
 };
 /** Shares are shown like the base token: one share was issued per base token paid in at launch. */
 const shareDec = (s: any) => dec(s.config.mandate.tokens[0]);
@@ -171,10 +194,14 @@ function shareUnit(s: any): bigint {
   const total = big(s.total_shares);
   const one = 10n ** BigInt(shareDec(s));
   if (total === 0n) return 1n;
+  let pick = 1n;
   for (let u = 1n; u <= 1_000_000n; u *= 10n) {
-    if (s.held.some(([t, v]: [string, string]) => (big(v) * u * one) / total >= 10n ** BigInt(dec(t)))) return u;
+    pick = u;
+    if (s.held.some(([t, v]: [string, string]) => (big(v) * u * one) / total >= 10n ** BigInt(dec(t)))) break;
   }
-  return 1n;
+  // Never more shares than exist.
+  while (pick > 1n && pick * one > total) pick /= 10n;
+  return pick;
 }
 const slice = (s: any, shares: bigint): [string, bigint][] => {
   const total = big(s.total_shares);
@@ -211,7 +238,9 @@ function kindPlan(f: FundCard): { shares: bigint; need: bigint[] } | { error: st
   } else {
     const p = parseUnits(text, 4);
     if (p === null) return { error: "Enter a percent like 5 or 0.5." };
-    shares = (total * p) / 1_000_000n;
+    if (p >= 1_000_000n) return { error: "Enter a percent below 100." };
+    // You end up holding p of the fund: s / (total + s) = p.
+    shares = (total * p) / (1_000_000n - p);
   }
   if (shares <= 0n) return { error: "That is too small to buy a share." };
   // The contract takes ceil(shares x held / total) of every token it holds.
@@ -269,28 +298,49 @@ function rulesText(s: any): string {
   return parts.join(" ");
 }
 
+const AUTO: any = autoRun;
 function strategyBlock(f: FundCard, s: any, me: string | null): string {
   const st = s.config.mandate.strategy;
   if (!st) return "";
   const only = !!st.exclusive;
   const testSigner = !isOneClick(s.config.quote_signer);
   const running = Number(s.strategy_started) > 0 && now() < Number(s.strategy_started) + STRATEGY_TIMEOUT_SECONDS;
-  let host = "its published address";
+  // Only an https address is shown as a link.
+  let host = "";
+  let href = "";
   try {
-    host = new URL(String(st.wasm_url)).hostname;
+    const u = new URL(String(st.wasm_url));
+    if (u.protocol === "https:") (host = u.hostname), (href = u.href);
   } catch {
-    /* keep the generic words */
+    /* not a usable address */
   }
+  const fp = esc(short(String(st.wasm_hash), 8, 6));
+  // On testnet 1Click's stand-in is run by hand: a trade sent now could wait days for its output,
+  // holding up exits' share of it and new joins. So the button is off here, and the recorded run shows
+  // what pressing it does.
+  const rec = AUTO?.network === "testnet" && AUTO?.tx?.rebalance && AUTO?.trade;
+  const tokens: string[] = s.config.mandate.tokens;
+  const recTokens: string[] = AUTO?.config?.mandate?.tokens ?? tokens;
+  const record = rec
+    ? `<div class="rec"><p class="rec-h">Recorded on testnet</p><p>Someone pressed Rebalance on ${esc(shortAccount(String(AUTO.fund)))}. The program proposed selling ${esc(fmt(recTokens[AUTO.trade.sell], String(AUTO.trade.amount_in)))} for at least ${esc(fmt(recTokens[AUTO.trade.buy], String(AUTO.trade.min_out)))}; the fund checked it and sent it, and it settled.</p><p class="case-links"><a href="${explorer(NET, AUTO.tx.rebalance)}" target="_blank" rel="noopener">The rebalance ↗</a>${AUTO.tx.solver_delivers ? ` · <a href="${explorer(NET, AUTO.tx.solver_delivers)}" target="_blank" rel="noopener">The delivery ↗</a>` : ""}</p></div>`
+    : "";
+  const action =
+    NET === "testnet"
+      ? `<p class="small muted">On testnet the 1Click stand-in is run by hand, so the Rebalance button is off here.</p>`
+      : me
+        ? `<div class="actions"><button class="btn ghost sm" data-act="rebalance" ${f.busy || running ? "disabled" : ""}>${running ? "A run is in progress" : "Rebalance now"}</button><span class="small muted">Costs up to 0.01 NEAR; OutLayer sends back what the run does not use. If OutLayer refuses the run, that NEAR stays with the fund.</span></div>`
+        : `<p class="small muted">Connect a wallet to press Rebalance.</p>`;
+  // Essentials first; how it works and what it does not prove are one tap away.
   return `<div class="panel">
       <p class="eyebrow">${only ? "No manager" : "A program proposes trades"}</p>
-      <p class="small">${only ? "No person or account of ours can propose a trade here." : "Besides the manager, a fixed program can propose trades."} Anyone can press Rebalance. The fund then asks OutLayer to run one fixed program and treats its answer as a proposal, checked against the same rules as any trade. Exits never depend on it.</p>
+      <p class="small">${only ? "No person or account of ours can propose a trade here." : "Besides the manager, a fixed program can propose trades."} A fixed program proposes; the fund checks every proposal against the same rules. Exits never depend on it.</p>
+      <details class="more-info"><summary>How it works, and what it does not prove</summary>
+      <p class="small">Anyone can press Rebalance. The fund then asks OutLayer to run the program and treats its answer as a proposal, checked against the same rules as any trade.</p>
       <p class="small muted">What this does not prove: the fund cannot check on chain that the program really ran inside a secure enclave. A forged answer could do what a manager could, and no more: propose a trade inside the rules.${testSigner ? " This fund accepts quotes from a test signer, not 1Click, so its trades are a testnet stand-in." : ""}</p>
-      <p class="small">Program fingerprint <a href="${esc(st.wasm_url)}" target="_blank" rel="noopener" title="Where the program is fetched from">${esc(short(String(st.wasm_hash), 8, 6))} ↗</a> <span class="muted">fetched from ${esc(host)}</span></p>
-      <div class="actions">${
-        me
-          ? `<button class="btn ghost sm" data-act="rebalance" ${f.busy || running ? "disabled" : ""}>${running ? "A run is in progress" : "Rebalance now"}</button><span class="small muted">Costs up to 0.01 NEAR; OutLayer sends back what the run does not use. If OutLayer refuses the run, that NEAR stays with the fund.</span>`
-          : `<span class="small muted">Connect a testnet wallet to press Rebalance.</span>`
-      }</div>
+      <p class="small">Program fingerprint ${href ? `<a href="${esc(href)}" target="_blank" rel="noopener" title="Where the program is fetched from">${fp} ↗</a> <span class="muted">fetched from ${esc(host)}</span>` : fp}</p>
+      ${record}
+      </details>
+      ${action}
     </div>`;
 }
 
@@ -343,7 +393,7 @@ function kindBlock(f: FundCard, s: any): string {
       <div class="field-row">
         <label class="small" for="kind-${k}">How much to put in</label>
         <input id="kind-${k}" class="amt" inputmode="decimal" data-in="kindAmt" value="${esc(f.ui.kindAmt)}" ${f.busy ? "disabled" : ""} />
-        <select class="amt unit" data-in="kindMode" aria-label="Unit" ${f.busy ? "disabled" : ""}><option value="base" ${f.ui.kindMode === "base" ? "selected" : ""}>${esc(symbol(tokens[0]))}</option><option value="pct" ${f.ui.kindMode === "pct" ? "selected" : ""}>% of the fund</option></select>
+        <select class="amt unit" data-in="kindMode" aria-label="Unit" ${f.busy ? "disabled" : ""}><option value="base" ${f.ui.kindMode === "base" ? "selected" : ""}>${esc(symbol(tokens[0]))}</option><option value="pct" ${f.ui.kindMode === "pct" ? "selected" : ""}>% of the fund, after I join</option></select>
       </div>
       <div class="kind-need">${kindNeedHtml(f)}</div>
       ${s.pending ? `<p class="small muted">A trade is in flight. Joining opens once it has settled.</p>` : ""}
@@ -378,16 +428,18 @@ function render(f: FundCard) {
   const unitUsd = total > 0n ? sliceUsd(unitParts) : null;
   const allUsd = total > 0n ? sliceUsd(s.held.map(([t, v]: [string, string]) => [t, big(v)])) : null;
   const unitLabel = unit.toLocaleString("en");
-  const tradesLeft = big(s.config.storage_deposit) > 0n ? big(s.near_available_for_registrations) / big(s.config.storage_deposit) : 0n;
+  // Each trade pays a deposit-address registration and stores its own record (an estimate).
+  const perTrade = big(s.config.storage_deposit) + TRADE_RECORD_NEAR;
+  const tradesLeft = big(s.near_available_for_registrations) / perTrade;
+  const trust = trustOf(f);
   const nTrades = Number(s.trades);
   const nRef = Number(s.rejections);
   const shownT = [...f.trades].reverse();
   const shownR = [...f.rejections].reverse();
-  const canSettle = !v03 && s.pending?.status === "Sent";
   // Refunds from 1Click wait in the fund's refund account until someone hands them over.
   const waiting = tokens.map((t, i) => [t, f.relay?.[i] ?? 0n] as [string, bigint]).filter(([, v]) => v > 0n);
   const relayNote = waiting
-    .map(([t, v]) => `<div class="notice"><p class="small"><b>A refund of ${esc(fmt(t, v, 6))} is waiting.</b> It sits in this fund's refund account, which can only pass tokens on to the fund. Anyone can hand it over; the fund counts it when it arrives.</p><div class="actions">${me ? `<button class="btn primary sm" data-act="relay-${tokens.indexOf(t)}" ${f.busy ? "disabled" : ""}>Hand it to the fund</button>` : `<span class="small muted">Connect a testnet wallet to hand it over.</span>`}</div></div>`)
+    .map(([t, v]) => `<div class="notice"><p class="small"><b>A refund of ${esc(fmt(t, v, 6))} is waiting.</b> It sits in this fund's refund account, which can only pass tokens on to the fund. Anyone can hand it over; the fund counts it when it arrives.</p><div class="actions">${me && trust === "full" ? `<button class="btn primary sm" data-act="relay-${tokens.indexOf(t)}" ${f.busy ? "disabled" : ""}>Hand it to the fund</button>` : me ? "" : `<span class="small muted">Connect a testnet wallet to hand it over.</span>`}</div></div>`)
     .join("");
   const k = esc(f.id);
   const dis = f.busy ? "disabled" : "";
@@ -403,8 +455,8 @@ function render(f: FundCard) {
 
   const known = legacy
     ? `<p class="known-tag"><b>Known issue: old release.</b> This fund can count tokens that bounce back as its own, so its exit is not safe and it cannot be fixed. <a href="${import.meta.env.BASE_URL}security/#limit-known">Read about the bug</a></p>`
-    : unknown
-      ? `<p class="known-tag"><b>Unlisted code.</b> This account does not run a listed Plinth release. Use the verifier before you trust anything shown here.</p>`
+    : trust === "none" && f.info !== undefined
+      ? `<p class="known-tag"><b>Not a verified Plinth fund.</b> This account does not run a listed Plinth release published once by its fingerprint, so this page will not send it your tokens. <a href="${import.meta.env.BASE_URL}verify/?fund=${encodeURIComponent(f.id)}">Check it in the verifier</a></p>`
       : "";
 
   const usdLine =
@@ -416,7 +468,7 @@ function render(f: FundCard) {
     all
       ? `<div class="mini"><h4 class="group-h">${title}</h4><div class="rows">${rows}</div>${
           all > collapsedCount
-            ? `<div class="more">${shown < all ? `<button class="link" data-act="more-${kind}" ${dis}>${shown <= collapsedCount ? `Show all ${all}` : `Show older (${all - shown} more)`}</button>` : ""}${shown > collapsedCount ? `<button class="link" data-act="less-${kind}" ${dis}>Show fewer</button>` : ""}</div>`
+            ? `<div class="more">${shown < all ? `<button class="link" data-act="more-${kind}" ${dis}>${all - shown <= 20 ? `Show all ${all}` : `Show 20 more`}</button>` : ""}${shown > collapsedCount ? `<button class="link" data-act="less-${kind}" ${dis}>Show fewer</button>` : ""}</div>`
             : ""
         }</div>`
       : "";
@@ -424,14 +476,18 @@ function render(f: FundCard) {
   const summaryBits = [`${nTrades} ${nTrades === 1 ? "trade" : "trades"}`, `${nRef} refused`, lastAt ? `last trade ${ago(lastAt)}` : ""].filter(Boolean).join(" · ");
 
   // ---- the connected account's part
-  let you = `<p class="small muted">Connect a testnet wallet above to join or exit.</p>`;
-  if (me) {
+  let you = trust === "none" ? `<p class="small muted">Read-only: wallet actions are off for this account.</p>` : `<p class="small muted">Connect a testnet wallet above to join or exit.</p>`;
+  if (me && trust !== "none") {
     const position =
       myShares > 0n
         ? `<p class="small">Your position: <b>${esc(units(myShares, sd, 6))}</b> ${shareWord(units(myShares, sd, 6))} = ${esc(sliceText(slice(s, myShares)))} <span class="muted">(${esc(pct(myShares, total))} of the fund)</span></p>`
         : `<p class="small muted">You hold no shares in this fund.</p>`;
     const owedLine = hasOwed ? `<p class="small">Owed to you from an earlier exit: ${owed.map((x, i) => (x !== "0" ? esc(fmt(tokens[i], x)) : "")).filter(Boolean).join(", ")}.</p>` : "";
-    const join = open
+    const join = trust !== "full"
+      ? trust === "exit"
+        ? `<p class="small muted">Joining is off for this old release. You can still leave with your share, and claim anything owed to you.</p>`
+        : ""
+      : open
       ? `<div class="actions"><label class="small" for="amt-${k}">Join with</label><input id="amt-${k}" class="amt" inputmode="decimal" data-in="joinAmt" value="${esc(f.ui.joinAmt)}" ${dis} /><span class="small muted">${esc(baseSym)}</span><button class="btn primary sm" data-act="join" ${dis}>Join</button><span class="small muted">1 ${esc(baseSym)} buys 1 share.</span></div>`
       : v03 && m.open_ended
         ? kindBlock(f, s)
@@ -440,15 +496,15 @@ function render(f: FundCard) {
       myShares > 0n
         ? wait > 0
           ? `<div class="actions"><button class="btn ghost sm" disabled>Exit opens in ${Math.ceil(wait / 60)} min</button></div><p class="small muted">A trade is in flight. Exits open once it settles, or ${Math.ceil(wait / 60)} min after it was sent.</p>`
-          : `<div class="actions exit"><label class="small" for="exit-${k}">Exit with</label><input id="exit-${k}" class="amt" inputmode="decimal" data-in="exitAmt" value="${esc(f.ui.exitAmt || plain(myShares, sd))}" ${dis} /><span class="small muted">shares</span>${[25, 50, 100].map((p) => `<button class="pill" data-act="pct-${p}" ${dis} aria-label="${p} percent of your shares">${p}%</button>`).join("")}<button class="btn ghost sm" data-act="exit" ${dis}>Exit in kind</button></div>`
+          : `<div class="actions exit"><label class="small" for="exit-${k}">Exit with</label><input id="exit-${k}" class="amt" inputmode="decimal" data-in="exitAmt" value="${esc(f.ui.exitAmt)}" placeholder="0" ${dis} /><span class="small muted">shares</span>${[25, 50, 100].map((p) => `<button class="pill" data-act="pct-${p}" ${dis} aria-label="${p} percent of your shares">${p}%</button>`).join("")}<button class="btn ghost sm" data-act="exit" ${dis}>Exit in kind</button></div>`
         : "";
-    const extra = [
-      hasOwed ? `<button class="btn ghost sm" data-act="claim" ${dis}>Claim what is owed</button>` : "",
-      canSettle ? `<button class="btn ghost sm" data-act="settle" ${dis}>Settle trade</button>` : "",
-    ].join("");
+    const extra = hasOwed ? `<button class="btn ghost sm" data-act="claim" ${dis}>Claim what is owed</button>` : "";
     you = `${position}${owedLine}${join}${exit}${extra ? `<div class="actions">${extra}</div>` : ""}`;
   }
 
+  // Remember which control had focus, to give it back after the card is redrawn.
+  const act = document.activeElement as HTMLElement | null;
+  const keep = act && f.el.contains(act) ? (act.dataset.act ? `[data-act="${act.dataset.act}"]` : act.dataset.in ? `[data-in="${act.dataset.in}"]` : act.tagName === "SUMMARY" ? ".fund-more > summary" : "") : "";
   f.el.classList.remove("loading");
   paintIndex(f, rel, legacy);
   const holdsLabel = total > 0n ? `${unitLabel} ${unit === 1n ? "share holds" : "shares hold"}` : "Shares";
@@ -488,13 +544,17 @@ function render(f: FundCard) {
           <h4 class="group-h">Rules, fixed at launch</h4>
           <p>${esc(rulesText(s))}</p>
           <p>The most trading can cost a holding in one day: <b>${esc(pctOf(worstDay(s)))}</b>.</p>
-          <p>Running costs: ${tradesLeft > 0n ? `about <b>${esc(tradesLeft.toLocaleString("en"))}</b> more trades' worth of NEAR.` : `<b>no NEAR left</b> for new trades. Exits still work.`}</p>
+          <p>Running costs: ${tradesLeft > 0n ? `NEAR for about <b>${esc(tradesLeft.toLocaleString("en"))}</b> more trades (an estimate).` : `<b>no NEAR left</b> for new trades. Exits still work.`}</p>
         </div>
         ${history("Recent trades", shownT.map((t) => tradeRow(t, tokens)).join(""), shownT.length, nTrades, "trades", 4)}
         ${history("Refused on chain", shownR.map((r) => `<div class="row"><span class="tag no">refused</span><span>${esc(humanReason(String(r.reason)))}</span><span class="muted small">${ago(Number(r.at))}</span></div>`).join(""), shownR.length, nRef, "refusals", 3)}
       </div>
     </details>
     <footer class="fund-f"><a class="link" href="${esc(shareUrl(f.id))}" data-act="share">Share this fund</a><a class="link" href="${import.meta.env.BASE_URL}verify/?fund=${encodeURIComponent(f.id)}">Verify it</a></footer>`;
+  if (keep) {
+    const again = f.el.querySelector<HTMLElement>(keep);
+    (again && !(again as HTMLButtonElement).disabled ? again : f.el.querySelector<HTMLElement>(".you button:not([disabled]), .you input"))?.focus({ preventScroll: true });
+  }
 }
 
 const setMsg = (f: FundCard, msg: string, tx = "") => {
@@ -515,7 +575,7 @@ async function load(f: FundCard) {
   // Read only the newest entries: the contract pages from the start.
   const relayId: string | null = isV03(state) && typeof state.config.refund_relay === "string" ? state.config.refund_relay : null;
   const [keys, trades, rejections, mine, balances, relay] = await Promise.all([
-    rpc(NET, "query", { request_type: "view_access_key_list", finality: "final", account_id: f.id }),
+    keyCount(NET, f.id),
     nT ? view<any[]>(NET, f.id, "get_trades", tail(nT, Math.max(4, f.ui.tradesShown))) : Promise.resolve([]),
     nR ? view<any[]>(NET, f.id, "get_rejections", tail(nR, Math.max(3, f.ui.refusalsShown))) : Promise.resolve([]),
     me
@@ -533,7 +593,7 @@ async function load(f: FundCard) {
   f.state = state;
   f.info = info;
   regroup(f);
-  f.keyCount = keys.keys.length;
+  f.keyCount = keys;
   f.trades = trades;
   f.rejections = rejections;
   f.mine = mine ? { shares: big(mine[0]), owed: mine[1], basket: mine[2] ? mine[2].map(big) : null } : null;
@@ -565,6 +625,9 @@ function paintIndex(f: FundCard, rel: { version: string; known_issue?: string } 
   document.getElementById("index-legacy-h")?.toggleAttribute("hidden", !document.getElementById("index-legacy")?.children.length);
 }
 
+/** An element id for a fund's card: every character other than a-z, 0-9 and "-" is spelled out, so two funds never share one. */
+export const cardId = (id: string) => `fund-${[...id].map((ch) => (/[a-z0-9-]/.test(ch) ? ch : `_${ch.charCodeAt(0).toString(16)}_`)).join("")}`;
+
 /** Cards start in the group their data suggests; the chain's release decides where they belong. */
 let regroup: (f: FundCard) => void = () => {};
 
@@ -588,24 +651,24 @@ const paintSteps = (f: FundCard, i: number, state: Step["state"]) => {
 async function kindJoin(f: FundCard, me: string, s: any) {
   const m = s.config.mandate;
   const tokens: string[] = m.tokens;
-  if (!isV03(s) || !m.open_ended) throw new Error("this fund does not take new joiners after its window");
-  if (s.subscription_open) throw new Error("the join window is still open; join with the base token");
-  if (s.pending) throw new Error("a trade is in flight; join once it has settled");
-  if (joinsPaused(s)) throw new Error(joinsPaused(s).replace(/\.$/, "").replace(/^./, (c) => c.toLowerCase()));
-  if (!tokens.every(hasMeta)) throw new Error("the details of one of the fund's tokens could not be read");
+  if (!isV03(s) || !m.open_ended) throw new UserError("this fund does not take new joiners after its window");
+  if (s.subscription_open) throw new UserError("the join window is still open; join with the base token");
+  if (s.pending) throw new UserError("a trade is in flight; join once it has settled");
+  if (joinsPaused(s)) throw new UserError(joinsPaused(s).replace(/\.$/, "").replace(/^./, (c) => c.toLowerCase()));
+  if (!tokens.every(hasMeta)) throw new UserError("the details of one of the fund's tokens could not be read");
   const plan = kindPlan(f);
-  if (!plan) throw new Error("enter how much to put in");
-  if ("error" in plan) throw new Error(plan.error.replace(/\.$/, "").replace(/^./, (c) => c.toLowerCase()));
+  if (!plan) throw new UserError("enter how much to put in");
+  if ("error" in plan) throw new UserError(plan.error.replace(/\.$/, "").replace(/^./, (c) => c.toLowerCase()));
   const basketRaw = await view<string[] | null>(NET, f.id, "get_basket", { account_id: me });
   const basket = basketRaw ? basketRaw.map(big) : null;
   const toSend = plan.need.map((n, i) => (n > (basket?.[i] ?? 0n) ? n - (basket?.[i] ?? 0n) : 0n));
   // Pre-checks: you hold enough of every token, and both sides can receive each token.
   for (let i = 0; i < tokens.length; i++) {
     if (plan.need[i] === 0n) continue;
-    if (!s.registered?.[i]) throw new Error(`the fund is not set up to receive ${symbol(tokens[i])}`);
+    if (!s.registered?.[i]) throw new UserError(`the fund is not set up to receive ${symbol(tokens[i])}`);
     const [bal, reg] = await Promise.all([view<string>(NET, tokens[i], "ft_balance_of", { account_id: me }).then(big, () => 0n), view<any>(NET, tokens[i], "storage_balance_of", { account_id: me }).catch(() => null)]);
-    if (reg === null && toSend[i] > 0n) throw new Error(`your account is not set up to hold ${symbol(tokens[i])} yet, so you have none to add`);
-    if (bal < toSend[i]) throw new Error(`you hold ${fmt(tokens[i], bal, 6)} and need ${fmt(tokens[i], toSend[i], 6)}`);
+    if (reg === null && toSend[i] > 0n) throw new UserError(`your account is not set up to hold ${symbol(tokens[i])} yet, so you have none to add`);
+    if (bal < toSend[i]) throw new UserError(`you hold ${fmt(tokens[i], bal, 6)} and need ${fmt(tokens[i], toSend[i], 6)}`);
   }
   const minShares = (plan.shares * 99n) / 100n || 1n;
   const stages: { label: string; calls: Call[]; check?: () => Promise<void> }[] = [];
@@ -617,7 +680,7 @@ async function kindJoin(f: FundCard, me: string, s: any) {
       calls: [{ receiverId: t, methodName: "ft_transfer_call", args: { receiver_id: f.id, amount: toSend[i].toString(), msg: "basket" }, deposit: "1", gas: TGAS(100) }],
       check: async () => {
         const b = await view<string[] | null>(NET, f.id, "get_basket", { account_id: me });
-        if (!b || big(b[i]) < plan.need[i]) throw new Error(`the fund sent your ${symbol(t)} back`);
+        if (!b || big(b[i]) < plan.need[i]) throw new UserError(`the fund sent your ${symbol(t)} back`);
       },
     });
   });
@@ -656,10 +719,11 @@ async function kindJoin(f: FundCard, me: string, s: any) {
       paintSteps(f, i, "done");
     }
   }
-  const got = big(await view<string>(NET, f.id, "get_shares", { account_id: me })) - before;
+  const after = await settle(() => view<string>(NET, f.id, "get_shares", { account_id: me }, "optimistic").then(big), (v) => v > before);
+  const got = after - before;
   if (got <= 0n) {
     f.ui.steps.forEach((p) => p.state === "doing" && (p.state = "failed"));
-    throw new Error("the join did not complete; any tokens you added are still waiting in the fund and you can take them back");
+    throw new UserError("the join did not complete; any tokens you added are still waiting in the fund and you can take them back");
   }
   f.ui.steps = [];
   f.ui.kindOpen = false;
@@ -667,9 +731,18 @@ async function kindJoin(f: FundCard, me: string, s: any) {
   setMsg(f, `Joined in kind: ${units(got, shareDec(s), 6)} new shares.`, tx);
 }
 
+/** Called after every wallet action, so the wallet bar's balance is fresh too. */
+let afterAction: () => void = () => {};
+
 async function act(f: FundCard, kind: string) {
   const me = currentAccount();
   if (!me || f.busy) return;
+  // Wallet actions only for code this page can vouch for; old releases keep their way out.
+  const trust = trustOf(f);
+  if (trust === "none" || (trust === "exit" && !EXIT_ACTIONS.has(kind))) {
+    setMsg(f, "This page does not send tokens to this account. Check it in the verifier.");
+    return;
+  }
   f.busy = true;
   render(f);
   try {
@@ -680,77 +753,89 @@ async function act(f: FundCard, kind: string) {
     const tokens: string[] = m.tokens;
     await loadMeta(NET, tokens);
     const sd = shareDec(s);
-    const shares = async () => big(await view<string>(NET, f.id, "get_shares", { account_id: me }));
+    const shares = async () => big(await view<string>(NET, f.id, "get_shares", { account_id: me }, "optimistic"));
     setMsg(f, "Waiting for your wallet…");
     if (kind === "join") {
       const base = tokens[0];
-      if (!hasMeta(base)) throw new Error("the details of the fund's base token could not be read");
+      if (!hasMeta(base)) throw new UserError("the details of the fund's base token could not be read");
       const amount = parseUnits(f.ui.joinAmt, dec(base));
-      if (amount === null || amount === 0n) throw new Error(`enter an amount like 10 or 2.5 (${symbol(base)} has ${dec(base)} decimal places)`);
-      if (!s.subscription_open) throw new Error("joins are closed for this fund");
-      if (amount < big(m.min_subscription)) throw new Error(`the minimum is ${fmt(base, m.min_subscription)}`);
+      if (amount === null || amount === 0n) throw new UserError(`enter an amount like 10 or 2.5 (${symbol(base)} has ${dec(base)} decimal places)`);
+      if (!s.subscription_open) throw new UserError("joins are closed for this fund");
+      if (amount < big(m.min_subscription)) throw new UserError(`the minimum is ${fmt(base, m.min_subscription)}`);
       const room = big(m.max_total_subscriptions) - big(s.total_subscribed);
-      if (amount > room) throw new Error(`the fund has room for ${fmt(base, room > 0n ? room : 0n)} more`);
+      if (amount > room) throw new UserError(`the fund has room for ${fmt(base, room > 0n ? room : 0n)} more`);
       const bal = big(await view<string>(NET, base, "ft_balance_of", { account_id: me }).catch(() => "0"));
-      if (bal < amount) throw new Error(`you have ${fmt(base, bal)}${base.startsWith("pusd.") ? "; take test pUSD from the faucet above" : ""}`);
+      if (bal < amount) throw new UserError(`you have ${fmt(base, bal)}${base.startsWith("pusd.") ? "; take test pUSD from the faucet above" : ""}`);
       const before = await shares();
       const r = await send([{ receiverId: base, methodName: "ft_transfer_call", args: { receiver_id: f.id, amount: amount.toString(), msg: "" }, deposit: "1", gas: TGAS(150) }]);
-      const got = (await shares()) - before;
-      setMsg(f, got > 0n ? `Joined: ${units(got, sd, 6)} new shares.` : `The fund returned your ${symbol(base)}; no shares were issued.`, r.hashes[0]);
+      const got = (await settle(shares, (v) => v > before)) - before;
+      setMsg(f, got > 0n ? `Joined: ${units(got, sd, 6)} new shares.` : `No new shares showed up yet. If the fund returned your ${symbol(base)}, it is back in your wallet; the transaction link shows what happened.`, r.hashes[0]);
     } else if (kind === "exit") {
-      if (exitWait(s) > 0) throw new Error("a trade is in flight; exits open once it settles or 10 minutes after it was sent");
+      if (exitWait(s) > 0) throw new UserError("a trade is in flight; exits open once it settles or 10 minutes after it was sent");
       const mine = await shares();
-      if (mine === 0n) throw new Error("you have no shares in this fund");
+      if (mine === 0n) throw new UserError("you have no shares in this fund");
+      if (!hasMeta(tokens[0])) throw new UserError("the details of the fund's base token could not be read; try again in a moment");
       const typed = f.ui.exitAmt.trim();
-      const burn = typed ? parseUnits(typed, sd) : mine;
-      if (burn === null || burn === 0n) throw new Error("enter how many shares to exit with, like 10 or 2.5");
-      if (burn > mine) throw new Error(`you have ${units(mine, sd, 6)} shares`);
+      // An empty field is not "everything": the 100% button fills in the exact amount.
+      const burn = typed ? parseUnits(typed, sd) : null;
+      if (burn === null || burn === 0n) throw new UserError("enter how many shares to exit with, like 10 or 2.5, or press 100%");
+      if (burn > mine) throw new UserError(`you have ${units(mine, sd, 6)} shares`);
       // Register only on tokens you will actually receive (your share of a zero holding is nothing).
       const total = big(s.total_shares);
       const receiving = tokens.filter((_, i) => (big(s.held[i][1]) * burn) / total > 0n);
+      const expect = tokens.map((_, i) => (big(s.held[i][1]) * burn) / total);
+      const owedBefore = (await view<string[]>(NET, f.id, "get_owed", { account_id: me }).catch(() => [])).map(big);
       const r = await send([...(await registrations(me, receiving)), { receiverId: f.id, methodName: "redeem", args: { shares: burn.toString() }, gas: TGAS(200) }]);
-      const left = await shares();
-      if (left < mine) f.ui.exitAmt = "";
-      setMsg(f, left < mine ? `Exited with ${units(mine - left, sd, 6)} shares: your slice of every token is on its way to you.` : "The exit did not go through; your shares are unchanged.", r.hashes.pop());
+      const left = await settle(shares, (v) => v < mine);
+      if (left < mine) {
+        f.ui.exitAmt = "";
+        // A payout that bounced (e.g. you could not hold that token) waits for you as owed.
+        const owedAfter = (await view<string[]>(NET, f.id, "get_owed", { account_id: me }, "optimistic").catch(() => [])).map(big);
+        const stuck = tokens.map((t, i) => [t, (owedAfter[i] ?? 0n) - (owedBefore[i] ?? 0n)] as [string, bigint]).filter(([, v]) => v > 0n);
+        const paid = tokens.map((t, i) => [t, expect[i] - (stuck.find(([x]) => x === t)?.[1] ?? 0n)] as [string, bigint]);
+        setMsg(
+          f,
+          stuck.length
+            ? `Exited with ${units(mine - left, sd, 6)} shares. ${stuck.map(([t, v]) => fmt(t, v, 6)).join(" and ")} could not be paid yet; it is waiting for you to claim.`
+            : `Exited with ${units(mine - left, sd, 6)} shares: ${sliceText(paid)} is on its way to you.`,
+          r.hashes.pop(),
+        );
+      } else setMsg(f, "Your shares have not changed yet. The transaction link shows what happened.", r.hashes.pop());
     } else if (kind === "claim") {
       const owed = await view<string[]>(NET, f.id, "get_owed", { account_id: me });
       // A payout fails mostly because you are not registered on that token: register first.
       const need = tokens.filter((_, i) => owed[i] && owed[i] !== "0");
-      if (!need.length) throw new Error("nothing is owed to you");
-      const r = await send([...(await registrations(me, need)), { receiverId: f.id, methodName: "claim", args: {}, gas: TGAS(150) }]);
+      if (!need.length) throw new UserError("nothing is owed to you");
+      const r = await send([...(await registrations(me, need)), { receiverId: f.id, methodName: "claim", args: {}, gas: TGAS(200) }]);
       setMsg(f, "Claim sent. Anything that still cannot be paid stays owed to you.", r.hashes.pop());
-    } else if (kind === "settle") {
-      if (isV03(s) || s.pending?.status !== "Sent") throw new Error("there is no trade ready to settle");
-      const r = await send([{ receiverId: f.id, methodName: "settle", args: {}, gas: TGAS(100) }]);
-      const after = await view<any>(NET, f.id, "get_fund");
-      setMsg(f, after.pending ? "Not settled yet: the output has not arrived. Try again in a minute." : "Settled.", r.hashes[0]);
     } else if (kind.startsWith("relay-")) {
       const i = Number(kind.slice(6));
       const relayId: string | undefined = s.config.refund_relay;
-      if (!relayId || !tokens[i]) throw new Error("this fund has no refund account");
+      if (!relayId || !tokens[i]) throw new UserError("this fund has no refund account");
       const amount = big(await view<string>(NET, tokens[i], "ft_balance_of", { account_id: relayId }));
-      if (amount === 0n) throw new Error("no refund is waiting any more; someone may have handed it over already");
+      if (amount === 0n) throw new UserError("no refund is waiting any more; someone may have handed it over already");
       const before = big(s.held[i][1]);
       const r = await send([{ receiverId: relayId, methodName: "relay_forward", args: { token: tokens[i], amount: amount.toString() }, gas: TGAS(150) }]);
-      const after = await view<any>(NET, f.id, "get_fund");
+      const after = await settle(() => view<any>(NET, f.id, "get_fund", {}, "optimistic"), (x) => big(x.held[i][1]) > before);
       setMsg(f, big(after.held[i][1]) > before ? `Handed over: the fund now counts ${fmt(tokens[i], amount, 6)} more.` : "Sent. The fund will count the refund when it arrives.", r.hashes[0]);
     } else if (kind === "rebalance") {
       const st = m.strategy;
-      if (!st) throw new Error("this fund has no program to run");
-      if (!s.trading_open) throw new Error("trading starts when the join window closes");
-      if (s.pending) throw new Error("a trade is already in flight");
-      if (Number(s.strategy_started) > 0 && now() <= Number(s.strategy_started) + STRATEGY_TIMEOUT_SECONDS) throw new Error("a run is already in progress; try again in a few minutes");
-      if (Number(s.last_trade_at) > 0 && now() < Number(s.last_trade_at) + Number(m.min_seconds_between_trades)) throw new Error(`it is too soon after the last trade; try again in ${Math.ceil((Number(s.last_trade_at) + Number(m.min_seconds_between_trades) - now()) / 60)} min`);
-      if (Number(s.trades_today) >= Number(m.max_trades_per_day)) throw new Error("the fund's trades for today are used up");
+      if (!st) throw new UserError("this fund has no program to run");
+      if (!s.trading_open) throw new UserError("trading starts when the join window closes");
+      if (s.pending) throw new UserError("a trade is already in flight");
+      if (Number(s.strategy_started) > 0 && now() <= Number(s.strategy_started) + STRATEGY_TIMEOUT_SECONDS) throw new UserError("a run is already in progress; try again in a few minutes");
+      if (Number(s.last_trade_at) > 0 && now() < Number(s.last_trade_at) + Number(m.min_seconds_between_trades)) throw new UserError(`it is too soon after the last trade; try again in ${Math.ceil((Number(s.last_trade_at) + Number(m.min_seconds_between_trades) - now()) / 60)} min`);
+      if (Number(s.trades_today) >= Number(m.max_trades_per_day)) throw new UserError("the fund's trades for today are used up");
       setMsg(f, "Waiting for your wallet, then for the program's answer. This can take a minute.");
       const r = await send([{ receiverId: f.id, methodName: "rebalance", args: {}, deposit: REBALANCE_DEPOSIT, gas: TGAS(300) }]);
-      const after = await view<any>(NET, f.id, "get_fund");
+      const after = await settle(() => view<any>(NET, f.id, "get_fund", {}, "optimistic"), (x) => Number(x.trades) > Number(s.trades) || Number(x.rejections) > Number(s.rejections) || Number(x.strategy_started) === 0);
       const answer = typeof r.value === "string" ? r.value : Number(after.trades) > Number(s.trades) ? "trade" : Number(after.rejections) > Number(s.rejections) ? "refused" : Number(after.strategy_started) > 0 ? "running" : "hold";
       if (answer === "trade" || answer === "stake") {
-        const t = (await view<any[]>(NET, f.id, "get_trades", tail(Number(after.trades), 1)))[0];
+        // This run's trade has the next id: the count before it was sent.
+        const t = (await view<any[]>(NET, f.id, "get_trades", { from: Number(s.trades), limit: 1 }, "optimistic"))[0];
         setMsg(f, t ? `The program proposed a ${t.stake ? "stake" : "trade"} and the fund sent it: ${fmt(tokens[t.sell], String(t.amount_in))} for ${t.stake ? symbol(tokens[t.buy]) : `at least ${fmt(tokens[t.buy], String(t.min_out))}`}.` : "The program proposed a trade and the fund sent it.", r.hashes[0]);
       } else if (answer === "refused") {
-        const fresh = Number(after.rejections) > Number(s.rejections) ? (await view<any[]>(NET, f.id, "get_rejections", tail(Number(after.rejections), 1)))[0] : null;
+        const fresh = Number(after.rejections) > Number(s.rejections) ? (await view<any[]>(NET, f.id, "get_rejections", { from: Number(s.rejections), limit: 1 }, "optimistic"))[0] : null;
         setMsg(f, `The program proposed, and the fund refused: ${fresh ? humanReason(String(fresh.reason)).replace(/^./, (c) => c.toLowerCase()) : "the reason is in the transaction"}.`, r.hashes[0]);
       } else if (answer === "running") {
         setMsg(f, "The run is still in progress. This card will show the result.", r.hashes[0]);
@@ -760,33 +845,44 @@ async function act(f: FundCard, kind: string) {
     } else if (kind === "kind-join") {
       await kindJoin(f, me, s);
     } else if (kind === "kind-finish") {
-      if (s.pending) throw new Error("a trade is in flight; join once it has settled");
-      if (joinsPaused(s)) throw new Error(joinsPaused(s).replace(/\.$/, "").replace(/^./, (c) => c.toLowerCase()));
+      if (s.pending) throw new UserError("a trade is in flight; join once it has settled");
+      if (joinsPaused(s)) throw new UserError(joinsPaused(s).replace(/\.$/, "").replace(/^./, (c) => c.toLowerCase()));
       const b = await view<string[] | null>(NET, f.id, "get_basket", { account_id: me });
-      if (!b) throw new Error("you have no tokens waiting in this fund");
+      if (!b) throw new UserError("you have no tokens waiting in this fund");
       const worth = basketShares(s, b.map(big));
-      if (worth === 0n) throw new Error("what is waiting is too small to buy a share at the fund's current holdings; add more or take it back");
+      if (worth === 0n) throw new UserError("what is waiting is too small to buy a share at the fund's current holdings; add more or take it back");
       const before = await shares();
       const r = await send([
         { receiverId: f.id, methodName: "join_in_kind", args: { min_shares: ((worth * 99n) / 100n || 1n).toString() }, gas: TGAS(80) },
         { receiverId: f.id, methodName: "withdraw_basket", args: {}, gas: TGAS(180) },
       ]);
-      const got = (await shares()) - before;
+      const got = (await settle(shares, (v) => v > before)) - before;
       f.ui.steps = [];
       setMsg(f, got > 0n ? `Joined in kind: ${units(got, sd, 6)} new shares. Leftovers are on their way back to you.` : "The join did not complete; your tokens are still waiting in the fund.", r.hashes[0]);
     } else if (kind === "kind-back") {
       const b = await view<string[] | null>(NET, f.id, "get_basket", { account_id: me });
-      if (!b) throw new Error("you have no tokens waiting in this fund");
+      if (!b) throw new UserError("you have no tokens waiting in this fund");
       const r = await send([...(await registrations(me, tokens.filter((_, i) => big(b[i]) > 0n))), { receiverId: f.id, methodName: "withdraw_basket", args: {}, gas: TGAS(200) }]);
       f.ui.steps = [];
       setMsg(f, "Your tokens are on their way back to you.", r.hashes.pop());
     }
   } catch (e) {
-    setMsg(f, isCancel(e) ? "Cancelled. Nothing was sent." : `Did not go through: ${humanFailure(e)}.`);
+    const cause = e instanceof PartlySent ? e.cause : e;
+    const why = isCancel(cause) ? "you cancelled in the wallet" : humanFailure(cause);
+    // Part of an in-kind join may already be in: say exactly what, and how to finish or undo it.
+    const basket = kind.startsWith("kind") ? await view<string[] | null>(NET, f.id, "get_basket", { account_id: me }, "optimistic").catch(() => null) : null;
+    const waiting = basket ? basket.map(big) : null;
+    const tokens: string[] = f.state?.config?.mandate?.tokens ?? [];
+    if (waiting && waiting.some((x) => x > 0n)) {
+      setMsg(f, `Stopped part way: ${why}. ${sliceText(tokens.map((t, i) => [t, waiting[i] ?? 0n]))} is waiting in this fund for you. Use Finish joining or Take my tokens back below.`);
+    } else if (e instanceof PartlySent || (waiting && kind === "kind-join")) {
+      setMsg(f, `Stopped part way: ${why}. ${e instanceof PartlySent ? `${e.done} of the transactions went through; the link shows them.` : "Your place in the fund is open, with nothing in it yet."}`, e instanceof PartlySent ? e.hashes[0] ?? "" : "");
+    } else setMsg(f, isCancel(cause) ? "Cancelled. Nothing was sent." : `Did not go through: ${why}.`);
   } finally {
     f.busy = false;
   }
   await load(f).catch(() => render(f));
+  afterAction();
 }
 
 const PUSD = "pusd.plinthfund.testnet";
@@ -801,24 +897,31 @@ export function mountWalletBar(bar: HTMLElement, onChange: () => Promise<void>, 
   const paint = async () => {
     const me = currentAccount();
     let bal = "";
-    if (me) bal = await view<string>(NET, PUSD, "ft_balance_of", { account_id: me }).then((v) => fmt(PUSD, v), () => "");
+    if (me) bal = await view<string>(NET, PUSD, "ft_balance_of", { account_id: me }, "optimistic").then((v) => fmt(PUSD, v), () => "");
     if (currentAccount() !== me) return;
     bar.innerHTML = me
       ? `<div class="wb-who"><span class="wb-label">Connected</span><span class="who" title="${esc(me)}">${esc(shortAccount(me))}</span>${bal ? `<span class="wb-bal">${esc(bal)}</span>` : ""}</div><div class="wb-actions"><button class="btn ghost sm" data-w="faucet">Get 100 test pUSD</button><button class="btn ghost sm" data-w="out">Disconnect</button></div><span class="status small" role="status">${esc(barMsg)}</span>`
       : `<div class="wb-who"><span class="wb-label">Wallet</span><span class="wb-hint">Test tokens only. Nothing here is money.</span></div><div class="wb-actions"><button class="btn primary sm" data-w="in">Connect a testnet wallet</button></div><span class="status small" role="status">${esc(barMsg)}</span>`;
   };
+  let busy = false;
   const faucet = async () => {
     const me = currentAccount();
-    if (!me) return;
+    // Set before anything is awaited, so a double click sends one request.
+    if (!me || busy) return;
+    busy = true;
+    bar.querySelectorAll<HTMLButtonElement>("button[data-w]").forEach((b) => (b.disabled = true));
     try {
       setBar("Waiting for your wallet…");
       const calls: Call[] = (await view(NET, PUSD, "storage_balance_of", { account_id: me })) === null ? [{ receiverId: PUSD, methodName: "storage_deposit", args: { account_id: me }, deposit: STORAGE, gas: TGAS(30) }] : [];
       calls.push({ receiverId: PUSD, methodName: "mint", args: { account_id: me, amount: (100n * 10n ** BigInt(dec(PUSD))).toString() }, gas: TGAS(30) });
+      const before = big(await view<string>(NET, PUSD, "ft_balance_of", { account_id: me }).catch(() => "0"));
       await send(calls);
+      await settle(() => view<string>(NET, PUSD, "ft_balance_of", { account_id: me }, "optimistic").then(big), (v) => v > before);
       setBar("100 test pUSD sent to you.");
     } catch (e) {
       setBar(isCancel(e) ? "Cancelled. Nothing was sent." : `Did not go through: ${humanFailure(e)}.`);
     }
+    busy = false;
     await Promise.all([onChange(), paint()]);
   };
   bar.addEventListener("click", async (e) => {
@@ -834,14 +937,6 @@ export function mountWalletBar(bar: HTMLElement, onChange: () => Promise<void>, 
   return { paint };
 }
 
-export interface Stats {
-  /** Funds the factory has created; null when no factory is recorded. */
-  factoryCount: number | null;
-  listed: number;
-  trades: number;
-  refusals: number;
-  keys: number;
-}
 export interface AppOptions {
   /** Funds named in the data files; the chain decides which group each belongs in. */
   known: { id: string; title: string; blurb: string }[];
@@ -849,7 +944,6 @@ export interface AppOptions {
   legacy: { id: string; title: string; blurb: string }[];
   /** A fund named in the page address (?fund=...). */
   linked: string | null;
-  onStats?(s: Stats): void;
   /** The newest fund from the factory, once known. */
   onNewest?(id: string): void;
 }
@@ -866,7 +960,6 @@ export async function mountApp(opt: AppOptions): Promise<App> {
   const moreBtn = document.getElementById("funds-more") as HTMLButtonElement;
   const factory = factoryOf(NET);
   const cards: FundCard[] = [];
-  let factoryCount: number | null = null;
   let factoryLoaded = 0;
   let newestId = "";
 
@@ -878,11 +971,7 @@ export async function mountApp(opt: AppOptions): Promise<App> {
     c.group = want;
     (want === "legacy" ? rootLegacy : rootNew).appendChild(c.el);
   };
-  const publish = () => {
-    const ready = cards.filter((c) => c.state && c.keyCount !== undefined);
-    if (ready.length < cards.filter((c) => !c.failed).length || (factory && factoryCount === null)) return;
-    opt.onStats?.({ factoryCount, listed: ready.length, trades: ready.reduce((a, c) => a + Number(c.state.trades), 0), refusals: ready.reduce((a, c) => a + Number(c.state.rejections), 0), keys: ready.reduce((a, c) => a + (c.keyCount ?? 0), 0) });
-  };
+  const publish = () => {};
 
   const loadCard = (c: FundCard) =>
     load(c).catch((e) => {
@@ -898,7 +987,7 @@ export async function mountApp(opt: AppOptions): Promise<App> {
     if (existing) return existing;
     const el = document.createElement("article");
     el.className = "fund loading";
-    el.id = `fund-${def.id.replace(/[^a-z0-9-]/g, "-")}`;
+    el.id = cardId(def.id);
     el.innerHTML = `<div class="sk sk-h"></div><div class="sk sk-l"></div><div class="sk sk-grid"></div><div class="sk sk-l"></div><div class="sk sk-l short"></div><span class="sr">Loading ${esc(shortAccount(def.id))}</span>`;
     const root = group === "legacy" ? rootLegacy : rootNew;
     if (where === "start") root.prepend(el);
@@ -914,17 +1003,31 @@ export async function mountApp(opt: AppOptions): Promise<App> {
         const url = (b as HTMLAnchorElement).href;
         (navigator.clipboard?.writeText(url) ?? Promise.reject()).then(
           () => setMsg(c, "Link copied. Anyone who opens it lands on this fund."),
-          () => (location.href = url),
+          () => {
+            // No clipboard here: show the link to copy by hand, and stay on the page.
+            setMsg(c, "Copy this link:");
+            const st = c.el.querySelector(".status");
+            if (st) {
+              const field = document.createElement("input");
+              field.className = "amt share-field";
+              field.readOnly = true;
+              field.value = url;
+              field.setAttribute("aria-label", "Link to this fund");
+              st.append(" ", field);
+              field.select();
+            }
+          },
         );
       } else if (a.startsWith("pct-")) {
         const p = BigInt(a.slice(4));
         const mine = c.mine?.shares ?? 0n;
-        c.ui.exitAmt = p === 100n ? "" : plain((mine * p) / 100n, shareDec(c.state));
+        c.ui.exitAmt = plain(p === 100n ? mine : (mine * p) / 100n, shareDec(c.state));
         render(c);
       } else if (a === "more-trades" || a === "more-refusals" || a === "less-trades" || a === "less-refusals") {
         const key = a.endsWith("trades") ? "tradesShown" : "refusalsShown";
         const all = Number(a.endsWith("trades") ? c.state.trades : c.state.rejections);
-        c.ui[key] = a.startsWith("less") ? 0 : Math.min(all, Math.max(c.ui[key], 4) + 20);
+        const now = Math.max(c.ui[key], a.endsWith("trades") ? 4 : 3);
+        c.ui[key] = a.startsWith("less") ? 0 : all - now <= 20 ? all : now + 20;
         void loadCard(c);
       } else if (a === "kind-open") {
         c.ui.kindOpen = true;
@@ -959,7 +1062,6 @@ export async function mountApp(opt: AppOptions): Promise<App> {
     // New funds may have been created since the first page: skip the ones already listed.
     const fresh = funds.filter((e) => !cards.some((c) => c.id === e.account_id));
     if (factoryLoaded === 0 && funds[0]) newestId = funds[0].account_id;
-    factoryCount = count;
     const added = fresh.map((e) => addCard(factoryDef(e), "new"));
     // Keep the factory's order on the page, newest first, whichever cards the data files put there first.
     if (factoryLoaded === 0) for (const e of [...funds].reverse()) {
@@ -998,7 +1100,6 @@ export async function mountApp(opt: AppOptions): Promise<App> {
       note.textContent = newestId ? "" : "The factory is live on testnet and no fund has been created through it yet. You can create the first one under Launch a fund.";
     } catch (e) {
       note.textContent = `The list of new funds could not be read from the factory: ${(e as Error).message}. The earlier funds below are still shown.`;
-      factoryCount = 0;
     }
   } else {
     note.textContent = "No release 0.3 fund is live on testnet yet. New funds will be listed here, read from the factory, as soon as it is. Until then the earlier funds below show how joining and exiting work.";
@@ -1023,6 +1124,7 @@ export async function mountApp(opt: AppOptions): Promise<App> {
     await Promise.all([...cards.map(loadCard), bar.paint()]);
     publish();
   };
+  afterAction = () => void bar.paint();
   moreBtn.addEventListener("click", async () => {
     moreBtn.disabled = true;
     const added = await loadFactoryPage().catch(() => []);
@@ -1032,13 +1134,23 @@ export async function mountApp(opt: AppOptions): Promise<App> {
   });
   onAccount(() => void refresh());
   void loadPrices().then((p) => p && cards.forEach((c) => !c.busy && !c.el.contains(document.activeElement) && render(c)));
-  await restore();
+  // The chain is read straight away; the wallet library loads alongside and repaints when it is ready.
+  void restore();
   await refresh();
   if (linkedCard) focusCard(linkedCard);
-  // Poll what is on screen, but never re-render a card while its wallet action runs or while you are typing in it.
-  setInterval(() => {
+  // Poll only the cards on screen, one after another, and never a card whose wallet action is running
+  // or that you are typing in.
+  const onScreen = new Set<HTMLElement>();
+  const io = "IntersectionObserver" in window ? new IntersectionObserver((es) => es.forEach((e) => (e.isIntersecting ? onScreen.add(e.target as HTMLElement) : onScreen.delete(e.target as HTMLElement)))) : null;
+  const watch = () => cards.forEach((c) => io?.observe(c.el));
+  watch();
+  setInterval(async () => {
     if (document.hidden) return;
-    void Promise.all(cards.filter((c) => !c.busy && c.el.offsetParent !== null && !c.el.contains(document.activeElement)).map((c) => load(c).catch(() => {}))).then(publish);
+    watch();
+    for (const c of cards.filter((x) => !x.busy && (io ? onScreen.has(x.el) : true) && !x.el.contains(document.activeElement))) {
+      await load(c).catch(() => {});
+      await new Promise((r) => setTimeout(r, 300));
+    }
   }, 30_000);
 
   return {
