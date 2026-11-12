@@ -325,7 +325,8 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
     await page.addInitScript((m) => (window.__mock = Object.assign({ account: "alice.plinthfund.testnet", signedIn: true, batch: false, txs: [], calls: 0, delay: 0 }, m)), mock);
     await page.addInitScript(MOCK);
     const val = (v) => ({ jsonrpc: "2.0", id: 1, result: { result: [...Buffer.from(JSON.stringify(v))], logs: [], block_height: 1 } });
-    await page.route(/rpc\.testnet\.fastnear\.com/, async (route) => {
+    // Every public node the page may fall back to, so the simulated answers hold whichever one it uses.
+    await page.route(RPC_HOST, async (route) => {
       const body = JSON.parse(route.request().postData() || "{}");
       const p = body.params || {};
       const args = p.args_base64 ? JSON.parse(Buffer.from(p.args_base64, "base64").toString() || "{}") : {};
