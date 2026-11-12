@@ -9,7 +9,7 @@
     "draft": "remotion render PlinthX out/draft.mp4 --scale=0.5",
     "render": "remotion render PlinthX out/render-x.mp4 && bash tools/finalize.sh out/render-x.mp4 out/plinth-x.mp4 && rm out/render-x.mp4",
     "render:square": "remotion render PlinthSquare out/render-sq.mp4 && bash tools/finalize.sh out/render-sq.mp4 out/plinth-x-square.mp4 && rm out/render-sq.mp4",
-    "poster": "remotion still PlinthX out/poster.png --frame=2595",
+    "poster": "remotion still PlinthX out/poster.png --frame=2460",
     "typecheck": "tsc -p ."
   },
   "dependencies": {
