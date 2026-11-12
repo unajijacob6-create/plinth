@@ -315,6 +315,7 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   const MOCK = fs.readFileSync(new URL("./mock-wallet.js", import.meta.url), "utf8");
   const ME = "alice.plinthfund.testnet";
   const openNew = data("open-fund.json").fund;
+  const NODES = ["https://rpc.testnet.fastnear.com", "https://rpc.testnet.near.org", "https://test.rpc.fastnear.com"];
   async function mocked(path, { shares = {}, delayShares = 0, mock = {} } = {}) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     const errors = [];
@@ -346,7 +347,17 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
       }
       if (p.method_name === "ft_balance_of" && args.account_id === ME) return json(val("1000000000000"));
       if (p.method_name === "storage_balance_of" && args.account_id === ME) return json(val({ total: "1250000000000000000000", available: "0" }));
-      return route.continue();
+      // Everything else is a real read. Shared CI runners get refused by public nodes after many
+      // requests; retry across nodes with backoff here so these checks test the page, not the node.
+      for (let i = 0; i < 6; i++) {
+        const host = NODES[i % NODES.length];
+        try {
+          const r = await fetch(host, { method: "POST", headers: { "content-type": "application/json" }, body: route.request().postData() || "{}", signal: AbortSignal.timeout(10000) });
+          if (r.ok) return route.fulfill({ status: 200, headers: { "access-control-allow-origin": "*", "content-type": "application/json" }, body: await r.text() });
+        } catch {}
+        await new Promise((res) => setTimeout(res, 500 * 2 ** i));
+      }
+      return route.abort();
     });
     await page.goto(base + path, { waitUntil: "networkidle" });
     await page.waitForFunction(() => document.querySelectorAll(".fund").length > 0 && [...document.querySelectorAll(".fund")].every((e) => !e.classList.contains("loading")), null, { timeout: 60000 }).catch(() => {});
