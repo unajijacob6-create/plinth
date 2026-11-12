@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How it works · Plinth</title>
+    <meta name="description" content="The life of a Plinth fund, step by step, with the recorded testnet runs: a manager refused on chain, AI models that must agree, and every transaction." />
+    <meta name="theme-color" content="#030817" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='20' width='22' height='6' rx='1.5' fill='%232f6bff'/%3E%3Crect x='9' y='12' width='14' height='6' rx='1.5' fill='%2322c3e6'/%3E%3Crect x='13' y='4' width='6' height='6' rx='1.5' fill='%230a1430'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <section class="band page" aria-labelledby="page-h">
+      <div class="light l1" aria-hidden="true"></div>
+      <div class="light l2" aria-hidden="true"></div>
+      <div class="beams" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="grain" aria-hidden="true"></div>
+      <div class="wrap page-hero">
+        <p class="label">How it works</p>
+        <h1 id="page-h">Six steps. The manager is in <em>only one.</em></h1>
+        <p class="lead">Follow one fund from the day it was created to the day someone left it, with every step linked to its transaction on NEAR testnet.</p>
+      </div>
+    </section>
+    <main id="main" class="wrap pull-up">
+      <section class="story" aria-labelledby="life-h" id="life">
+        <h2 class="sr" id="life-h">The life of a fund</h2>
+        <div class="steps" role="tablist" aria-label="Lifecycle"></div>
+        <div class="step-panel" id="step-panel" role="tabpanel"></div>
+      </section>
+
+      <section class="sec" id="run" aria-labelledby="run-h">
+        <div class="sec-h" data-reveal>
+          <p class="label">Chapter 1 · Recorded on testnet</p>
+          <h2 id="run-h">The live run, <em>step by step.</em></h2>
+          <p class="lead" id="run-sub"></p>
+        </div>
+        <ol class="timeline" id="timeline"></ol>
+      </section>
+
+      <section class="sec" id="agent" aria-labelledby="agent-h">
+        <div class="sec-h" data-reveal>
+          <p class="label">Chapter 2 · An AI as manager</p>
+          <h2 id="agent-h">Let an AI run the fund. <em>It still can't take it.</em></h2>
+          <p class="lead" id="agent-sub"></p>
+        </div>
+        <div class="cases" id="agent-cases"></div>
+      </section>
+
+      <section class="sec" id="quorum" aria-labelledby="quorum-h">
+        <div class="sec-h" data-reveal>
+          <p class="label">Chapter 3 · Two models</p>
+          <h2 id="quorum-h">Two models <em>must agree.</em></h2>
+          <p class="lead" id="quorum-sub"></p>
+        </div>
+        <div class="cases" id="quorum-cases"></div>
+      </section>
+
+      <section class="sec" id="refusals" aria-labelledby="ref-h">
+        <div class="sec-h" data-reveal>
+          <p class="label">Chapter 4 · Refusals</p>
+          <h2 id="ref-h">What the contract <em>said no to.</em></h2>
+          <p class="lead">Each refusal is kept in the fund's own log on chain, with its reason.</p>
+        </div>
+        <div class="cases" id="refusal-cards"></div>
+      </section>
+
+      <section class="sec next-steps" aria-label="Next">
+        <a class="next soft lift" data-href="verify/"><span class="label">Next</span><span class="h3">Verify a fund from the chain</span><span class="arr" aria-hidden="true">→</span></a>
+        <a class="next soft lift" data-href="security/"><span class="label">Before you trust it</span><span class="h3">Read the security page</span><span class="arr" aria-hidden="true">→</span></a>
+      </section>
+    </main>
+    <script type="module" src="../src/how.ts"></script>
+  </body>
+</html>

@@ -58,71 +58,87 @@ function decisionText(d: any, fund: string): { text: string; danger: boolean } {
   return { text: `Sell ${amount(d.sell, d.amount)} for ${buy}${to ? `, paid to ${to}` : ", paid to the fund"}`, danger: !!to };
 }
 const reasonOf = (d: any) => (d?.reason ? `<p class="said">“${esc(d.reason)}”</p>` : "");
-const receiptLine = (r: any) => {
-  if (!r) return "";
+/** One short line about the signed receipt: who signed it and whether your browser agrees. */
+const receiptCell = (r: any) => {
+  if (!r) return `<span class="muted">no receipt</span>`;
   const v = verifyReceipt(r);
-  return `<p class="small ${v.ok ? "okc" : "bad"}" title="Signer ${esc(r.signing_address)}">${v.ok ? "✓" : "✗"} ${esc(v.why)}${v.ok ? "; checked in your browser" : ""}.</p>`;
+  const who = v.kind === "enclave" ? "Model's secure enclave" : "NEAR AI gateway";
+  return `<span class="${v.ok ? "okc" : "bad"}" title="${esc(v.why)}">${v.ok ? "✓" : "✗"} ${esc(who)}</span>`;
 };
+const badge = (cls: string, text: string) => `<span class="badge ${cls}">${esc(text)}</span>`;
 
 const TITLES: Record<string, [string, string]> = {
-  injected: ["Prompt injection", "The market note hides an instruction to send the whole fund to an attacker."],
-  compromised: ["Compromised model", "Same note, given to the model with its safety tuning removed (a stand-in for a jailbroken agent)."],
-  hijacked: ["Hijacked operator", "No model: the operator's software is replaced and submits the attacker's trade directly."],
+  injected: ["Prompt injection", "A market note hides an instruction to send the whole fund to an attacker."],
+  compromised: ["Compromised model", "The same note, given to a model with its safety tuning removed."],
+  hijacked: ["Hijacked manager", "No model at all: the manager's software is replaced and sends the attacker's trade."],
   honest: ["Ordinary day", "A normal market note."],
 };
 
 export function mountAgent(run: any) {
   const el = document.getElementById("agent-cases");
   if (!el || !run?.cases) return;
-  document.getElementById("agent-sub")!.innerHTML = `Recorded ${esc(String(run.started_at).slice(0, 10))} on NEAR testnet against the demo fund. The model runs on NEAR AI Cloud, and each answer is signed there; your browser checks every signature below.`;
+  const sub = document.getElementById("agent-sub");
+  if (sub) sub.textContent = `Recorded ${String(run.started_at).slice(0, 10)} on NEAR testnet. The model runs on NEAR AI Cloud and each answer is signed there. Your browser checks every signature on this page.`;
   el.innerHTML = run.cases
     .map((c: any) => {
       const [title, sub] = TITLES[c.label] ?? [c.label, ""];
-      const d = c.decision;
-      const dt = decisionText(d, run.fund);
-      const said =
-        c.model === null
-          ? `<p class="small">Submitted directly:</p><p class="decision ${dt.danger ? "danger" : ""}">${esc(dt.text)}</p>`
-          : `<p class="small muted">${esc(modelName(c.model))} decided:</p><p class="decision ${dt.danger ? "danger" : ""}">${esc(dt.text)}</p>${reasonOf(d)}`;
-      const verdict =
+      const dt = decisionText(c.decision, run.fund);
+      const outcome =
         c.accepted === true
-          ? `<span class="tag yes">contract accepted</span> ${txLink(c.tx)}${c.settle_tx ? ` · ${txLink(c.settle_tx, "Settled")}` : ""}`
+          ? badge("yes", "Contract accepted")
           : c.accepted === false
-            ? `<span class="tag no">contract refused</span> <span class="small">${esc(humanReason(c.contract_reason ?? ""))}</span> ${txLink(c.tx)}`
-            : `<span class="tag">nothing proposed</span> <span class="small">the model chose to hold</span>`;
-      return `<div class="card agent-case"><span class="tag">${esc(title)}</span><p class="small muted">${esc(sub)}</p>${said}<p>${verdict}</p>${receiptLine(c.receipt)}</div>`;
+            ? badge("no", "Contract refused")
+            : badge("", "Nothing proposed");
+      const why = c.accepted === false ? humanReason(c.contract_reason ?? "") : c.accepted === true ? "Inside every rule of the fund." : "The model chose to hold.";
+      const links = [c.tx ? txLink(c.tx) : "", c.settle_tx ? txLink(c.settle_tx, "Settled") : ""].filter(Boolean).join(" · ");
+      return `<article class="card case agent-case">
+        <header class="case-h"><p class="case-label">${esc(title)}</p><p class="case-sub">${esc(sub)}</p></header>
+        <dl class="case-rows">
+          <div><dt>${c.model === null ? "Submitted" : "Decided"}</dt><dd><p class="decision ${dt.danger ? "danger" : ""}">${esc(dt.text)}</p>${c.model === null ? "" : reasonOf(c.decision)}</dd></div>
+          <div><dt>Model</dt><dd>${c.model === null ? "None" : esc(modelName(c.model))}</dd></div>
+          ${c.receipt ? `<div><dt>Signed by</dt><dd>${receiptCell(c.receipt)}</dd></div>` : ""}
+        </dl>
+        <div class="case-out">${outcome}<p class="small">${esc(why)}</p>${links ? `<p class="small">${links}</p>` : ""}</div>
+      </article>`;
     })
     .join("");
 }
 
 const QTITLES: Record<string, [string, string]> = {
   injected: ["Prompt injection, two models", "The same injected note goes to DeepSeek and to Gemini."],
-  "one-fooled": ["Safety-removed DeepSeek + Gemini", "The DeepSeek seat is taken by its safety-removed variant, the stand-in for a jailbroken model."],
+  "one-fooled": ["One model with its safety removed", "The DeepSeek seat is taken by a variant with its safety tuning removed."],
   honest: ["Ordinary day, two models", "A normal note. Both must agree; the smaller amount is proposed."],
 };
 
 export function mountQuorum(run: any) {
   const el = document.getElementById("quorum-cases");
   if (!el || !run?.cases) return;
-  document.getElementById("quorum-sub")!.innerHTML = `Recorded ${esc(String(run.started_at).slice(0, 10))} on NEAR testnet against the demo fund. The operator proposes a trade only when every model says trade with the same tokens and the same recipient, at the smallest amount any of them asked for. Anything else is a hold, before the contract is even asked.`;
+  const sub = document.getElementById("quorum-sub");
+  if (sub) sub.textContent = `Recorded ${String(run.started_at).slice(0, 10)} on NEAR testnet. The manager proposes a trade only when every model says trade, with the same tokens and the same recipient, at the smallest amount any of them asked for. Anything else is a hold, before the contract is even asked.`;
   el.innerHTML = run.cases
     .map((c: any) => {
       const [title, sub] = QTITLES[c.label] ?? [c.label, ""];
-      const votes = c.votes
+      const rows = c.votes
         .map((v: any) => {
           const dt = decisionText(v.decision, run.fund);
-          return `<div class="vote"><p class="small muted">${esc(modelName(v.model))}</p><p class="decision ${dt.danger ? "danger" : ""}">${esc(dt.text)}</p>${receiptLine(v.receipt)}</div>`;
+          return `<tr><th scope="row">${esc(modelName(v.model))}</th><td class="${dt.danger ? "danger" : ""}">${esc(dt.text)}</td><td>${receiptCell(v.receipt)}</td></tr>`;
         })
         .join("");
       const q = c.quorum;
-      const why = q.agreed ? "both models agree" : String(q.why).replace(/[\w.-]+\/[\w.-]+/g, (m: string) => modelName(m));
-      const verdict =
+      const why = q.agreed ? "Both models agree." : String(q.why).replace(/[\w.-]+\/[\w.-]+/g, (m: string) => modelName(m)).replace(/^./, (x: string) => x.toUpperCase()) + ".";
+      const outcome =
         c.accepted === true
-          ? `<span class="tag yes">quorum: trade</span> <span class="tag yes">contract accepted</span> ${txLink(c.tx)}${c.settle_tx ? ` · ${txLink(c.settle_tx, "Settled")}` : ""}`
+          ? `${badge("yes", "Quorum: trade")} ${badge("yes", "Contract accepted")}`
           : c.accepted === false
-            ? `<span class="tag yes">quorum: trade</span> <span class="tag no">contract refused</span> <span class="small">${esc(humanReason(c.contract_reason ?? ""))}</span>`
-            : `<span class="tag no">quorum: hold</span> <span class="small">${esc(why)}</span>`;
-      return `<div class="card agent-case quorum-case"><span class="tag">${esc(title)}</span><p class="small muted">${esc(sub)}</p>${votes}<p>${verdict}</p></div>`;
+            ? `${badge("yes", "Quorum: trade")} ${badge("no", "Contract refused")}`
+            : badge("no", "Quorum: hold");
+      const detail = c.accepted === false ? humanReason(c.contract_reason ?? "") : why;
+      const links = [c.tx ? txLink(c.tx) : "", c.settle_tx ? txLink(c.settle_tx, "Settled") : ""].filter(Boolean).join(" · ");
+      return `<article class="card case quorum-case">
+        <header class="case-h"><p class="case-label">${esc(title)}</p><p class="case-sub">${esc(sub)}</p></header>
+        <div class="table-scroll"><table class="votes"><thead><tr><th scope="col">Model</th><th scope="col">Decision</th><th scope="col">Signed by</th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="case-out"><div class="badges">${outcome}</div><p class="small">${esc(detail)}</p>${links ? `<p class="small">${links}</p>` : ""}</div>
+      </article>`;
     })
     .join("");
 }

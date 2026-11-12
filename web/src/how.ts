@@ -1,15 +1,14 @@
-import "./style.css";
+import { mountShell } from "./shell.ts";
+import "./app.css";
 import run from "../../data/testnet-run.json";
-import { verifyFund, explorer, accountLink, factoryOf, isAccountId, shortAccount, RELEASES, type Net } from "./chain.ts";
-import { mountApp, humanReason, type App, type Stats } from "./app.ts";
-import { fmt, loadMeta, units, dec } from "./tokens.ts";
-import { mountLaunch } from "./launch.ts";
-import openFund from "../../data/open-fund.json";
-import earnRun from "../../data/earn-run.json";
+import { explorer, accountLink, shortAccount, RELEASES } from "./chain.ts";
+import { humanReason } from "./app.ts";
+import { fmt, units, dec } from "./tokens.ts";
 import agentRun from "../../data/agent-run.json";
-import { mountAgent, mountQuorum } from "./agent.ts";
 import quorumRun from "../../data/quorum-run.json";
+import { mountAgent, mountQuorum } from "./agent.ts";
 
+mountShell("how", true);
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const R: any = run;
@@ -20,45 +19,6 @@ const WRAP: string = R.accounts.wrap;
 const runRel = RELEASES[R.global_contract_hash ?? ""] ?? RELEASES[R.code_hash];
 const runRelease = runRel?.version ?? "an unlisted release";
 const runKnown = !!runRel?.known_issue;
-/** Funds from before release 0.3, kept as history. Those in the data files that turn out to be old join them. */
-const LEGACY_IDS: string[] = [(openFund as any).previous?.fund, "fund-mwa9jwo8.plinthfund.testnet", "earn-mwad1ypv.plinthfund.testnet"].filter((x): x is string => typeof x === "string" && x.length > 0);
-const factory = factoryOf("testnet");
-
-// ------------------------------------------------------------ phone menu
-const menuBtn = $<HTMLButtonElement>("#menu-btn");
-const siteNav = $("#site-nav");
-const setMenu = (open: boolean) => {
-  menuBtn.setAttribute("aria-expanded", String(open));
-  siteNav.classList.toggle("open", open);
-};
-menuBtn.addEventListener("click", () => setMenu(menuBtn.getAttribute("aria-expanded") !== "true"));
-siteNav.addEventListener("click", (e) => {
-  if ((e.target as HTMLElement).closest("a")) setMenu(false);
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && menuBtn.getAttribute("aria-expanded") === "true") {
-    setMenu(false);
-    menuBtn.focus();
-  }
-});
-document.addEventListener("click", (e) => {
-  if (!(e.target as HTMLElement).closest(".nav")) setMenu(false);
-});
-
-// ------------------------------------------------------------ stats (live, from the chain)
-function paintStats(s: Stats) {
-  const cells: [string, string][] = [
-    s.factoryCount !== null ? [String(s.factoryCount), s.factoryCount === 1 ? "fund created through the factory" : "funds created through the factory"] : [String(s.listed), "funds listed below, all on old releases"],
-    [String(s.keys), "access keys across the funds listed"],
-    [String(s.trades), s.trades === 1 ? "trade sent by the funds listed" : "trades sent by the funds listed"],
-    [String(s.refusals), s.refusals === 1 ? "proposal refused on chain" : "proposals refused on chain"],
-  ];
-  const el = $("#stats");
-  el.innerHTML = cells.map(([b, t]) => `<div class="stat"><b>${esc(b)}</b><span>${esc(t)}</span></div>`).join("");
-  el.setAttribute("aria-busy", "false");
-  $("#stats-note").textContent = `Read from NEAR testnet just now, across the ${s.listed} ${s.listed === 1 ? "fund" : "funds"} listed under Try it.`;
-}
-$("#limits-status").textContent = factory ? "Funds created through the factory on this page run release 0.3." : "No release 0.3 fund is live on testnet yet.";
 
 // ------------------------------------------------------------ lifecycle
 const proofHead = `Recorded on testnet, release ${esc(runRelease)}`;
@@ -121,66 +81,8 @@ stepsEl.addEventListener("keydown", (e) => {
 });
 show(0);
 
-// ------------------------------------------------------------ verifier
-const input = $<HTMLInputElement>("#fund-id");
-const net = $<HTMLSelectElement>("#fund-net");
-const out = $("#verify-out");
-const linkedRaw = new URLSearchParams(location.search).get("fund")?.trim().toLowerCase() ?? "";
-const linked = isAccountId(linkedRaw) ? linkedRaw : null;
-let userTyped = false;
-input.addEventListener("input", () => (userTyped = true));
-input.value = linked ?? R.fund;
-out.innerHTML = `<span class="muted">Enter a fund account and press Verify. ${linked ? "Prefilled with the fund from your link." : "Prefilled with the fund from the recorded run, which is on an old release."}</span>`;
-let verifySeq = 0;
-async function runVerify() {
-  const id = input.value.trim().toLowerCase();
-  if (!id) return;
-  const seq = ++verifySeq;
-  if (!isAccountId(id)) {
-    out.innerHTML = `<div class="verdict bad">That is not a valid account name.</div>`;
-    return;
-  }
-  out.innerHTML = `<span class="muted">Reading ${esc(shortAccount(id))} from ${esc(net.value)}…</span>`;
-  try {
-    const v = await verifyFund(net.value as Net, id);
-    if (v.state) await loadMeta(net.value as Net, v.state.config.mandate.tokens);
-    if (seq !== verifySeq) return;
-    const lines = v.checks
-      .map((c) => `<div class="line"><span class="mark ${c.warn ? "warn" : c.note ? "note" : c.ok ? "ok" : "bad"}" aria-hidden="true">${c.warn ? "!" : c.note ? "i" : c.ok ? "✓" : "✗"}</span><div><div class="t"><span class="sr">${c.warn ? "Warning: " : c.note ? "Note: " : c.ok ? "Passed: " : "Failed: "}</span>${esc(c.label)}</div><div class="d">${esc(c.detail)}</div></div></div>`)
-      .join("");
-    const s = v.state;
-    const kv = s
-      ? `<div class="kv">Holds ${s.held.map(([t, a]: [string, string]) => esc(fmt(t, a))).join(" · ")}<br/>${esc(units(s.total_shares, dec(s.config.mandate.tokens[0]), 6))} shares issued · ${esc(s.trades)} trades · ${esc(s.rejections)} refused${s.pending ? " · a trade is in flight" : ""}</div>`
-      : "";
-    const tag = v.status === "known-issue" ? `<p class="known-tag"><b>Known issue: old release.</b> Release ${esc(v.release?.version ?? "")} can count tokens that bounce back as the fund's own. <a href="#limit-known">Read the limit</a></p>` : "";
-    const verdict =
-      v.status === "clean"
-        ? `<div class="verdict ok">Verified: no keys, published code that nobody can change, a listed release with no known issue, and rules that add up.</div>`
-        : v.status === "test-signer"
-          ? `<div class="verdict note">Keys, code and rules check out. Quotes are signed by a test signer chosen by the fund's creator, not by NEAR Intents: a testnet stand-in only.</div>`
-          : v.status === "known-issue"
-            ? `<div class="verdict warn">Keys and code check out, but this release has a known accounting bug. Treat this fund as history, not as safe.${v.standIn ? " Its quotes are signed by a test signer, a testnet stand-in." : ""}</div>`
-          : `<div class="verdict bad">Not verified: see the failed checks above.</div>`;
-    out.innerHTML = lines + kv + tag + verdict;
-  } catch (e) {
-    if (seq !== verifySeq) return;
-    out.innerHTML = `<div class="verdict bad">Could not read ${esc(shortAccount(id))}: ${esc((e as Error).message)}.</div>`;
-  }
-}
-$("#verify-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  void runVerify();
-});
-function verifyNow(id: string, scroll = true) {
-  input.value = id;
-  net.value = "testnet";
-  userTyped = true;
-  if (scroll) $("#verify").scrollIntoView({ block: "start" });
-  void runVerify();
-}
-
 // ------------------------------------------------------------ timeline
-$("#run-sub").innerHTML = `Recorded ${esc(R.started_at.slice(0, 10))} on NEAR testnet, on release ${esc(runRelease)}${runKnown ? `, which has the known issue described under <a href="#limit-known">Limits</a>` : ""}. Every step links to its transaction. 1Click has no testnet, so a test signer and a solver account (${esc(shortAccount(R.accounts.solver))}) stand in for it.`;
+$("#run-sub").innerHTML = `Recorded ${esc(R.started_at.slice(0, 10))} on NEAR testnet, on release ${esc(runRelease)}${runKnown ? `, which has the known issue described under <a href="${import.meta.env.BASE_URL}security/#limit-known">Security page</a>` : ""}. Every step links to its transaction. 1Click has no testnet, so a test signer and a solver account (${esc(shortAccount(R.accounts.solver))}) stand in for it.`;
 const T: [string, string, string, string?][] = [
   ["create_fund_keyless", "Fund created with no keys", `${R.access_keys_after_create} access keys from the first block.`],
   ["alice_subscribe", "Alice joins", `${fmt(TOK, "60000000")} for 60 shares.`],
@@ -200,31 +102,6 @@ $("#timeline").innerHTML = T.map(([k, h, p, c]) => `<li class="${c ?? ""}"><div 
 $("#refusal-cards").innerHTML = R.rejections
   .map((r: any, i: number) => `<div class="card"><span class="tag no">refused</span><h3>${esc(humanReason(r.reason))}</h3><p>Recorded in the contract's own refusal log. ${tx(i === 0 ? "refused_wrong_recipient" : "refused_too_large")}</p></div>`)
   .join("");
-
-// ------------------------------------------------------------ live funds + wallet + launch
-let app: App | null = null;
-void mountApp({
-  known: [
-    { id: (openFund as any).fund, title: "Open fund", blurb: "Anyone can join with test pUSD while its window is open, and exit at any time." },
-    { id: R.fund, title: "Demo fund", blurb: "The fund from the recorded run; the AI operator traded it." },
-    { id: (earnRun as any).fund, title: "Earning fund", blurb: "Stakes idle wNEAR into Meta Pool stNEAR; the manager is paid in new shares." },
-  ],
-  legacy: LEGACY_IDS.map((id) => ({ id, title: id.split(".")[0], blurb: "A fund from before release 0.3, kept as history." })),
-  linked,
-  onStats: paintStats,
-  onNewest: (id) => {
-    // The newest fund on the current release is the better default than the recorded old one.
-    if (!linked && !userTyped) {
-      input.value = id;
-      out.innerHTML = `<span class="muted">Enter a fund account and press Verify. Prefilled with the newest fund from the factory.</span>`;
-    }
-  },
-  onVerify: (id) => verifyNow(id),
-}).then((a) => (app = a));
-
-mountLaunch((id) => {
-  void app?.showFund(id).then(() => verifyNow(id, false));
-});
 
 mountAgent(agentRun);
 mountQuorum(quorumRun);

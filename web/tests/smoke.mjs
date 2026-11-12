@@ -1,14 +1,15 @@
 // Site smoke test: run against a served build (npm run web:preview) or any URL.
-//   node web/tests/smoke.mjs [url]
-// Checks at phone and desktop width: no console errors, no horizontal overflow, the fund cards
-// render from testnet RPC, old-release funds carry their known-issue tag, the in-browser verifier
-// does not pass an old-release fund as clean, the ?fund= deep link, the phone menu, the launch form's
-// validation without a wallet, the AI operator receipts, and that nothing on the page reads like code.
+//   node web/tests/smoke.mjs [base url]
+// Every page at phone and desktop width: loads, no console errors, no horizontal overflow, nothing that
+// reads like code, 44px controls. Then what each page is for: Home's live numbers and links, the old
+// ?fund= link redirecting into the app, the app's fund cards from the chain (old releases tagged, deep
+// links), the verifier's verdicts, the launch form's checks without a wallet, the recorded runs on How
+// it works (AI receipts verified in the browser), and the security page's known issue.
 // Checks that need release 0.3 funds run only when data/releases.json names a testnet factory.
 import { chromium } from "playwright";
 import fs from "node:fs";
 
-const url = process.argv[2] ?? "http://localhost:4173/";
+const base = (process.argv[2] ?? "http://localhost:4173/").replace(/\/?$/, "/");
 const data = (f) => JSON.parse(fs.readFileSync(new URL(`../../data/${f}`, import.meta.url), "utf8"));
 const releases = data("releases.json");
 const factory = releases.factories?.testnet || null;
@@ -26,27 +27,18 @@ function check(cond, msg) {
   console.log(`${cond ? "[ok]  " : "[FAIL]"} ${msg}`);
   if (!cond) failed++;
 }
-/** Leaf elements whose text reads like code: braces, method names, raw units, long hashes or addresses. */
-const codeLike = () =>
-  [...document.querySelectorAll("body *")]
-    .filter((e) => e.children.length === 0 && !["SCRIPT", "STYLE", "OPTION"].includes(e.tagName))
-    .filter((e) => /[{}]|"action"|\d{8,}|0x[0-9a-f]{10}|\bbps\b|\b[a-z]+_[a-z_]+\b|[a-z_]+\(\)|\b[1-9A-HJ-NP-Za-km-z]{30,}\b|\b[0-9a-f]{40,}\b|TGas|yocto/.test(e.textContent || ""))
-    .map((e) => (e.textContent || "").slice(0, 60));
 // A rate-limited RPC node answers 429 without CORS headers; the browser logs that as a failed fetch
 // and the page retries it. That is the node's weather, not a bug in the page: everything else fails.
 const RPC_HOST = /rpc\.(testnet|mainnet)\.fastnear\.com/;
 const rpcWeather = (text) => RPC_HOST.test(text) && /fetch|CORS|Access-Control|429|Too Many Requests|ERR_FAILED|Failed to load resource/i.test(text);
-const watch = (page) => {
+async function open(path, w, h) {
+  const page = await browser.newPage({ viewport: { width: w, height: h } });
   const errors = [];
-  page.on("console", (m) => {
-    // Chrome's "Failed to load resource" text carries no URL; the URL is in the message's location.
-    if (m.type() === "error" && !rpcWeather(`${m.text()} ${m.location()?.url ?? ""}`)) errors.push(`${m.text()} ${m.location()?.url ?? ""}`.trim());
-  });
-  page.on("pageerror", (e) => {
-    if (!rpcWeather(e.message)) errors.push(e.message);
-  });
-  return errors;
-};
+  page.on("console", (m) => m.type() === "error" && !rpcWeather(m.text()) && errors.push(m.text()));
+  page.on("pageerror", (e) => !rpcWeather(e.message) && errors.push(e.message));
+  await page.goto(base + path, { waitUntil: "networkidle" });
+  return { page, errors };
+}
 /** Poll a condition for up to `ms`, so a slow runner gets the same answer as a fast one. */
 async function settle(fn, ms = 10000) {
   const until = Date.now() + ms;
@@ -58,170 +50,236 @@ async function settle(fn, ms = 10000) {
   }
   return last;
 }
-const overflow = (page) => page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
-
-for (const [w, h, name] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
-  const page = await browser.newPage({ viewport: { width: w, height: h } });
-  const errors = watch(page);
-  await page.goto(url, { waitUntil: "networkidle" });
+/** Leaf elements whose text reads like code: braces, method names, raw units, long hashes or addresses. */
+const codeLike = () =>
+  [...document.querySelectorAll("body *")]
+    .filter((e) => e.children.length === 0 && !["SCRIPT", "STYLE", "OPTION"].includes(e.tagName))
+    .filter((e) => /[{}]|"action"|\d{8,}|0x[0-9a-f]{10}|\bbps\b|\b[a-z]+_[a-z_]+\b|[a-z_]+\(\)|\b[1-9A-HJ-NP-Za-km-z]{30,}\b|\b[0-9a-f]{40,}\b|TGas|yocto/.test(e.textContent || ""))
+    .map((e) => (e.textContent || "").slice(0, 60));
+/** What every page must get right. */
+async function common(page, errors, name) {
   check((await page.title()).includes("Plinth"), `${name}: title`);
-
-  // ---- hero and navigation
-  check((await page.locator(".hero .btn.primary").textContent()).includes("Try it on testnet"), `${name}: hero's main button is "Try it on testnet"`);
-  if (w < 800) {
-    const btn = page.locator("#menu-btn");
-    check(await btn.isVisible(), `${name}: menu button is shown`);
-    check(!(await page.locator("#site-nav a").first().isVisible()), `${name}: menu starts closed`);
-    await btn.click();
-    check((await btn.getAttribute("aria-expanded")) === "true" && (await page.locator("#site-nav a").first().isVisible()), `${name}: menu opens`);
-    await page.keyboard.press("Escape");
-    check((await btn.getAttribute("aria-expanded")) === "false" && !(await page.locator("#site-nav a").first().isVisible()), `${name}: Escape closes the menu`);
-    await btn.click();
-    await page.locator('#site-nav a[href="#limits"]').click();
-    check((await btn.getAttribute("aria-expanded")) === "false", `${name}: tapping a link closes the menu`);
-  } else {
-    check(await page.locator('#site-nav a[href="#launch"]').isVisible(), `${name}: navigation links are shown`);
-  }
-
-  // ---- fund cards from the chain. Every card must be loaded before the tags are judged; the
-  // earlier group is collapsed, so open it to read it.
-  await page.waitForFunction(() => document.querySelectorAll(".fund").length > 0 && [...document.querySelectorAll(".fund")].every((e) => !e.classList.contains("loading")), null, { timeout: 60000 }).catch(() => {});
-  await page.locator("#funds-legacy-wrap").evaluate((d) => (d.open = true));
-  const legacyCards = await page.$$("#funds-legacy .fund .fund-h");
-  check(legacyCards.length >= 1, `${name}: ${legacyCards.length} earlier funds render from the chain`);
-  check((await page.$$("#funds-legacy .fund")).length === legacyCards.length, `${name}: every earlier fund loaded`);
-  const tags = await page.$$eval("#funds-legacy .fund", (els) => els.map((e) => !!e.querySelector(".known-tag") && /Known issue: old release/.test(e.querySelector(".known-tag").textContent)));
-  check(tags.length === legacyCards.length && tags.every(Boolean), `${name}: every earlier fund carries the known-issue tag`);
-  check((await page.$$("#funds-new .fund .known-tag")).length === 0, `${name}: no fund outside the earlier group carries the tag`);
-  check((await page.$$('#funds-legacy .known-tag a[href="#limit-known"]')).length === legacyCards.length && (await page.$$("#limit-known")).length === 1, `${name}: the tag links to the limit`);
-  check(await page.locator(`#funds-legacy .fund h3 a[title="${legacyFund}"]`).count() === 1, `${name}: ${legacyFund} sits in the earlier group`);
-  const allText = await page.textContent("#try");
-  const allCards = await page.$$(".fund");
-  check(allText.includes("stNEAR"), `${name}: the earning fund shows its stNEAR`);
-  check(allText.includes("0 keys"), `${name}: funds show 0 keys`);
-  check(/shares? holds?/.test(allText) && allText.includes("Shares issued"), `${name}: cards explain what shares hold`);
-  check(allText.includes("Running costs") && allText.includes("The most trading can cost a holding in one day"), `${name}: cards show running costs and the worst day`);
-  check((await page.$$(".fund [data-act=share]")).length === allCards.length, `${name}: every card has a Share link`);
-  await page.locator("#funds-legacy-wrap").evaluate((d) => (d.open = false));
-  if (factory) {
-    await page.waitForSelector("#funds-new .fund .fund-h", { timeout: 45000 }).catch(() => {});
-    const fresh = await page.$$("#funds-new .fund .fund-h");
-    check(fresh.length > 0, `${name}: funds from the factory render (${fresh.length})`);
-    check((await page.$$("#funds-new .fund .known-tag")).length === 0, `${name}: factory funds carry no known-issue tag`);
-    check(!(await page.locator("#funds-legacy-wrap").evaluate((d) => d.open)) || fresh.length === 0, `${name}: earlier funds are collapsed below the new ones`);
-    check(await page.locator(`#funds-new .fund h3 a[title="${recorded}"]`).count() === (recordedLegacy ? 0 : 1), `${name}: the recorded fund is listed ${recordedLegacy ? "among the earlier funds" : "with the factory funds"}`);
-    const first = await page.locator("#funds-new .fund h3 a").first().getAttribute("title");
-    check((await page.inputValue("#fund-id")) === first, `${name}: the verifier is prefilled with the newest factory fund`);
-  } else {
-    check(await page.locator("#funds-legacy-wrap").evaluate((d) => d.open), `${name}: with no factory, the earlier funds are shown open`);
-    check(await page.locator("#funds-note").isVisible(), `${name}: the page says no release 0.3 fund is live yet`);
-  }
-
-  // ---- live stats
-  await page.waitForFunction(() => document.querySelector("#stats")?.getAttribute("aria-busy") === "false", null, { timeout: 45000 }).catch(() => {});
-  const stats = await page.$$eval("#stats .stat b", (els) => els.map((e) => e.textContent.trim()));
-  check(stats.length === 4 && stats.every((s) => /^\d+$/.test(s)), `${name}: four live numbers in the stats strip (${stats.join(", ")})`);
-  const cardTrades = await page.$$eval(".fund .kv", (els) => els.filter((e) => /Trades/.test(e.querySelector("span")?.textContent || "")).map((e) => Number(e.querySelector("b").textContent.split("·")[0])));
-  check(Number(stats[2]) === cardTrades.reduce((a, b) => a + b, 0), `${name}: the trades total equals the sum on the cards`);
-
-  // ---- verifier: the recorded fund, judged by what the data says it runs
-  const verifyId = async (id) => {
-    await page.fill("#fund-id", id);
-    await page.click("#verify-form button[type=submit]");
-    await page.waitForFunction(() => document.querySelector(".verdict") && !/^Reading/.test(document.querySelector("#verify-out").textContent), null, { timeout: 60000 });
-    return page.textContent(".verdict");
-  };
-  const verdict = await verifyId(recorded);
-  if (recordedLegacy) {
-    check(!verdict.startsWith("Verified") && verdict.includes("known accounting bug"), `${name}: the verifier flags the recorded fund's release instead of passing it`);
-    check(await page.locator("#verify-out .known-tag").isVisible(), `${name}: the verifier shows the known-issue tag`);
-  } else {
-    check(!verdict.startsWith("Not verified") && !verdict.includes("known accounting bug"), `${name}: the recorded fund (release ${recordedRelease?.version ?? "?"}) has no failed check and no known issue`);
-    check((await page.textContent("#verify-out")).includes("Refunds can only go to this fund"), `${name}: the verifier checked the recorded fund's refund account`);
-  }
-  check(!(await page.locator(".verdict").evaluate((e) => e.classList.contains("ok"))) === (recordedLegacy || (await page.textContent("#verify-out")).includes("Test signer")), `${name}: the verdict is styled as a pass only for a clean fund with the real signer`);
-  check((await page.textContent("#verify-out")).includes("Test signer"), `${name}: the verifier says quotes come from a test signer`);
-  // ---- an old-release fund must never read as a clean pass
-  const old = await verifyId(legacyFund);
-  check(!old.startsWith("Verified") && old.includes("known accounting bug"), `${name}: the verifier flags ${legacyFund} as an old release instead of passing it`);
-  check(!(await page.locator(".verdict").evaluate((e) => e.classList.contains("ok"))), `${name}: that verdict is not styled as a pass`);
-  check(await page.locator("#verify-out .known-tag").isVisible(), `${name}: the verifier shows the known-issue tag`);
-  await page.fill("#fund-id", "wrap.testnet");
-  await page.click("#verify-form button[type=submit]");
-  await page.waitForFunction(() => document.querySelector(".verdict")?.classList.contains("bad"), null, { timeout: 45000 }).catch(() => {});
-  check((await page.textContent(".verdict")).startsWith("Not verified"), `${name}: the verifier refuses a contract that is not Plinth`);
-  if (factory) {
-    const first = await page.locator("#funds-new .fund h3 a").first().getAttribute("title");
-    await page.fill("#fund-id", first);
-    await page.click("#verify-form button[type=submit]");
-    await page.waitForFunction(() => document.querySelector(".verdict") && !document.querySelector(".verdict").textContent.startsWith("Not verified"), null, { timeout: 45000 }).catch(() => {});
-    const v = await page.textContent(".verdict");
-    check(!v.includes("known accounting bug") && !v.startsWith("Not verified"), `${name}: the newest factory fund has no failed check and no known issue`);
-    check(v.startsWith("Verified") !== (await page.textContent("#verify-out")).includes("Test signer"), `${name}: a clean pass is given only to a fund without a test signer`);
-  }
-
-  // ---- launch form: validates without a wallet
-  check((await page.$$("#launch-form fieldset")).length === 4, `${name}: the launch form renders`);
-  await page.fill("#l-name", "Bad Name!");
-  check((await page.textContent("#l-name-e")).length > 10, `${name}: a bad fund name is refused as you type`);
-  await page.fill("#l-name", "my-fund");
-  check((await page.textContent("#l-name-e")) === "", `${name}: a good fund name is accepted`);
-  await page.fill("#l-gap", "5");
-  check((await page.textContent("#l-gap-e")).includes("11"), `${name}: fewer than 11 minutes between trades is refused`);
-  await page.fill("#l-gap", "11");
-  await page.fill("#l-fee", "3");
-  check((await page.textContent("#l-fee-e")).length > 10, `${name}: a fee above 2% is refused`);
-  await page.fill("#l-fee", "1");
-  const summary = await page.textContent("#l-summary");
-  check(summary.includes("refund account") && /Cost: 0\.5\d+ NEAR/.test(summary) && summary.includes("my-fund"), `${name}: the summary shows the exact NEAR cost`);
-  check((await page.locator("#l-submit").isDisabled()) === !factory, `${name}: launching is ${factory ? "open" : "closed until the factory is live"}`);
-
-  // ---- recorded runs
-  const receipts = await page.$$eval(".agent-case .okc, .agent-case .bad", (els) => els.map((e) => e.className.includes("okc")));
-  check(receipts.length > 0 && receipts.every(Boolean), `${name}: ${receipts.length} NEAR AI receipts verify in the browser`);
-  check((await page.$$(".quorum-case")).length === 3, `${name}: three quorum cases render`);
-  check((await page.textContent("#quorum-cases")).includes("quorum: hold"), `${name}: the quorum held on the injected note`);
-
-  // ---- whole page
+  const cta = page.locator(".site-h .nav-cta");
+  check((await cta.getAttribute("href"))?.endsWith("app/"), `${name}: header has "Open the app"`);
+  check((await page.locator(".site-f").count()) === 1, `${name}: shared footer`);
   const codey = await page.evaluate(codeLike);
-  check(codey.length === 0, `${name}: no code-like text on the page${codey.length ? ": " + codey.join(" | ") : ""}`);
+  check(codey.length === 0, `${name}: no code-like text${codey.length ? ": " + codey.join(" | ") : ""}`);
   check((await page.$$("pre, code")).length === 0, `${name}: no code blocks`);
   const small = await page.$$eval("button, .btn, input:not([type=checkbox]):not([type=radio]), select, summary", (els) => els.filter((e) => e.offsetParent !== null && e.getBoundingClientRect().height < 43.5).map((e) => (e.textContent || e.id || e.tagName).trim().slice(0, 30)));
   check(small.length === 0, `${name}: controls are at least 44px tall${small.length ? ": " + small.join(" | ") : ""}`);
-  const over = await overflow(page);
+  const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
   check(over <= 0, `${name}: no horizontal overflow (${over}px)`);
   check(errors.length === 0, `${name}: no console errors${errors.length ? ": " + errors.join(" | ").slice(0, 300) : ""}`);
-  await page.close();
+}
+const allLoaded = () => document.querySelectorAll(".fund").length > 0 && [...document.querySelectorAll(".fund")].every((e) => !e.classList.contains("loading"));
 
-  // ---- deep link: ?fund=<account> opens that fund's card and prefills the verifier
-  const deep = await browser.newPage({ viewport: { width: w, height: h } });
-  const deepErrors = watch(deep);
-  const target = legacyFund;
-  await deep.goto(`${url}${url.includes("?") ? "&" : "?"}fund=${target}`, { waitUntil: "networkidle" });
-  await deep.waitForSelector(".fund.focus .fund-h", { timeout: 45000 }).catch(() => {});
-  check((await deep.inputValue("#fund-id")) === target, `${name}: ?fund= prefills the verifier`);
-  check((await deep.locator(".fund.focus h3 a").getAttribute("title").catch(() => "")) === target, `${name}: ?fund= highlights that fund's card`);
-  check(await deep.locator("#funds-legacy-wrap").evaluate((d) => d.open), `${name}: ?fund= opens the earlier group the fund is in`);
-  // Cards above the linked one keep growing as the chain answers, so the page re-scrolls for a while.
-  const scrolled = await settle(async () => {
-    const top = await deep.locator(".fund.focus").evaluate((e) => e.getBoundingClientRect().top).catch(() => 9999);
-    return { ok: top > -50 && top < h, top };
-  });
-  check(scrolled.ok, `${name}: ?fund= scrolls to the card (top at ${Math.round(scrolled.top)}px)`);
-  const href = await deep.locator(".fund.focus [data-act=share]").getAttribute("href").catch(() => "");
-  check(href.endsWith(`?fund=${target}`) || href.endsWith(`/f/${target}`), `${name}: the Share link points back to this fund`);
-  check((await overflow(deep)) <= 0, `${name}: no horizontal overflow on the deep link`);
-  check(deepErrors.length === 0, `${name}: no console errors on the deep link${deepErrors.length ? ": " + deepErrors.join(" | ").slice(0, 300) : ""}`);
-  await deep.close();
+for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
+  // ---------------------------------------------------------------- Home
+  {
+    const { page, errors } = await open("", w, h);
+    const name = `${dev} home`;
+    check((await page.textContent(".hero")).includes("testnet"), `${name}: says plainly it is testnet`);
+    const nums = await settle(async () => {
+      const v = await page.$$eval("#live .num", (els) => els.map((e) => e.textContent.trim()));
+      return { ok: v.length === 4 && v.every((x) => /^\d[\d,]*$/.test(x)) && (await page.getAttribute("#live", "aria-busy")) === "false", v };
+    }, 45000);
+    check(nums.ok, `${name}: live numbers render from the chain (${(nums.v || []).join(", ")})`);
+    // Counters run up to the number: wait for them to stop before reading.
+    await page.locator("#live").scrollIntoViewIfNeeded();
+    await page.waitForTimeout(1800);
+    const keys = await page.textContent('#live .num[data-k="keys"]');
+    check(keys.trim() === "0", `${name}: access keys across the factory's funds is 0`);
+    check((await page.$$(".steps4 .step")).length === 4, `${name}: four steps`);
+    check((await page.$$("#proofs .proof")).length === 3, `${name}: three proof cards`);
+    check((await page.$$(".faq details")).length >= 4, `${name}: FAQ`);
+    if (w < 900) {
+      const btn = page.locator("#menu-btn");
+      await page.evaluate(() => scrollTo(0, 0));
+      check(await btn.isVisible(), `${name}: menu button is shown`);
+      check(!(await page.locator("#site-nav a").first().isVisible()), `${name}: menu starts closed`);
+      await btn.click();
+      check((await btn.getAttribute("aria-expanded")) === "true" && (await page.locator("#site-nav a").first().isVisible()), `${name}: menu opens`);
+      await page.keyboard.press("Escape");
+      check((await btn.getAttribute("aria-expanded")) === "false" && !(await page.locator("#site-nav a").first().isVisible()), `${name}: Escape closes the menu`);
+    } else check(await page.locator('#site-nav a[href$="verify/"]').isVisible(), `${name}: navigation links are shown`);
+    await common(page, errors, name);
+    await page.evaluate(() => scrollTo(0, 0));
+    await page.locator(".hero .btn.primary").click();
+    await page.waitForURL(/\/app\/$/, { timeout: 15000 }).catch(() => {});
+    check(new URL(page.url()).pathname.endsWith("/app/"), `${name}: "Open the app" goes to the app (${new URL(page.url()).pathname})`);
+    await page.close();
+  }
+  // the old share link
+  {
+    const { page } = await open(`?fund=${legacyFund}`, w, h);
+    await page.waitForURL(/\/app\/\?fund=/, { timeout: 15000 }).catch(() => {});
+    const u = new URL(page.url());
+    check(u.pathname.endsWith("/app/") && u.searchParams.get("fund") === legacyFund, `${dev}: /?fund= redirects to /app/?fund= (${u.pathname}${u.search})`);
+    await page.close();
+  }
+
+  // ---------------------------------------------------------------- App
+  {
+    const { page, errors } = await open("app/", w, h);
+    const name = `${dev} app`;
+    await page.waitForFunction(allLoaded, null, { timeout: 60000 }).catch(() => {});
+    await page.locator("#funds-legacy-wrap").evaluate((d) => (d.open = true));
+    const legacyCards = await page.$$("#funds-legacy .fund .fund-h");
+    check(legacyCards.length >= 1, `${name}: ${legacyCards.length} earlier funds render from the chain`);
+    check((await page.$$("#funds-legacy .fund")).length === legacyCards.length, `${name}: every earlier fund loaded`);
+    const tags = await page.$$eval("#funds-legacy .fund", (els) => els.map((e) => !!e.querySelector(".known-tag") && /Known issue: old release/.test(e.querySelector(".known-tag").textContent)));
+    check(tags.length === legacyCards.length && tags.every(Boolean), `${name}: every earlier fund carries the known-issue tag`);
+    check((await page.$$("#funds-new .fund .known-tag")).length === 0, `${name}: no fund outside the earlier group carries the tag`);
+    check((await page.$$('#funds-legacy .known-tag a[href$="security/#limit-known"]')).length === legacyCards.length, `${name}: the tag links to the known issue on the security page`);
+    check((await page.locator(`#funds-legacy .fund h3 a[title="${legacyFund}"]`).count()) === 1, `${name}: ${legacyFund} sits in the earlier group`);
+    const allText = await page.textContent("#main");
+    check(allText.includes("stNEAR"), `${name}: the earning fund shows its stNEAR`);
+    check(allText.includes("0 keys"), `${name}: funds show 0 keys`);
+    check(/shares? holds?/.test(allText) && allText.includes("Shares issued"), `${name}: cards explain what shares hold`);
+    check(allText.includes("Running costs") && allText.includes("The most trading can cost a holding in one day"), `${name}: cards show running costs and the worst day`);
+    const allCards = await page.$$(".fund");
+    check((await page.$$(".fund [data-act=share]")).length === allCards.length, `${name}: every card has a Share link`);
+    check((await page.$$('.fund a[href*="verify/?fund="]')).length === allCards.length, `${name}: every card links to the verifier`);
+    await page.locator("#funds-legacy-wrap").evaluate((d) => (d.open = false));
+    if (factory) {
+      const fresh = await page.$$("#funds-new .fund .fund-h");
+      check(fresh.length > 0, `${name}: funds from the factory render (${fresh.length})`);
+      check(!(await page.locator("#funds-legacy-wrap").evaluate((d) => d.open)), `${name}: earlier funds are collapsed below the new ones`);
+      check((await page.locator(`#funds-new .fund h3 a[title="${recorded}"]`).count()) === (recordedLegacy ? 0 : 1), `${name}: the recorded fund is listed ${recordedLegacy ? "among the earlier funds" : "with the factory funds"}`);
+    } else {
+      check(await page.locator("#funds-legacy-wrap").evaluate((d) => d.open), `${name}: with no factory, the earlier funds are shown open`);
+      check(await page.locator("#funds-note").isVisible(), `${name}: the page says no release 0.3 fund is live yet`);
+    }
+    const sum = await settle(async () => {
+      const v = await page.$$eval("#dash-summary b", (els) => els.map((e) => e.textContent.trim()));
+      return { ok: v.length === 4 && v.every((x) => /^\d[\d,]*$/.test(x)), v };
+    }, 30000);
+    check(sum.ok, `${name}: four live numbers above the funds (${(sum.v || []).join(", ")})`);
+    const cardTrades = await page.$$eval(".fund .kv", (els) => els.filter((e) => /Trades/.test(e.querySelector("span")?.textContent || "")).map((e) => Number(e.querySelector("b").textContent.split("·")[0])));
+    check(Number((sum.v || [])[2]) === cardTrades.reduce((a, b) => a + b, 0), `${name}: the trades total equals the sum on the cards`);
+    await common(page, errors, name);
+    await page.close();
+  }
+  // deep link into the app
+  {
+    const { page, errors } = await open(`app/?fund=${legacyFund}`, w, h);
+    const name = `${dev} app deep link`;
+    await page.waitForSelector(".fund.focus .fund-h", { timeout: 45000 }).catch(() => {});
+    check((await page.locator(".fund.focus h3 a").getAttribute("title").catch(() => "")) === legacyFund, `${name}: ?fund= highlights that fund's card`);
+    check(await page.locator("#funds-legacy-wrap").evaluate((d) => d.open), `${name}: ?fund= opens the earlier group the fund is in`);
+    // Cards above the linked one keep growing as the chain answers, so the page re-scrolls for a while.
+    const scrolled = await settle(async () => {
+      const top = await page.locator(".fund.focus").evaluate((e) => e.getBoundingClientRect().top).catch(() => 9999);
+      return { ok: top > -50 && top < h, top };
+    });
+    check(scrolled.ok, `${name}: ?fund= scrolls to the card (top at ${Math.round(scrolled.top)}px)`);
+    const href = await page.locator(".fund.focus [data-act=share]").getAttribute("href").catch(() => "");
+    check(href.endsWith(`app/?fund=${legacyFund}`) || href.endsWith(`/f/${legacyFund}`), `${name}: the Share link points back to this fund`);
+    check((await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) <= 0, `${name}: no horizontal overflow`);
+    check(errors.length === 0, `${name}: no console errors${errors.length ? ": " + errors.join(" | ").slice(0, 300) : ""}`);
+    await page.close();
+  }
+
+  // ---------------------------------------------------------------- Verify
+  {
+    const { page, errors } = await open("verify/", w, h);
+    const name = `${dev} verify`;
+    if (factory) {
+      const pre = await settle(async () => ({ ok: (await page.inputValue("#fund-id")) !== recorded }), 20000);
+      const first = await page.inputValue("#fund-id");
+      check(pre.ok && /\.funds\./.test(first) || first.endsWith(`.${factory}`), `${name}: prefilled with the newest factory fund (${first})`);
+    }
+    const verifyId = async (id) => {
+      await page.fill("#fund-id", id);
+      await page.click("#verify-form button[type=submit]");
+      await page.waitForFunction(() => document.querySelector(".verdict") && !/^Reading/.test(document.querySelector("#verify-out").textContent), null, { timeout: 60000 });
+      return page.textContent(".verdict");
+    };
+    const verdict = await verifyId(recorded);
+    if (recordedLegacy) {
+      check(!verdict.startsWith("Verified") && verdict.includes("known accounting bug"), `${name}: the verifier flags the recorded fund's release instead of passing it`);
+      check(await page.locator("#verify-out .known-tag").isVisible(), `${name}: the verifier shows the known-issue tag`);
+    } else {
+      check(!verdict.startsWith("Not verified") && !verdict.includes("known accounting bug"), `${name}: the recorded fund (release ${recordedRelease?.version ?? "?"}) has no failed check and no known issue`);
+      check((await page.textContent("#verify-out")).includes("Refunds can only go to this fund"), `${name}: the verifier checked the recorded fund's refund account`);
+    }
+    check(!(await page.locator(".verdict").evaluate((e) => e.classList.contains("ok"))) === (recordedLegacy || (await page.textContent("#verify-out")).includes("Test signer")), `${name}: the verdict is styled as a pass only for a clean fund with the real signer`);
+    check((await page.textContent("#verify-out")).includes("Test signer"), `${name}: the verifier says quotes come from a test signer`);
+    const old = await verifyId(legacyFund);
+    check(!old.startsWith("Verified") && old.includes("known accounting bug"), `${name}: the verifier flags ${legacyFund} as an old release instead of passing it`);
+    check(!(await page.locator(".verdict").evaluate((e) => e.classList.contains("ok"))), `${name}: that verdict is not styled as a pass`);
+    check(await page.locator("#verify-out .known-tag").isVisible(), `${name}: the verifier shows the known-issue tag`);
+    const bad = await verifyId("wrap.testnet");
+    check(bad.startsWith("Not verified"), `${name}: the verifier refuses a contract that is not Plinth`);
+    await common(page, errors, name);
+    await page.close();
+  }
+  // verify deep link
+  {
+    const { page, errors } = await open(`verify/?fund=${legacyFund}`, w, h);
+    const name = `${dev} verify deep link`;
+    check((await page.inputValue("#fund-id")) === legacyFund, `${name}: ?fund= prefills the verifier`);
+    await page.waitForSelector(".verdict", { timeout: 60000 }).catch(() => {});
+    check(((await page.textContent(".verdict").catch(() => "")) || "").includes("known accounting bug"), `${name}: ?fund= runs the check straight away`);
+    check(errors.length === 0, `${name}: no console errors${errors.length ? ": " + errors.join(" | ").slice(0, 300) : ""}`);
+    await page.close();
+  }
+
+  // ---------------------------------------------------------------- Launch
+  {
+    const { page, errors } = await open("app/launch/", w, h);
+    const name = `${dev} launch`;
+    check((await page.$$("#launch-form fieldset")).length === 4, `${name}: the launch form renders`);
+    await page.fill("#l-name", "Bad Name!");
+    check((await page.textContent("#l-name-e")).length > 10, `${name}: a bad fund name is refused as you type`);
+    await page.fill("#l-name", "my-fund");
+    check((await page.textContent("#l-name-e")) === "", `${name}: a good fund name is accepted`);
+    await page.fill("#l-gap", "5");
+    check((await page.textContent("#l-gap-e")).includes("11"), `${name}: fewer than 11 minutes between trades is refused`);
+    await page.fill("#l-gap", "11");
+    await page.fill("#l-fee", "3");
+    check((await page.textContent("#l-fee-e")).length > 10, `${name}: a fee above 2% is refused`);
+    await page.fill("#l-fee", "1");
+    const summary = await page.textContent("#l-summary");
+    check(summary.includes("refund account") && /Cost: 0\.5\d+ NEAR/.test(summary) && summary.includes("my-fund"), `${name}: the summary shows the exact NEAR cost`);
+    check((await page.locator("#l-submit").isDisabled()) === !factory, `${name}: launching is ${factory ? "open" : "closed until the factory is live"}`);
+    await common(page, errors, name);
+    await page.close();
+  }
+
+  // ---------------------------------------------------------------- How it works
+  {
+    const { page, errors } = await open("how/", w, h);
+    const name = `${dev} how`;
+    check((await page.$$(".steps [role=tab]")).length === 6, `${name}: six lifecycle steps`);
+    check((await page.$$("#timeline li")).length >= 6, `${name}: the recorded run's timeline`);
+    const receipts = await page.$$eval(".agent-case .okc, .agent-case .bad, .quorum-case .okc, .quorum-case .bad", (els) => els.map((e) => e.className.includes("okc")));
+    check(receipts.length > 0 && receipts.every(Boolean), `${name}: ${receipts.length} NEAR AI receipts verify in the browser`);
+    check((await page.$$(".quorum-case")).length === 3, `${name}: three quorum cases render`);
+    check((await page.textContent("#quorum-cases")).includes("Quorum: hold"), `${name}: the quorum held on the injected note`);
+    check((await page.$$(".quorum-case table.votes")).length === 3, `${name}: model votes are shown as tables`);
+    await common(page, errors, name);
+    await page.close();
+  }
+
+  // ---------------------------------------------------------------- Security
+  {
+    const { page, errors } = await open("security/", w, h);
+    const name = `${dev} security`;
+    check((await page.$$("#limit-known")).length === 1, `${name}: the known issue has its own section`);
+    check((await page.textContent("#limit-known")).includes("0.1 and 0.2"), `${name}: it names the affected releases`);
+    check((await page.$$("#limits .limits li")).length >= 8, `${name}: the limits are listed`);
+    await common(page, errors, name);
+    await page.close();
+  }
 }
 
 // ---- the narrowest phones
-{
-  const page = await browser.newPage({ viewport: { width: 360, height: 740 } });
-  await page.goto(url, { waitUntil: "networkidle" });
-  await page.waitForSelector(".fund .fund-h", { timeout: 45000 }).catch(() => {});
-  const over = await overflow(page);
-  check(over <= 0, `360px: no horizontal overflow (${over}px)`);
+for (const path of ["", "app/", "verify/", "how/", "security/", "app/launch/"]) {
+  const { page } = await open(path, 360, 740);
+  if (path === "app/") await page.waitForFunction(allLoaded, null, { timeout: 60000 }).catch(() => {});
+  const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+  check(over <= 0, `360px /${path}: no horizontal overflow (${over}px)`);
   await page.close();
 }
 await browser.close();

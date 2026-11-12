@@ -3,157 +3,170 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Plinth · keyless funds on NEAR</title>
-    <meta name="description" content="A NEAR fund nobody can change, with an exit nobody can block. Verify any fund from the chain, in your browser." />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='20' width='22' height='6' rx='1.5' fill='%233d8bff'/%3E%3Crect x='9' y='12' width='14' height='6' rx='1.5' fill='%2322d3ee'/%3E%3Crect x='13' y='4' width='6' height='6' rx='1.5' fill='%23e2e8f0'/%3E%3C/svg%3E" />
+    <title>Plinth · a shared fund nobody can change</title>
+    <meta name="description" content="Plinth is a shared fund on NEAR testnet whose rules are fixed when it is created. The manager can only suggest trades the rules allow, and anyone can take their share out at any time." />
+    <meta name="theme-color" content="#030817" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='20' width='22' height='6' rx='1.5' fill='%232f6bff'/%3E%3Crect x='9' y='12' width='14' height='6' rx='1.5' fill='%2322c3e6'/%3E%3Crect x='13' y='4' width='6' height='6' rx='1.5' fill='%230a1430'/%3E%3C/svg%3E" />
+    <script>
+      // Old share links pointed at /?fund=<id>: the fund now lives in the app.
+      if (/[?&]fund=/.test(location.search)) location.replace(new URL("app/" + location.search + location.hash, location.href).href);
+    </script>
   </head>
-  <body>
-    <a class="skip" href="#try">Skip to the funds</a>
-    <div class="glow-wrap" aria-hidden="true"><div class="glow"></div></div>
-    <header class="nav">
-      <a class="brand" href="#top" aria-label="Plinth home">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="20" width="22" height="6" rx="1.5" class="b1" /><rect x="9" y="12" width="14" height="6" rx="1.5" class="b2" /><rect x="13" y="4" width="6" height="6" rx="1.5" class="b3" /></svg>
-        <span>Plinth</span>
-      </a>
-      <button class="menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav"><span class="bars" aria-hidden="true"></span><span class="sr">Menu</span></button>
-      <nav id="site-nav" aria-label="Sections">
-        <a href="#how">How it works</a>
-        <a href="#verify">Verify</a>
-        <a href="#try">Try it</a>
-        <a href="#launch">Launch</a>
-        <a href="#run">Live run</a>
-        <a href="#limits">Limits</a>
-        <a class="gh" href="https://github.com/unajijacob6-create/plinth">GitHub</a>
-      </nav>
-    </header>
-
-    <main id="top">
-      <section class="hero">
-        <p class="eyebrow">Keyless funds on NEAR · testnet only</p>
-        <h1>A fund nobody can change.<br /><span class="grad">An exit nobody can block.</span></h1>
-        <p class="lede">Plinth funds have no keys. The rules are fixed at launch. The manager can only propose swaps, and the contract checks each one against a signed NEAR Intents quote. Every depositor can take their share of every token out, at any time.</p>
+  <body class="home">
+    <section class="band" aria-labelledby="hero-h">
+      <canvas class="sky" id="sky" aria-hidden="true"></canvas>
+      <div class="light l1" aria-hidden="true"></div>
+      <div class="light l2" aria-hidden="true"></div>
+      <div class="beams" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="grain" aria-hidden="true"></div>
+      <div class="wrap hero">
+        <p class="pill"><b>NEW</b>Built at the NEAR HACKATHON · testnet</p>
+        <h1 class="display" id="hero-h">A shared fund that <em>nobody can change.</em></h1>
+        <p class="sub">People put tokens into one pool. The rules are fixed the moment it is created. A manager can only suggest trades those rules allow, and anyone can take their share out at any time.</p>
         <div class="cta">
-          <a class="btn primary" href="#try">Try it on testnet</a>
-          <a class="btn ghost" href="#verify">Verify a fund</a>
+          <a class="btn primary" data-href="app/">Open the app <span class="arr" aria-hidden="true">→</span></a>
+          <a class="btn glass" data-href="how/">See how it works</a>
         </div>
-      </section>
+        <p class="testnet-note"><b>Live on NEAR testnet, with test tokens.</b> Nothing here is real money.</p>
+      </div>
+    </section>
 
-      <section class="stats" id="stats" aria-label="Live numbers from NEAR testnet" aria-busy="true">
-        <div class="stat"><b class="sk sk-num"></b><span class="sk sk-l"></span></div>
-        <div class="stat"><b class="sk sk-num"></b><span class="sk sk-l"></span></div>
-        <div class="stat"><b class="sk sk-num"></b><span class="sk sk-l"></span></div>
-        <div class="stat"><b class="sk sk-num"></b><span class="sk sk-l"></span></div>
-      </section>
-      <p class="stats-note small muted" id="stats-note">Reading these numbers from NEAR testnet…</p>
-
-      <section class="block" id="how">
-        <p class="eyebrow">How it works</p>
-        <h2>Six steps. The manager is in one of them.</h2>
-        <div class="steps" role="tablist" aria-label="Lifecycle"></div>
-        <div class="step-panel" id="step-panel" role="tabpanel"></div>
-      </section>
-
-      <section class="block" id="compare">
-        <p class="eyebrow">Trust model</p>
-        <h2>What you have to trust</h2>
-        <div class="table-wrap" tabindex="0" role="region" aria-label="Comparison of fund designs">
-          <table class="compare">
-            <thead><tr><th scope="col"></th><th scope="col">Upgradeable fund</th><th scope="col">Enclave-guarded fund</th><th scope="col" class="us">Plinth</th></tr></thead>
-            <tbody>
-              <tr><th scope="row">Keys on the fund account</th><td>Admin or deployer key</td><td>Often still a deployer key</td><td class="us">None, from creation</td></tr>
-              <tr><th scope="row">Who enforces the rules</th><td>Code that can be replaced</td><td>An off-chain enclave</td><td class="us">The contract, on every trade</td></tr>
-              <tr><th scope="row">How you exit</th><td>When the admin allows it</td><td>When the guardian runs</td><td class="us">Any time, in kind, by yourself</td></tr>
-              <tr><th scope="row">How you check it</th><td>Read docs, trust a team</td><td>Verify an attestation</td><td class="us">From the chain, in your browser</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="block" id="verify">
-        <p class="eyebrow">Verify from the chain</p>
-        <h2>Check any fund yourself</h2>
-        <p class="sub">Runs in your browser against a public NEAR node. No server, no wallet. It checks the keys, the code and the rules, and says so plainly when a fund runs a release with a known problem.</p>
-        <form class="console" id="verify-form" autocomplete="off">
-          <div class="console-bar"><span>Fund verifier</span></div>
-          <div class="console-input">
-            <label for="fund-id" class="sr">Fund account</label>
-            <input id="fund-id" name="fund" spellcheck="false" autocapitalize="none" />
-            <select id="fund-net" aria-label="Network"><option value="testnet">testnet</option><option value="mainnet">mainnet</option></select>
-            <button class="btn primary" type="submit">Verify</button>
-          </div>
-          <div class="console-out" id="verify-out" aria-live="polite"></div>
-        </form>
-      </section>
-
-      <section class="block" id="try">
-        <p class="eyebrow">Try it on testnet</p>
-        <h2>Join a fund. Leave it. Nobody can stop you.</h2>
-        <p class="sub">Everything below is read from the chain as you look at it. Connect a testnet wallet, take 100 test pUSD, join a fund and exit with your slice of every token. Test tokens only.</p>
-        <div class="wallet-bar" id="wallet-bar"><span class="sk sk-btn"></span></div>
-        <p class="notice small" id="funds-note" hidden></p>
-        <div class="funds" id="funds-new"></div>
-        <div class="more-wrap"><button class="btn ghost sm" id="funds-more" type="button" hidden>Show more funds</button></div>
-        <details class="group" id="funds-legacy-wrap">
-          <summary><span>Earlier funds (old release)</span><small>Releases 0.1 and 0.2 have a known accounting bug. Kept as history.</small></summary>
-          <div class="funds" id="funds-legacy"></div>
-        </details>
-      </section>
-
-      <section class="block" id="launch">
-        <p class="eyebrow">Launch a fund</p>
-        <h2>Set the rules once. Then nobody can change them.</h2>
-        <p class="sub">One call to the factory creates a fund with no keys, running the one published copy of the code. You pick the tokens and the limits; after launch they are fixed for good, for you too. Testnet only.</p>
-        <form class="launch" id="launch-form" autocomplete="off" novalidate></form>
-      </section>
-
-      <section class="block" id="agent">
-        <p class="eyebrow">AI operator</p>
-        <h2>Let an AI manage the fund. It still can't take it.</h2>
-        <p class="sub" id="agent-sub"></p>
-        <div class="cards" id="agent-cases"></div>
-        <h3 class="sub-h" id="quorum">Two models must agree</h3>
-        <p class="sub" id="quorum-sub"></p>
-        <div class="cards" id="quorum-cases"></div>
-      </section>
-
-      <section class="block" id="run">
-        <p class="eyebrow">Recorded on testnet</p>
-        <h2>The live run</h2>
-        <p class="sub" id="run-sub"></p>
-        <ol class="timeline" id="timeline"></ol>
-      </section>
-
-      <section class="block" id="refusals">
-        <p class="eyebrow">On-chain refusals</p>
-        <h2>What the contract said no to</h2>
-        <div class="cards" id="refusal-cards"></div>
-      </section>
-
-      <section class="block" id="limits">
-        <p class="eyebrow">Limits</p>
-        <h2>Read these before you trust it</h2>
-        <p class="sub">Two reviews on 2026-11-10 found and fixed one critical and several high-severity issues. A third review the same day found one more critical bug that the first two missed. It comes first, because it affects every fund created before release 0.3. <span id="limits-status"></span></p>
-        <ul class="limits">
-          <li class="known" id="limit-known"><b>Known issue in releases 0.1 and 0.2.</b> Every fund created before release 0.3 has it, including the earlier funds on this page. Those releases count a token transfer that is about to bounce back as if the fund owned it. Anyone can use that to take more than their share, or to mark a trade settled before anything is delivered. A test in the repository proves both. These funds hold test tokens only and cannot be fixed, so treat them as history. Release 0.3 fixes it: a fund counts a token only when it is handed the token and keeps it.</li>
-          <li><b>No fixes, ever.</b> A keyless contract cannot be upgraded. A bug is permanent; the item above is the proof. Funds should start small.</li>
-          <li id="limit-refunds"><b>Refunds go through a separate account.</b> A refund from 1Click arrives as a plain transfer that nobody can see land, so it goes to a second keyless account that holds nothing else and can only pass tokens on to its fund. The fund counts tokens only when it is handed them; it reads no balance anywhere. What is left: a refund that 1Click sends anywhere else, or tokens anyone sends straight to a fund with a plain transfer, are never counted.</li>
-          <li><b>Delivery with a message is untested on mainnet.</b> Release 0.3 needs 1Click to hand the output to the fund together with a short message. NEAR Intents documents this and marks it experimental. No Plinth fund has received a real 1Click delivery this way. If 1Click gave the hand-over too little gas, the output would go back to 1Click and the fund would not get it.</li>
-          <li id="limit-no-manager"><b>No manager does not mean nothing to trust.</b> A fund without a manager lets anyone ask a fixed program for a proposal. The program runs at OutLayer, and the fund cannot check on chain that it ran inside a secure enclave. A forged answer can do what a manager could and no more: propose a trade inside the rules. On testnet the program signs its own stand-in quotes with a key anyone can read. Exits never depend on any of this.</li>
-          <li><b>1Click is trusted to deliver or refund.</b> The contract checks the signed quote; it cannot force delivery.</li>
-          <li><b>Prices are 1Click's.</b> The cost cap uses the dollar values in the signed quote, so it bounds cost against 1Click's own valuation, not against the whole market.</li>
-          <li><b>One signing key.</b> 1Click's key is fixed in the fund. If it changes, the fund can no longer trade, but exits still work.</li>
-          <li><b>Testnet stand-in.</b> 1Click has no testnet, so the recorded runs use a test signer and a solver account in 1Click's place. The verifier labels it.</li>
-          <li><b>App fees are bounded, not blocked.</b> 1Click does not sign its app-fee field, so a manager can take a fee inside a trade. The cost cap still bounds it. Each fund card shows the most this can cost in one day.</li>
-          <li><b>Only test tokens so far.</b> The tests use a test token. No test here runs the real wNEAR or stNEAR code from mainnet, and Plinth has only run on testnet.</li>
-          <li><b>At most 4 tokens.</b> So one exit can pay every token in a single transaction.</li>
-          <li><b>Exit waits for one trade.</b> While a trade is in flight, exits wait up to 10 minutes. After that you can leave without your share of that one trade.</li>
+    <main id="main">
+      <section class="built wrap" aria-label="Built with">
+        <p class="built-h">Built with</p>
+        <ul class="marks">
+          <li class="mk mk-near">NEAR</li>
+          <li class="mk mk-intents">NEAR <span>Intents</span></li>
+          <li class="mk mk-ai">NEAR AI <span>Cloud</span></li>
+          <li class="mk mk-outlayer">OutLayer</li>
+          <li class="mk mk-meta">Meta <span>Pool</span></li>
         </ul>
       </section>
-    </main>
 
-    <footer class="foot">
-      <p>Plinth · built at the NEAR HACKATHON by Unaji Jacob · MIT · <a href="https://github.com/unajijacob6-create/plinth">source</a></p>
-    </footer>
-    <script type="module" src="./src/main.ts"></script>
+      <section class="sec wrap why" aria-labelledby="why-h">
+        <div class="why-text" data-reveal>
+          <p class="label">Why it matters</p>
+          <h2 id="why-h">Most funds ask you to trust a person. Plinth trusts <em>the rules.</em></h2>
+          <p class="lead">In most investment pools, someone holds a key that can change the rules, pause the fund or stop withdrawals. You trust that person not to. A Plinth fund has no key at all. Its rules are written once, when it is created, and nobody can change them afterwards, not even the people who built it.</p>
+          <a class="link" data-href="verify/">Check any fund yourself, in your browser <span aria-hidden="true">→</span></a>
+        </div>
+        <div class="live" id="live" data-reveal style="--d: 120ms" aria-live="polite" aria-busy="true">
+          <p class="live-h"><span class="dot" aria-hidden="true"></span>Live from NEAR testnet</p>
+          <dl class="stats">
+            <div><dt>funds created through the factory</dt><dd><b class="num" data-k="funds"><span class="sk"></span></b></dd></div>
+            <div><dt>access keys across those funds</dt><dd><b class="num" data-k="keys"><span class="sk"></span></b></dd></div>
+            <div><dt>trades sent by those funds</dt><dd><b class="num" data-k="trades"><span class="sk"></span></b></dd></div>
+            <div><dt>proposals refused on chain</dt><dd><b class="num" data-k="refusals"><span class="sk"></span></b></dd></div>
+          </dl>
+          <p class="live-note" id="live-note">Reading from the chain…</p>
+        </div>
+      </section>
+
+      <section class="marquee" aria-label="In short">
+        <div class="mq-track" aria-hidden="true">
+          <span>No keys</span><em>·</em><span class="it">Rules fixed at launch</span><em>·</em><span>Leave any time</span><em>·</em><span class="it">Every trade checked</span><em>·</em><span>Open source</span><em>·</em>
+          <span>No keys</span><em>·</em><span class="it">Rules fixed at launch</span><em>·</em><span>Leave any time</span><em>·</em><span class="it">Every trade checked</span><em>·</em><span>Open source</span><em>·</em>
+        </div>
+        <p class="sr">No keys. Rules fixed at launch. Leave any time. Every trade checked. Open source.</p>
+      </section>
+
+      <section class="sec wrap" aria-labelledby="steps-h">
+        <div class="sec-h center" data-reveal>
+          <p class="label">How it works</p>
+          <h2 id="steps-h">Four steps. <em>No one in charge.</em></h2>
+          <p class="lead">A fund is a small program on NEAR, a public blockchain anyone can check. Here is its whole life.</p>
+        </div>
+        <ol class="steps4">
+          <li class="step soft lift" data-reveal>
+            <div class="art"><svg viewBox="0 0 240 150" class="draw" aria-hidden="true">
+              <rect x="66" y="16" width="96" height="118" rx="12" />
+              <path d="M84 44h60M84 62h60M84 80h38" />
+              <rect x="128" y="96" width="40" height="30" rx="7" class="fill" />
+              <path d="M136 96v-9a12 12 0 0 1 24 0v9" />
+              <circle cx="40" cy="112" r="10" />
+              <path d="M50 112h20M62 112v8M67 112v6" />
+              <path d="M24 92l52 44" class="no" />
+            </svg></div>
+            <p class="step-n">Step 1</p>
+            <h3>Create a fund with its rules</h3>
+            <p>Which tokens it may hold, how big a trade may be, how much a trade may cost. The fund is born with no key, so nobody can change it.</p>
+          </li>
+          <li class="step soft lift" data-reveal style="--d: 100ms">
+            <div class="art"><svg viewBox="0 0 240 150" class="draw" aria-hidden="true">
+              <path d="M56 92h128" />
+              <path d="M64 92q56 64 112 0" />
+              <circle cx="96" cy="30" r="11" class="fill" /><circle cx="126" cy="18" r="11" class="fill" /><circle cx="152" cy="40" r="11" class="fill" />
+              <path d="M96 46v26M126 34v38M152 56v16" class="dash" />
+              <path d="M92 66l4 6 4-6M122 66l4 6 4-6M148 66l4 6 4-6" />
+            </svg></div>
+            <p class="step-n">Step 2</p>
+            <h3>People join by putting tokens in</h3>
+            <p>Each person gets shares for what they add. A share is a claim on a slice of everything the fund holds.</p>
+          </li>
+          <li class="step soft lift" data-reveal style="--d: 200ms">
+            <div class="art"><svg viewBox="0 0 240 150" class="draw" aria-hidden="true">
+              <circle cx="44" cy="58" r="14" />
+              <path d="M22 104q22-34 44 0" />
+              <path d="M82 60h52M126 52l8 8-8 8" />
+              <path d="M170 30l28 11v22c0 22-13 34-28 40-15-6-28-18-28-40V41z" class="fill" />
+              <path d="M158 66l9 9 17-19" />
+              <path d="M82 104h36" />
+              <path d="M124 96l14 16M138 96l-14 16" class="no" />
+            </svg></div>
+            <p class="step-n">Step 3</p>
+            <h3>A manager can only propose</h3>
+            <p>A person, an AI, or no one at all can suggest a trade. The contract checks it against the rules and refuses anything else.</p>
+          </li>
+          <li class="step soft lift" data-reveal style="--d: 300ms">
+            <div class="art"><svg viewBox="0 0 240 150" class="draw" aria-hidden="true">
+              <circle cx="96" cy="76" r="48" />
+              <path d="M96 76V28M96 76l42 24" />
+              <path d="M150 58l40-12a46 46 0 0 1 6 44z" class="fill" />
+              <path d="M174 118h44M210 110l8 8-8 8" />
+            </svg></div>
+            <p class="step-n">Step 4</p>
+            <h3>Anyone leaves with their slice</h3>
+            <p>At any time, without asking anyone, you take your share of every token the fund holds. No price feed, no manager.</p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="sec wrap" aria-labelledby="proof-h">
+        <div class="sec-h" data-reveal>
+          <p class="label">Proof, not promises</p>
+          <h2 id="proof-h">We tried to break it. <em>On the record.</em></h2>
+          <p class="lead">Each of these happened on NEAR testnet. You can open the transactions and read them yourself.</p>
+        </div>
+        <div class="proofs" id="proofs"></div>
+      </section>
+
+      <section class="sec wrap faq-sec" aria-labelledby="faq-h">
+        <div class="sec-h" data-reveal>
+          <p class="label">Questions</p>
+          <h2 id="faq-h">In <em>plain words</em></h2>
+        </div>
+        <div class="faq" data-reveal>
+          <details><summary>Is this real money?</summary><p>No. Plinth runs on NEAR testnet, a public network for testing. The tokens are test tokens that anyone can get for free, and they are worth nothing.</p></details>
+          <details><summary>What is NEAR, and what is a contract?</summary><p>NEAR is a public blockchain: a shared computer whose records anyone can read. A contract is a small program that lives on it. Each Plinth fund is one contract with its own account.</p></details>
+          <details><summary>Who can change a fund?</summary><p>Nobody. A fund's account has no keys, so no one can sign for it: not to change its code, not to change its rules, not to take money out. The verifier checks this from the chain, in your browser.</p></details>
+          <details><summary>What if the manager is hacked?</summary><p>The manager can only suggest trades. The contract checks each one against the fund's rules and refuses the rest. A hacked manager can do no more than an honest one: propose a trade inside the rules.</p></details>
+          <details><summary>Can I always leave?</summary><p>Yes. You can take your share of every token the fund holds at any time, without asking anyone. If a trade is in flight, you wait up to 10 minutes.</p></details>
+          <details><summary>Is it safe to put real money in?</summary><p>Not yet. Plinth has only run on testnet. A contract with no keys cannot be fixed if a bug is found, and one already was, in our earlier releases. The Security page explains it.</p></details>
+        </div>
+      </section>
+
+      <section class="wrap end" aria-labelledby="end-h">
+        <div class="end-card" data-reveal>
+          <div class="light l1" aria-hidden="true"></div>
+          <h2 id="end-h">See a fund <em>for yourself.</em></h2>
+          <p>Open the app to join a test fund and leave it again, or check any fund from the chain.</p>
+          <div class="cta">
+            <a class="btn white" data-href="app/">Open the app <span class="arr" aria-hidden="true">→</span></a>
+            <a class="btn glass" data-href="verify/">Verify a fund</a>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./src/home.ts"></script>
   </body>
 </html>

@@ -24,7 +24,7 @@ const big = (v: unknown) => BigInt(String(v ?? "0"));
 export function shareUrl(id: string): string {
   const api = import.meta.env.VITE_PLINTH_API as string | undefined;
   if (typeof api === "string") return `${api.replace(/\/$/, "") || location.origin}/f/${encodeURIComponent(id)}`;
-  return `${location.origin}${import.meta.env.BASE_URL}?fund=${encodeURIComponent(id)}`;
+  return `${location.origin}${import.meta.env.BASE_URL}app/?fund=${encodeURIComponent(id)}`;
 }
 
 /** Text that reads like code is never shown: the chain keeps the exact words. */
@@ -402,7 +402,7 @@ function render(f: FundCard) {
   ].join("");
 
   const known = legacy
-    ? `<p class="known-tag"><b>Known issue: old release.</b> This fund can count tokens that bounce back as its own, so its exit is not safe and it cannot be fixed. <a href="#limit-known">Read the limit</a></p>`
+    ? `<p class="known-tag"><b>Known issue: old release.</b> This fund can count tokens that bounce back as its own, so its exit is not safe and it cannot be fixed. <a href="${import.meta.env.BASE_URL}security/#limit-known">Read about the bug</a></p>`
     : unknown
       ? `<p class="known-tag"><b>Unlisted code.</b> This account does not run a listed Plinth release. Use the verifier before you trust anything shown here.</p>`
       : "";
@@ -450,6 +450,7 @@ function render(f: FundCard) {
   }
 
   f.el.classList.remove("loading");
+  paintIndex(f, rel, legacy);
   const holdsLabel = total > 0n ? `${unitLabel} ${unit === 1n ? "share holds" : "shares hold"}` : "Shares";
   const holdsValue = total > 0n ? unitParts.filter(([, v]) => v > 0n).map(([t, v]) => `<span>${esc(fmt(t, v))}</span>`).join("") || "<span>nothing yet</span>" : "<span>none issued yet</span>";
   f.el.innerHTML = `
@@ -459,19 +460,23 @@ function render(f: FundCard) {
     </header>
     ${known}
     <p class="blurb">${esc(f.blurb)}${isOneClick(s.config.quote_signer) ? "" : ` ${esc(TEST_SIGNER_WORDS)}`}</p>
+    <div class="fund-body">
     <section class="fund-sec" aria-label="What the fund holds">
+      <h4 class="group-h">Holdings</h4>
       <div class="fund-grid">
         <div class="kv big"><span>The fund holds</span><b>${s.held.map(([t, v]: [string, string]) => `<span>${esc(fmt(t, v))}</span>`).join("")}</b></div>
         <div class="kv big"><span>${esc(holdsLabel)}</span><b>${holdsValue}</b></div>
       </div>
       ${usdLine}
     </section>
-    ${relayNote}
-    ${strategyBlock(f, s, me)}
     <section class="you fund-sec" aria-label="Your part">
+      <h4 class="group-h">Your part</h4>
       ${you}
       <p class="status small" role="status">${esc(f.msg)}${f.msgTx ? ` <a href="${explorer(NET, f.msgTx)}" target="_blank" rel="noopener">View transaction ↗</a>` : ""}</p>
     </section>
+    </div>
+    ${relayNote}
+    ${strategyBlock(f, s, me)}
     <details class="fund-more" ${f.ui.details ? "open" : ""}>
       <summary><span class="sum-t">Details</span><span class="sum-d">Rules, costs and history · ${esc(summaryBits)}</span></summary>
       <div class="fund-more-in">
@@ -489,7 +494,7 @@ function render(f: FundCard) {
         ${history("Refused on chain", shownR.map((r) => `<div class="row"><span class="tag no">refused</span><span>${esc(humanReason(String(r.reason)))}</span><span class="muted small">${ago(Number(r.at))}</span></div>`).join(""), shownR.length, nRef, "refusals", 3)}
       </div>
     </details>
-    <footer class="fund-f"><a class="link" href="${esc(shareUrl(f.id))}" data-act="share">Share this fund</a><a class="link" href="#verify" data-act="verify">Verify it</a></footer>`;
+    <footer class="fund-f"><a class="link" href="${esc(shareUrl(f.id))}" data-act="share">Share this fund</a><a class="link" href="${import.meta.env.BASE_URL}verify/?fund=${encodeURIComponent(f.id)}">Verify it</a></footer>`;
 }
 
 const setMsg = (f: FundCard, msg: string, tx = "") => {
@@ -535,6 +540,29 @@ async function load(f: FundCard) {
   f.balances = balances;
   f.relay = relay;
   render(f);
+}
+
+/** The side list of funds: one link per card, kept in step with it. */
+function paintIndex(f: FundCard, rel: { version: string; known_issue?: string } | null, legacy: boolean) {
+  const list = document.getElementById(f.group === "legacy" ? "index-legacy" : "index-new");
+  if (!list) return;
+  let li = document.getElementById(`ix-${f.el.id}`);
+  if (!li) {
+    li = document.createElement("li");
+    li.id = `ix-${f.el.id}`;
+  }
+  if (li.parentElement !== list) list.appendChild(li);
+  // Keep the list in the same order as the cards.
+  const cardOf = (x: Element) => document.getElementById(x.id.slice(3));
+  const sorted = [...list.children].sort((a, b) => {
+    const ca = cardOf(a), cb = cardOf(b);
+    return ca && cb ? (ca.compareDocumentPosition(cb) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1) : 0;
+  });
+  sorted.forEach((x, i) => list.children[i] !== x && list.appendChild(x));
+  const s = f.state;
+  const pending = !!s?.pending;
+  li.innerHTML = `<a href="#${f.el.id}"><span class="ix-name">${esc(f.title)}</span><span class="ix-meta">${rel ? `Release ${esc(rel.version)}` : "Unlisted code"}${legacy ? " · known issue" : ""}${pending ? " · trade in flight" : ""}</span></a>`;
+  document.getElementById("index-legacy-h")?.toggleAttribute("hidden", !document.getElementById("index-legacy")?.children.length);
 }
 
 /** Cards start in the group their data suggests; the chain's release decides where they belong. */
@@ -761,6 +789,51 @@ async function act(f: FundCard, kind: string) {
   await load(f).catch(() => render(f));
 }
 
+const PUSD = "pusd.plinthfund.testnet";
+/** The connect / faucet / disconnect bar. `onChange` reloads whatever the page shows. */
+export function mountWalletBar(bar: HTMLElement, onChange: () => Promise<void>, onSignOut: () => void = () => {}): { paint(): Promise<void> } {
+  let barMsg = "";
+  const setBar = (m: string) => {
+    barMsg = m;
+    const st = bar.querySelector(".status");
+    if (st) st.textContent = m;
+  };
+  const paint = async () => {
+    const me = currentAccount();
+    let bal = "";
+    if (me) bal = await view<string>(NET, PUSD, "ft_balance_of", { account_id: me }).then((v) => fmt(PUSD, v), () => "");
+    if (currentAccount() !== me) return;
+    bar.innerHTML = me
+      ? `<div class="wb-who"><span class="wb-label">Connected</span><span class="who" title="${esc(me)}">${esc(shortAccount(me))}</span>${bal ? `<span class="wb-bal">${esc(bal)}</span>` : ""}</div><div class="wb-actions"><button class="btn ghost sm" data-w="faucet">Get 100 test pUSD</button><button class="btn ghost sm" data-w="out">Disconnect</button></div><span class="status small" role="status">${esc(barMsg)}</span>`
+      : `<div class="wb-who"><span class="wb-label">Wallet</span><span class="wb-hint">Test tokens only. Nothing here is money.</span></div><div class="wb-actions"><button class="btn primary sm" data-w="in">Connect a testnet wallet</button></div><span class="status small" role="status">${esc(barMsg)}</span>`;
+  };
+  const faucet = async () => {
+    const me = currentAccount();
+    if (!me) return;
+    try {
+      setBar("Waiting for your wallet…");
+      const calls: Call[] = (await view(NET, PUSD, "storage_balance_of", { account_id: me })) === null ? [{ receiverId: PUSD, methodName: "storage_deposit", args: { account_id: me }, deposit: STORAGE, gas: TGAS(30) }] : [];
+      calls.push({ receiverId: PUSD, methodName: "mint", args: { account_id: me, amount: (100n * 10n ** BigInt(dec(PUSD))).toString() }, gas: TGAS(30) });
+      await send(calls);
+      setBar("100 test pUSD sent to you.");
+    } catch (e) {
+      setBar(isCancel(e) ? "Cancelled. Nothing was sent." : `Did not go through: ${humanFailure(e)}.`);
+    }
+    await Promise.all([onChange(), paint()]);
+  };
+  bar.addEventListener("click", async (e) => {
+    const w = ((e.target as HTMLElement).closest("button[data-w]") as HTMLButtonElement | null)?.dataset.w;
+    if (w === "in") await signIn().catch(() => {});
+    if (w === "out") {
+      barMsg = "";
+      onSignOut();
+      await signOut();
+    }
+    if (w === "faucet") await faucet();
+  });
+  return { paint };
+}
+
 export interface Stats {
   /** Funds the factory has created; null when no factory is recorded. */
   factoryCount: number | null;
@@ -776,10 +849,9 @@ export interface AppOptions {
   legacy: { id: string; title: string; blurb: string }[];
   /** A fund named in the page address (?fund=...). */
   linked: string | null;
-  onStats(s: Stats): void;
+  onStats?(s: Stats): void;
   /** The newest fund from the factory, once known. */
-  onNewest(id: string): void;
-  onVerify(id: string): void;
+  onNewest?(id: string): void;
 }
 export interface App {
   /** Put a fund at the top of the list (after it was just created) and scroll to it. */
@@ -809,7 +881,7 @@ export async function mountApp(opt: AppOptions): Promise<App> {
   const publish = () => {
     const ready = cards.filter((c) => c.state && c.keyCount !== undefined);
     if (ready.length < cards.filter((c) => !c.failed).length || (factory && factoryCount === null)) return;
-    opt.onStats({ factoryCount, listed: ready.length, trades: ready.reduce((a, c) => a + Number(c.state.trades), 0), refusals: ready.reduce((a, c) => a + Number(c.state.rejections), 0), keys: ready.reduce((a, c) => a + (c.keyCount ?? 0), 0) });
+    opt.onStats?.({ factoryCount, listed: ready.length, trades: ready.reduce((a, c) => a + Number(c.state.trades), 0), refusals: ready.reduce((a, c) => a + Number(c.state.rejections), 0), keys: ready.reduce((a, c) => a + (c.keyCount ?? 0), 0) });
   };
 
   const loadCard = (c: FundCard) =>
@@ -844,8 +916,6 @@ export async function mountApp(opt: AppOptions): Promise<App> {
           () => setMsg(c, "Link copied. Anyone who opens it lands on this fund."),
           () => (location.href = url),
         );
-      } else if (a === "verify") {
-        opt.onVerify(c.id);
       } else if (a.startsWith("pct-")) {
         const p = BigInt(a.slice(4));
         const mine = c.mine?.shares ?? 0n;
@@ -925,7 +995,7 @@ export async function mountApp(opt: AppOptions): Promise<App> {
   if (factory) {
     try {
       first = await loadFactoryPage();
-      if (newestId) opt.onNewest(newestId);
+      if (newestId) opt.onNewest?.(newestId);
       note.textContent = newestId ? "" : "The factory is live on testnet and no fund has been created through it yet. You can create the first one under Launch a fund.";
     } catch (e) {
       note.textContent = `The list of new funds could not be read from the factory: ${(e as Error).message}. The earlier funds below are still shown.`;
@@ -944,51 +1014,14 @@ export async function mountApp(opt: AppOptions): Promise<App> {
   }
 
   // ---- wallet bar
-  const bar = document.getElementById("wallet-bar")!;
-  let barMsg = "";
-  const setBar = (m: string) => {
-    barMsg = m;
-    const st = bar.querySelector(".status");
-    if (st) st.textContent = m;
-  };
-  const PUSD = "pusd.plinthfund.testnet";
-  const faucet = async () => {
-    const me = currentAccount();
-    if (!me) return;
-    try {
-      setBar("Waiting for your wallet…");
-      const calls: Call[] = (await view(NET, PUSD, "storage_balance_of", { account_id: me })) === null ? [{ receiverId: PUSD, methodName: "storage_deposit", args: { account_id: me }, deposit: STORAGE, gas: TGAS(30) }] : [];
-      calls.push({ receiverId: PUSD, methodName: "mint", args: { account_id: me, amount: (100n * 10n ** BigInt(dec(PUSD))).toString() }, gas: TGAS(30) });
-      await send(calls);
-      setBar("100 test pUSD sent to you.");
-    } catch (e) {
-      setBar(isCancel(e) ? "Cancelled. Nothing was sent." : `Did not go through: ${humanFailure(e)}.`);
-    }
-    void refresh();
-  };
-  const paintBar = async () => {
-    const me = currentAccount();
-    let bal = "";
-    if (me) bal = await view<string>(NET, PUSD, "ft_balance_of", { account_id: me }).then((v) => fmt(PUSD, v), () => "");
-    if (currentAccount() !== me) return;
-    bar.innerHTML = me
-      ? `<span class="small who" title="${esc(me)}">${esc(shortAccount(me))}</span>${bal ? `<span class="small muted">${esc(bal)}</span>` : ""}<button class="btn ghost sm" data-w="faucet">Get 100 test pUSD</button><button class="btn ghost sm" data-w="out">Disconnect</button><span class="status small" role="status">${esc(barMsg)}</span>`
-      : `<button class="btn primary" data-w="in">Connect a testnet wallet</button><span class="small muted">Test tokens only. Nothing here is money.</span><span class="status small" role="status">${esc(barMsg)}</span>`;
-  };
+  const bar = mountWalletBar(document.getElementById("wallet-bar")!, async () => {
+    await Promise.all(cards.map(loadCard));
+    publish();
+  }, () => cards.forEach((c) => ((c.msg = ""), (c.msgTx = ""), (c.ui.steps = []))));
   const refresh = async () => {
-    await Promise.all([...cards.map(loadCard), paintBar()]);
+    await Promise.all([...cards.map(loadCard), bar.paint()]);
     publish();
   };
-  bar.addEventListener("click", async (e) => {
-    const w = ((e.target as HTMLElement).closest("button[data-w]") as HTMLButtonElement | null)?.dataset.w;
-    if (w === "in") await signIn().catch(() => {});
-    if (w === "out") {
-      barMsg = "";
-      cards.forEach((c) => ((c.msg = ""), (c.msgTx = ""), (c.ui.steps = [])));
-      await signOut();
-    }
-    if (w === "faucet") await faucet();
-  });
   moreBtn.addEventListener("click", async () => {
     moreBtn.disabled = true;
     const added = await loadFactoryPage().catch(() => []);

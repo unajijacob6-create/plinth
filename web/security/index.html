@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Security · Plinth</title>
+    <meta name="description" content="The bug in Plinth's earlier funds, what release 0.3 changed, what the chain proves, what you still trust, and every known limit." />
+    <meta name="theme-color" content="#030817" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='20' width='22' height='6' rx='1.5' fill='%232f6bff'/%3E%3Crect x='9' y='12' width='14' height='6' rx='1.5' fill='%2322c3e6'/%3E%3Crect x='13' y='4' width='6' height='6' rx='1.5' fill='%230a1430'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <section class="band page" aria-labelledby="page-h">
+      <div class="light l1" aria-hidden="true"></div>
+      <div class="light l2" aria-hidden="true"></div>
+      <div class="beams" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="grain" aria-hidden="true"></div>
+      <div class="wrap page-hero">
+        <p class="label">Security</p>
+        <h1 id="page-h">Read this <em>before you trust it.</em></h1>
+        <p class="lead">What went wrong in our earlier funds, what changed, what the chain proves and what you still have to trust. Plinth has only run on NEAR testnet, with test tokens.</p>
+      </div>
+    </section>
+    <main id="main" class="wrap pull-up sec-page">
+      <article class="known-card" id="limit-known" aria-labelledby="known-h">
+        <p class="badge warn">Known issue · releases 0.1 and 0.2</p>
+        <h2 id="known-h">The bug in our <em>earlier funds.</em></h2>
+        <div class="two">
+          <div>
+            <h3>What happened</h3>
+            <p>Every fund created before release 0.3 has it, including the earlier funds in the app. Those releases counted a token transfer that was about to bounce back as if the fund owned it. Anyone could use that to take more than their share, or to mark a trade settled before anything was delivered. A test in the repository proves both. Two earlier reviews did not find it.</p>
+          </div>
+          <div>
+            <h3>What we did</h3>
+            <p>Those funds have no keys, so they cannot be fixed. They hold test tokens only. The app keeps them in a separate group with a warning on each, and the verifier will not call them safe. Release 0.3 removes the cause.</p>
+            <p class="replay" id="replay"></p>
+          </div>
+        </div>
+      </article>
+
+      <section class="sec" aria-labelledby="rule-h">
+        <div class="sec-h" data-reveal>
+          <p class="label">What release 0.3 changed</p>
+          <h2 id="rule-h">A fund counts a token only <em>when it is handed it.</em></h2>
+          <p class="lead">Release 0.3 never trusts a balance it reads. Tokens count only when they arrive with a message the fund recognises, or when one of the fund's own calls brings them back.</p>
+        </div>
+        <div class="table-scroll soft" data-reveal>
+          <table class="plain-table">
+            <thead><tr><th scope="col">What arrives</th><th scope="col">How the fund counts it</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">A deposit to join</th><td>Counted as it arrives, during the join window.</td></tr>
+              <tr><th scope="row">The result of a trade</th><td>1Click hands it to the fund with this trade's tag, and the trade settles on the spot.</td></tr>
+              <tr><th scope="row">Tokens added to join later</th><td>Held apart in your own basket until you join, so they never mix with the fund until then.</td></tr>
+              <tr><th scope="row">A refund of a failed trade</th><td>Goes to the fund's refund account, which can only pass it on to the fund. Anyone can press the button that hands it over.</td></tr>
+              <tr><th scope="row">Staked NEAR</th><td>The amount the staking contract reports it minted, capped by the price the fund read.</td></tr>
+              <tr><th scope="row">A plain transfer from anyone</th><td>Never counted.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="sec" aria-labelledby="trust-h">
+        <div class="sec-h" data-reveal>
+          <p class="label">Proven and trusted</p>
+          <h2 id="trust-h">What the chain proves, <em>and what it cannot.</em></h2>
+        </div>
+        <div class="trust-cols">
+          <div class="soft trust-col yes-col" data-reveal>
+            <h3>Checked from the chain</h3>
+            <p class="small muted">The verifier checks each of these in your browser.</p>
+            <ul class="ticks">
+              <li>The fund's account has no keys.</li>
+              <li>It runs the one published copy of a listed release, fixed by its fingerprint.</li>
+              <li>The code has no instruction that can deploy code, change keys, stake or delete the account.</li>
+              <li>Refunds go to a keyless account that can only pass them on to this fund.</li>
+              <li>The fund's own rules, as the contract reports them.</li>
+            </ul>
+          </div>
+          <div class="soft trust-col trust-still" data-reveal style="--d: 100ms">
+            <h3>Still trusted</h3>
+            <p class="small muted">These the contract checks as far as it can, but cannot prove.</p>
+            <ul class="dots">
+              <li>1Click delivers the result of a trade or refunds it. The contract checks the signed quote; it cannot force delivery.</li>
+              <li>1Click's dollar prices, which the cost cap uses.</li>
+              <li>1Click's signing key. If it changes, the fund can no longer trade; leaving still works.</li>
+              <li>For a fund with no manager: OutLayer, which runs its program. Its answer is checked like any manager's proposal.</li>
+              <li>That 1Click's hand-over with a message works on mainnet. It is documented, and untested here.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="sec" id="limits" aria-labelledby="limits-h">
+        <div class="sec-h" data-reveal>
+          <p class="label">Limits</p>
+          <h2 id="limits-h">Every known limit, <em>in plain words.</em></h2>
+        </div>
+        <ul class="limits">
+          <li><b>No fixes, ever.</b> A keyless contract cannot be upgraded. A bug is permanent; the issue above is the proof. Funds should start small.</li>
+          <li id="limit-refunds"><b>Refunds go through a separate account.</b> A refund from 1Click arrives as a plain transfer that nobody can see land, so it goes to a second keyless account that holds nothing else and can only pass tokens on to its fund. The fund counts tokens only when it is handed them; it reads no balance anywhere. What is left: a refund that 1Click sends anywhere else, or tokens anyone sends straight to a fund with a plain transfer, are never counted.</li>
+          <li><b>Delivery with a message is untested on mainnet.</b> Release 0.3 needs 1Click to hand the output to the fund together with a short message. NEAR Intents documents this and marks it experimental. No Plinth fund has received a real 1Click delivery this way. If 1Click gave the hand-over too little gas, the output would go back to 1Click and the fund would not get it.</li>
+          <li id="limit-no-manager"><b>No manager does not mean nothing to trust.</b> A fund without a manager lets anyone ask a fixed program for a proposal. The program runs at OutLayer, and the fund cannot check on chain that it ran inside a secure enclave. A forged answer can do what a manager could and no more: propose a trade inside the rules. On testnet the program signs its own stand-in quotes with a key anyone can read. If OutLayer refuses a run, the small NEAR attached stays with the fund. Exits never depend on any of this.</li>
+          <li><b>1Click is trusted to deliver or refund.</b> The contract checks the signed quote; it cannot force delivery.</li>
+          <li><b>Prices are 1Click's.</b> The cost cap uses the dollar values in the signed quote, so it bounds cost against 1Click's own valuation, not against the whole market.</li>
+          <li><b>One signing key.</b> 1Click's key is fixed in the fund. If it changes, the fund can no longer trade, but exits still work.</li>
+          <li><b>Testnet stand-in.</b> 1Click has no testnet, so the recorded runs use a test signer and a solver account in 1Click's place. The verifier labels it.</li>
+          <li><b>App fees are bounded, not blocked.</b> 1Click does not sign its app-fee field, so a manager can take a fee inside a trade. The cost cap still bounds it. Each fund card shows the most this can cost in one day.</li>
+          <li><b>Only test tokens so far.</b> The tests use a test token. No test here runs the real wNEAR or stNEAR code from mainnet, and Plinth has only run on testnet.</li>
+          <li><b>At most 4 tokens.</b> So one exit can pay every token in a single transaction.</li>
+          <li><b>Exit waits for one trade.</b> While a trade is in flight, exits wait up to 10 minutes. After that you can leave without your share of that one trade.</li>
+        </ul>
+      </section>
+    </main>
+    <script type="module" src="../src/security.ts"></script>
+  </body>
+</html>
