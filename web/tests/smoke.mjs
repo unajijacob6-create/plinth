@@ -36,7 +36,9 @@ async function open(path, w, h) {
   const errors = [];
   page.on("console", (m) => { const t = `${m.text()} ${m.location()?.url ?? ""}`.trim(); if (m.type() === "error" && !rpcWeather(t)) errors.push(t); });
   page.on("pageerror", (e) => !rpcWeather(e.message) && errors.push(e.message));
-  await page.goto(base + path, { waitUntil: "networkidle" });
+  // Wait for the page, then for the network to go quiet; a slow public node must not fail the page.
+  await page.goto(base + path, { waitUntil: "load", timeout: 60000 });
+  await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
   return { page, errors };
 }
 /** Poll a condition for up to `ms`, so a slow runner gets the same answer as a fast one. */
@@ -359,7 +361,9 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
       }
       return route.abort();
     });
-    await page.goto(base + path, { waitUntil: "networkidle" });
+    // A real read retried across nodes can take longer than networkidle's limit; the card wait below decides.
+    await page.goto(base + path, { waitUntil: "load", timeout: 60000 });
+    await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
     await page.waitForFunction(() => document.querySelectorAll(".fund").length > 0 && [...document.querySelectorAll(".fund")].every((e) => !e.classList.contains("loading")), null, { timeout: 60000 }).catch(() => {});
     return { page, errors, txs: () => page.evaluate(() => window.__mock.txs) };
   }
