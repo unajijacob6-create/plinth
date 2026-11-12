@@ -743,6 +743,16 @@ async function act(f: FundCard, kind: string) {
     setMsg(f, "This page does not send tokens to this account. Check it in the verifier.");
     return;
   }
+  // A missing amount needs no network: say so straight away, even when the chain cannot be reached.
+  const blank = (v: string) => !/[1-9]/.test(v.trim());
+  if (kind === "exit" && blank(f.ui.exitAmt)) {
+    setMsg(f, "Did not go through: enter how many shares to exit with, like 10 or 2.5, or press 100%.");
+    return;
+  }
+  if (kind === "join" && blank(f.ui.joinAmt)) {
+    setMsg(f, "Did not go through: enter an amount like 10 or 2.5.");
+    return;
+  }
   f.busy = true;
   render(f);
   try {
