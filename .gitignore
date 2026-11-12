@@ -17,3 +17,4 @@ strategy/host-test/target/
 video/node_modules/
 video/out/
 video/public/rec/
+flier/node_modules/

@@ -1,0 +1,7 @@
+{
+  "name": "plinth-flier",
+  "private": true,
+  "description": "Social flier for Plinth: HTML/CSS/SVG source rendered to PNG with Playwright",
+  "scripts": { "render": "node render.mjs" },
+  "dependencies": { "jsqr": "1.4.0", "pngjs": "7.0.0", "qrcode": "1.5.4" }
+}

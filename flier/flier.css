@@ -1,0 +1,149 @@
+/* Plinth social flier. Tokens follow web/src/base.css (night band, blue accent, four type levels). */
+@font-face { font-family: "Inter Tight Variable"; font-weight: 100 900; src: url("assets/fonts/inter-tight-latin-wght-normal.woff2") format("woff2-variations"); }
+@font-face { font-family: "Instrument Serif"; font-style: italic; font-weight: 400; src: url("assets/fonts/instrument-serif-latin-400-italic.woff2") format("woff2"); }
+@font-face { font-family: "Manrope Variable"; font-weight: 200 800; src: url("assets/fonts/manrope-latin-wght-normal.woff2") format("woff2-variations"); }
+
+:root {
+  --night: #030817;
+  --night-2: #071436;
+  --blue: #2f6bff;
+  --cyan: #22c3e6;
+  --on-night: #eef3ff;
+  --on-night-2: #b9c8ec;
+  --on-night-3: #93a6d4;          /* 7.6:1 on --night: quiet labels */
+  --glass: rgba(150, 180, 255, .055);
+  --glass-line: rgba(170, 200, 255, .16);
+  --f-display: "Inter Tight Variable", system-ui, sans-serif;
+  --f-serif: "Instrument Serif", Georgia, serif;
+  --f-body: "Manrope Variable", system-ui, sans-serif;
+
+  /* layout defaults (4x5, 1080 x 1350) */
+  --W: 1080px; --H: 1350px;
+  --pad: 64px;
+  --fs-1: 82px;     /* level 1 display */
+  --fs-2: 25px;     /* level 2 heading */
+  --fs-3: 21px;     /* level 3 body */
+  --fs-lead: 23px;
+  --fs-4: 18px;     /* level 4 label */
+  --logo: 48px;
+  --qr: 152px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: var(--W); height: var(--H); background: var(--night); }
+body { color: var(--on-night); font: 500 var(--fs-3) / 1.5 var(--f-body); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+img, svg { display: block; }
+ul { list-style: none; }
+
+.poster { position: relative; isolation: isolate; width: var(--W); height: var(--H); overflow: hidden; padding: var(--pad); display: flex; flex-direction: column; background: linear-gradient(180deg, var(--night) 0%, var(--night-2) 55%, #06102c 100%); }
+
+/* ---------- background: glow, grid, beams, grain */
+.bg { position: absolute; inset: 0; z-index: -2; pointer-events: none; }
+.glow { position: absolute; border-radius: 50%; }
+.g1 { width: 900px; height: 760px; left: -320px; top: -360px; background: radial-gradient(closest-side, rgba(47, 107, 255, .50), transparent); }
+.g2 { width: 760px; height: 700px; right: -260px; top: 120px; background: radial-gradient(closest-side, rgba(34, 195, 230, .22), transparent); }
+.g3 { width: 1200px; height: 620px; left: 50%; bottom: -380px; transform: translateX(-50%); background: radial-gradient(closest-side, rgba(47, 107, 255, .38), transparent); }
+.grid { position: absolute; inset: 0; opacity: .5;
+  background-image: linear-gradient(rgba(140, 175, 255, .07) 1px, transparent 1px), linear-gradient(90deg, rgba(140, 175, 255, .07) 1px, transparent 1px);
+  background-size: 54px 54px; background-position: -1px -1px;
+  -webkit-mask-image: radial-gradient(70% 55% at 70% 30%, #000 10%, transparent 80%); mask-image: radial-gradient(70% 55% at 70% 30%, #000 10%, transparent 80%); }
+.beams { position: absolute; inset: 0 0 35% 0; -webkit-mask-image: linear-gradient(#000, transparent); mask-image: linear-gradient(#000, transparent); }
+.beams i { position: absolute; top: -10%; height: 100%; width: 120px; background: radial-gradient(50% 100% at 50% 0%, rgba(150, 190, 255, .26), transparent 80%); }
+.beams i:nth-child(1) { left: 54%; width: 90px; transform: skewX(14deg); }
+.beams i:nth-child(2) { left: 68%; width: 170px; transform: skewX(8deg); }
+.beams i:nth-child(3) { left: 84%; width: 70px; transform: skewX(2deg); }
+.grain { position: absolute; inset: 0; opacity: .07; mix-blend-mode: overlay; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+.wires { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; overflow: visible; }
+
+/* ---------- header */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.brand { display: flex; align-items: center; gap: 16px; font: 700 calc(var(--logo) * .82) / 1 var(--f-display); letter-spacing: -0.03em; color: #fff; }
+.brand svg { width: var(--logo); height: var(--logo); filter: drop-shadow(0 0 18px rgba(47, 107, 255, .55)); }
+.brand .b1 { fill: var(--blue); } .brand .b2 { fill: var(--cyan); } .brand .b3 { fill: currentColor; }
+.pill { display: inline-flex; align-items: center; gap: 12px; padding: 12px 22px 12px 18px; border-radius: 999px; border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.07); box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 0 32px -8px rgba(47,107,255,.6); font: 700 var(--fs-4) / 1.2 var(--f-body); color: var(--on-night); white-space: nowrap; }
+.pill .dot { width: 10px; height: 10px; border-radius: 50%; background: #7fe3ff; box-shadow: 0 0 0 4px rgba(127, 227, 255, .18), 0 0 14px #7fe3ff; }
+
+/* ---------- hero */
+.hero { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 380px; align-items: center; gap: 0; margin-top: 40px; }
+.hero-text { position: relative; z-index: 1; }
+h1 { font: 600 var(--fs-1) / .98 var(--f-display); letter-spacing: -0.045em; color: #fff; max-width: 9.2ch; text-wrap: balance; }
+h1 em { display: inline; font: italic 400 1.1em / .9 var(--f-serif); letter-spacing: -0.012em; background: linear-gradient(90deg, #9cc0ff, #7fe3ff); -webkit-background-clip: text; background-clip: text; color: transparent; padding-right: .06em; }
+.lead { margin-top: 28px; max-width: 31ch; font: 500 var(--fs-lead) / 1.5 var(--f-body); color: var(--on-night-2); }
+.hero-art { position: relative; width: 390px; height: 440px; margin-left: -10px; }
+.hero-art svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+
+/* ---------- three points */
+.points { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.22fr) minmax(0, .9fr); gap: 16px; margin-top: 40px; }
+.pt { position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr); column-gap: 14px; align-content: start; padding: 24px 22px 26px; border-radius: 24px; background: linear-gradient(180deg, rgba(120, 160, 255, .10), rgba(120, 160, 255, .03)); border: 1px solid var(--glass-line); box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 24px 48px -24px rgba(0, 0, 0, .6); backdrop-filter: blur(10px); }
+.pt .ic { width: 40px; height: 40px; margin-top: 2px; padding: 0; fill: none; stroke: #8fd8ff; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 8px rgba(127, 227, 255, .45)); }
+.pt .ic .cut { stroke: #c9e2ff; }
+.pt h2 { font: 650 var(--fs-2) / 1.15 var(--f-display); letter-spacing: -0.02em; color: #fff; }
+.pt p { grid-column: 1 / -1; margin-top: 14px; font: 500 var(--fs-3) / 1.45 var(--f-body); color: var(--on-night-2); }
+
+/* ---------- proof strip */
+.proof { margin-top: 16px; padding: 22px 28px 24px; border-radius: 24px; border: 1px solid var(--glass-line); background: rgba(3, 8, 23, .55); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
+.proof-h { display: flex; align-items: center; gap: 12px; font: 700 var(--fs-4) / 1.2 var(--f-body); color: var(--on-night-3); }
+.proof-h .dash { width: 22px; height: 3px; border-radius: 2px; background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+.proof ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 28px; margin-top: 16px; }
+.proof li { display: flex; flex-direction: column; gap: 2px; padding-left: 16px; border-left: 2px solid rgba(127, 227, 255, .45); }
+.proof li b { font: 700 var(--fs-3) / 1.3 var(--f-body); color: #fff; }
+.proof li span { font: 500 var(--fs-4) / 1.4 var(--f-body); color: var(--on-night-2); }
+
+/* ---------- bottom: QR, links, Built on NEAR */
+.proof { margin-bottom: 22px; }
+.bottom { margin-top: auto; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 28px; padding-top: 24px; border-top: 1px solid rgba(170, 200, 255, .14); }
+.qr-box { width: var(--qr); height: var(--qr); padding: 10px; border-radius: 18px; background: #fff; box-shadow: 0 0 0 1px rgba(255,255,255,.3), 0 0 40px -6px rgba(47, 107, 255, .7); }
+.qr-box img { width: 100%; height: 100%; image-rendering: pixelated; }
+.links { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.lk-h { font: 700 var(--fs-4) / 1.2 var(--f-body); color: var(--on-night-3); margin-bottom: 4px; }
+.lk { font: 650 var(--fs-3) / 1.3 var(--f-display); letter-spacing: -0.01em; color: #fff; white-space: nowrap; }
+.lk-l { display: inline-block; width: 64px; font: 700 var(--fs-4) / 1 var(--f-body); color: #8fd8ff; letter-spacing: 0; }
+.meta { margin-top: 10px; font: 600 var(--fs-4) / 1.4 var(--f-body); color: var(--on-night-2); }
+.meta i { font-style: normal; color: var(--on-night-3); margin: 0 4px; }
+.meta span { white-space: nowrap; }
+/* NEAR mark: smaller than the Plinth logo lockup, generous clear space, paired only with "Built on" */
+.near { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 6px 4px 6px 32px; border-left: 1px solid rgba(170, 200, 255, .14); align-self: stretch; justify-content: center; }
+.near span { font: 700 var(--fs-4) / 1 var(--f-body); color: var(--on-night-3); }
+.near img { height: 34px; width: auto; }
+
+/* =================================================== 16:9 (1600 x 900) */
+body.l-16x9 {
+  --W: 1600px; --H: 900px; --pad: 60px;
+  --fs-1: 76px; --fs-2: 23px; --fs-3: 20px; --fs-lead: 21px; --fs-4: 17px; --logo: 44px; --qr: 136px;
+}
+.l-16x9 .poster { display: grid; grid-template-columns: 790px minmax(0, 1fr); grid-template-rows: auto auto auto 1fr;
+  grid-template-areas: "top top" "text art" "proof pts" "foot pts"; column-gap: 72px; }
+.l-16x9 .top { grid-area: top; }
+.l-16x9 .hero { display: contents; }
+.l-16x9 .hero-text { grid-area: text; margin-top: 32px; }
+.l-16x9 h1 { max-width: 13ch; }
+.l-16x9 .lead { max-width: 44ch; margin-top: 22px; }
+.l-16x9 .hero-art { grid-area: art; width: 380px; height: 340px; margin: 0 auto; align-self: start; }
+.l-16x9 .points { grid-area: pts; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 18px; align-self: end; }
+.l-16x9 .pt { grid-template-columns: 36px minmax(0, 1fr); column-gap: 16px; padding: 16px 22px 18px; border-radius: 20px; }
+.l-16x9 .pt .ic { width: 36px; height: 36px; margin: 0; grid-row: 1 / 3; }
+.l-16x9 .pt p { grid-column: 2; margin-top: 4px; font-size: 18px; }
+.l-16x9 .proof { grid-area: proof; margin: 26px 0 0; padding: 16px 24px 18px; }
+.l-16x9 .proof ul { gap: 12px 24px; margin-top: 12px; }
+.l-16x9 .proof li b { font-size: 19px; }
+.l-16x9 .bottom { grid-area: foot; align-self: end; gap: 24px; padding-top: 20px; }
+.l-16x9 .near { padding-left: 24px; }
+.l-16x9 .near img { height: 30px; }
+:is(.l-16x9, .l-story) .meta .m1 { display: block; } :is(.l-16x9, .l-story) .meta .i1 { display: none; }
+.l-16x9 .meta { margin-top: 6px; }
+
+/* =================================================== story (1080 x 1920) */
+/* Same blocks as 4x5, the object moves between the words and the three points; top and bottom
+   padding keep the content clear of the story app's own bars. */
+body.l-story {
+  --W: 1080px; --H: 1920px; --pad: 72px;
+  --fs-1: 100px; --fs-2: 26px; --fs-3: 22px; --fs-lead: 26px; --fs-4: 19px; --logo: 52px; --qr: 172px;
+}
+.l-story .poster { padding-top: 150px; padding-bottom: 140px; }
+.l-story .grid { -webkit-mask-image: radial-gradient(70% 45% at 50% 45%, #000 10%, transparent 80%); mask-image: radial-gradient(70% 45% at 50% 45%, #000 10%, transparent 80%); }
+.l-story .beams i:nth-child(1) { left: 30%; } .l-story .beams i:nth-child(2) { left: 46%; } .l-story .beams i:nth-child(3) { left: 62%; }
+.l-story .hero { display: flex; flex-direction: column; align-items: center; text-align: center; margin-top: 56px; }
+.l-story h1 { max-width: none; }
+.l-story h1 em { display: block; }
+.l-story .lead { max-width: 40ch; margin: 28px auto 0; }
+.l-story .hero-art { width: 420px; height: 400px; margin: 8px auto 0; }
+.l-story .points { margin-top: 44px; }

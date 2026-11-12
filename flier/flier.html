@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Plinth flier</title>
+  <link rel="stylesheet" href="flier.css" />
+</head>
+<!-- One source, three layouts: flier.html?layout=4x5 | 16x9 | story (render.mjs sets it). -->
+<body>
+  <div class="poster" id="poster">
+    <div class="bg" aria-hidden="true">
+      <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div>
+      <div class="grid"></div>
+      <div class="beams"><i></i><i></i><i></i></div>
+      <div class="grain"></div>
+    </div>
+    <svg class="wires" id="wires" aria-hidden="true"></svg>
+
+    <header class="top">
+      <div class="brand">
+        <!-- Plinth logo: identical to LOGO in web/src/shell.ts (b3 uses currentColor, as on the site's dark header) -->
+        <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="20" width="22" height="6" rx="1.5" class="b1" /><rect x="9" y="12" width="14" height="6" rx="1.5" class="b2" /><rect x="13" y="4" width="6" height="6" rx="1.5" class="b3" /></svg>
+        <span>Plinth</span>
+      </div>
+      <p class="pill"><b class="dot" aria-hidden="true"></b>My submission for NEAR HACKATHON 2026</p>
+    </header>
+
+    <section class="hero">
+      <div class="hero-text">
+        <h1>A shared fund <em>nobody can change.</em></h1>
+        <p class="lead">People pool tokens. The rules are fixed when the fund is created, and nobody holds a key. A manager can only suggest trades the rules allow, and anyone can take their share out at any time.</p>
+      </div>
+      <div class="hero-art" id="hero-art" data-anchor="hero"></div>
+    </section>
+
+    <ul class="points">
+      <li class="pt" data-anchor="pt">
+        <svg class="ic" viewBox="0 0 48 48" aria-hidden="true"><circle cx="17" cy="24" r="8"/><path d="M25 24h16M35 24v6M41 24v5"/><path class="cut" d="M8 40 40 8"/></svg>
+        <h2>No keys</h2>
+        <p>Nobody can change it, not even its creator.</p>
+      </li>
+      <li class="pt" data-anchor="pt">
+        <svg class="ic" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 5 40 11v11c0 10-7 17-16 21C15 39 8 32 8 22V11Z"/><path d="m18 18 12 12M30 18 18 30"/></svg>
+        <h2>The manager only suggests</h2>
+        <p>The contract refuses anything outside the rules. A hijacked manager was refused on chain.</p>
+      </li>
+      <li class="pt" data-anchor="pt">
+        <svg class="ic" viewBox="0 0 48 48" aria-hidden="true"><path d="M20 8H10v32h10"/><path d="M18 24h22M32 16l8 8-8 8"/></svg>
+        <h2>Leave any time</h2>
+        <p>Your slice of every token, no permission needed.</p>
+      </li>
+    </ul>
+
+    <section class="proof" data-anchor="proof">
+      <p class="proof-h"><span class="dash"></span>Proof, recorded on NEAR testnet</p>
+      <ul>
+        <li><b>0 access keys</b><span>on the fund, its relay and the factory</span></li>
+        <li><b>Two AIs must agree</b><span>one tricked, one held: nothing was sent</span></li>
+        <li><b>A bug, fixed in the open</b><span>found, proved and fixed in our earlier funds</span></li>
+        <li><b>Rebuilt byte for byte</b><span>release 0.3 code, from its source</span></li>
+      </ul>
+    </section>
+
+    <footer class="bottom">
+      <div class="qr-box"><img src="assets/qr.svg" alt="QR code to the Plinth website" /></div>
+      <div class="links">
+        <p class="lk-h">Try it, and read the code</p>
+        <p class="lk"><span class="lk-l">Site</span>unajijacob6-create.github.io/plinth</p>
+        <p class="lk"><span class="lk-l">Code</span>github.com/unajijacob6-create/plinth</p>
+        <p class="meta"><span class="m1">NEAR testnet · test tokens</span> <i class="i1">·</i> <span>#NEARHackathon</span> <i>·</i> <span>by Unaji Jacob</span></p>
+      </div>
+      <div class="near">
+        <span>Built on</span>
+        <!-- NEAR's official reversed (white) logo, unmodified: see SOURCES.md -->
+        <img src="assets/near-logo-white.svg" alt="NEAR" />
+      </div>
+    </footer>
+  </div>
+  <script src="flier.js"></script>
+</body>
+</html>
