@@ -3,7 +3,13 @@ import releasesJson from "../../data/releases.json";
 import bs58 from "bs58";
 
 export type Net = "testnet" | "mainnet";
-const RPC: Record<Net, string> = { testnet: "https://rpc.testnet.fastnear.com", mainnet: "https://rpc.mainnet.fastnear.com" };
+// Public RPC nodes, tried in turn: when one is rate-limited or down, the next one answers.
+const RPCS: Record<Net, string[]> = {
+  testnet: ["https://rpc.testnet.fastnear.com", "https://rpc.testnet.near.org", "https://test.rpc.fastnear.com"],
+  mainnet: ["https://rpc.mainnet.fastnear.com", "https://rpc.mainnet.near.org", "https://free.rpc.fastnear.com"],
+};
+/** The node that answered last; a failure moves to the next one for everyone. */
+const current: Record<Net, number> = { testnet: 0, mainnet: 0 };
 export const ONECLICK_KEY = "ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc";
 const keyBytes = (k: string): string | null => {
   try {
@@ -60,17 +66,19 @@ export async function rpc<T = any>(net: Net, method: string, params: unknown): P
   for (let attempt = 0; ; attempt++) {
     let res: Response;
     try {
-      res = await fetch(RPC[net], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(10_000) });
+      res = await fetch(RPCS[net][current[net] % RPCS[net].length], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(10_000) });
     } catch {
       // A rate-limited node answers 429 without CORS headers, which the browser reports as a failed
-      // fetch (a TypeError), not as a status: back off and retry it like a 429.
-      if (attempt < 4) {
+      // fetch (a TypeError), not as a status: move to the next node, back off, and retry.
+      current[net]++;
+      if (attempt < 5) {
         await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
         continue;
       }
       throw new RpcError("NETWORK", "the network could not be reached");
     }
-    if ((res.status === 429 || res.status >= 500) && attempt < 4) {
+    if ((res.status === 429 || res.status >= 500) && attempt < 5) {
+      current[net]++;
       await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
       continue;
     }

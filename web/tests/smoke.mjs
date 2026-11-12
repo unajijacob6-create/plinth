@@ -29,12 +29,12 @@ function check(cond, msg) {
 }
 // A rate-limited RPC node answers 429 without CORS headers; the browser logs that as a failed fetch
 // and the page retries it. That is the node's weather, not a bug in the page: everything else fails.
-const RPC_HOST = /rpc\.(testnet|mainnet)\.fastnear\.com/;
+const RPC_HOST = /(rpc\.(testnet|mainnet)\.fastnear\.com|rpc\.(testnet|mainnet)\.near\.org|(test|free)\.rpc\.fastnear\.com)/;
 const rpcWeather = (text) => RPC_HOST.test(text) && /fetch|CORS|Access-Control|429|Too Many Requests|ERR_FAILED|Failed to load resource/i.test(text);
 async function open(path, w, h) {
   const page = await browser.newPage({ viewport: { width: w, height: h } });
   const errors = [];
-  page.on("console", (m) => m.type() === "error" && !rpcWeather(m.text()) && errors.push(m.text()));
+  page.on("console", (m) => { const t = `${m.text()} ${m.location()?.url ?? ""}`.trim(); if (m.type() === "error" && !rpcWeather(t)) errors.push(t); });
   page.on("pageerror", (e) => !rpcWeather(e.message) && errors.push(e.message));
   await page.goto(base + path, { waitUntil: "networkidle" });
   return { page, errors };
@@ -318,7 +318,7 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
   async function mocked(path, { shares = {}, delayShares = 0, mock = {} } = {}) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     const errors = [];
-    page.on("console", (m) => m.type() === "error" && !rpcWeather(m.text()) && errors.push(m.text()));
+    page.on("console", (m) => { const t = `${m.text()} ${m.location()?.url ?? ""}`.trim(); if (m.type() === "error" && !rpcWeather(t)) errors.push(t); });
     page.on("pageerror", (e) => errors.push(e.message));
     let sentAt = 0;
     await page.exposeFunction("__mockSent", () => (sentAt = Date.now()));
