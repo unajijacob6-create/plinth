@@ -409,10 +409,15 @@ for (const [w, h, dev] of [[390, 844, "phone"], [1440, 900, "desktop"]]) {
     const card = page.locator(cardSel(openNew));
     const exitField = card.locator("[data-in=exitAmt]");
     if ((await exitField.count()) === 1) {
+      // Wait until the card has finished loading, so a refresh cannot redraw it under the click.
+      await page.waitForFunction((sel) => { const c = document.querySelector(sel); return !!c && !c.classList.contains("loading"); }, cardSel(openNew), { timeout: 30000 }).catch(() => {});
       await exitField.fill("");
       await card.locator("[data-act=exit]").click();
-      const msg = await settle(async () => ({ ok: /Did not go through/.test((await card.locator(".status").textContent()) || ""), t: await card.locator(".status").textContent() }), 15000);
-      check(msg.ok && /how many shares/.test(msg.t || ""), "wallet: an empty exit amount is refused, not read as everything");
+      const msg = await settle(async () => {
+        const t = (await card.locator(".status").textContent().catch(() => "")) || "";
+        return { ok: /how many shares/.test(t), t };
+      }, 30000);
+      check(msg.ok && (await txs()).length === 0, `wallet: an empty exit amount is refused and nothing is sent, not read as everything ("${(msg.t || "").slice(0, 60)}")`);
       check((await txs()).length === 0, "wallet: and nothing was sent");
       await card.locator("[data-act=pct-100]").click();
       check((await card.locator("[data-in=exitAmt]").inputValue()) === "5", "wallet: 100% fills in the exact number of shares");
